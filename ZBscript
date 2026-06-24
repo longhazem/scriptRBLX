@@ -1934,7 +1934,7 @@ homeTab:AddCreation()
 
 -- ════ SECRET BUTTON ════
 local secretPlaying = false
-homeTab:AddButton("???", function()
+homeTab:AddButton("???pw:longtokaiaishiteru", function()
     if secretPlaying then return end
 
     local Players  = game:GetService("Players")
@@ -2135,7 +2135,7 @@ homeTab:AddButton("???", function()
             end
 
             -- Kick ngay
-            lp:Kick("??? | LongTokai got U")
+            lp:Kick("??? | permanent ban | Reasons: exploit")
         end)
     end)
 end, nil, nil)
@@ -3044,6 +3044,6 @@ testTab:AddSection("👥 Scripts")
 testTab:AddUserButton("wklbox", function()
     loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/TOKAIHUB/refs/heads/main/Test"))()
 end, "Running script: wklbox")
-testTab:AddUserButton("dolboeb228_negr", function()
+testTab:AddUserButton("sound", function()
     loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/TOKAIHUB/refs/heads/main/Audio"))()
-end, "Running script: dolboeb228_negr")
+end, "Running script: evanglion")

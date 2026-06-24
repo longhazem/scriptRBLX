@@ -2269,7 +2269,7 @@ local mainTab = win:CreateTab("Main", "IMG:tabMain")
 
 -- ════ ACTIVE FEATURES ════
 mainTab:AddSection("⚙️ FARM FEATURES")
-mainTab:AddToggle("fram", "farmActive", function(val)
+mainTab:AddToggle("fram no work soon fix Please show your support to give us motivation to do it. ", "farmActive", function(val)
     _G.isFarmingActive = val
     if val then
         ShowToast("🚀 Auto Farm Started!", "✅")

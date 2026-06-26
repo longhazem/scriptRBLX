@@ -2158,10 +2158,10 @@ end)
 
 -- Config Auto Farm
 local FARM_CONFIG = {
-    CheckInterval = 0.5,
-    TweenDuration = 0.6,
+    CheckInterval = 0.3,
+    TweenDuration = 0.2,
     NoClip = true,
-    FlySpeed = 70,
+    FlySpeed = 0,
 }
 
 -- State Auto Farm
@@ -2178,48 +2178,42 @@ local function setNoClip()
     end
 end
 
-local function setFlySpeed(speed)
-    local char = LocalPlayer.Character
-    if not char then return end
-    local hum = char:FindFirstChild("Humanoid")
-    if hum then
-        hum.WalkSpeed = speed
-        hum.JumpPower = 50
-    end
-end
-
-local function findAllZones()
-    local zones = {}
+-- SMART FARM: Find Episode → Find Payzone inside → Teleport to center
+local function findPayzoneInEpisode()
+    -- Step 1: Tìm Episode
+    local episode = nil
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("BasePart") then
-            local name = obj.Name
-            if name:lower():find("payzone") or name:lower():find("episode") then
-                table.insert(zones, obj)
+        if obj:IsA("Folder") or obj:IsA("Model") then
+            local name = obj.Name:lower()
+            if name:find("episode") then
+                episode = obj
+                break
             end
         end
     end
-    return zones
-end
-
-local function getBestZone()
-    local zones = findAllZones()
-    if #zones == 0 then return nil, nil end
-
-    local char = LocalPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return zones[1].Position + Vector3.new(0, 2, 0), 0 end
-
-    local best = nil
-    local bestDist = math.huge
-    for _, zone in ipairs(zones) do
-        local pos = zone.Position
-        local dist = (root.Position - pos).Magnitude
-        if dist < bestDist then
-            bestDist = dist
-            best = pos
+    
+    if not episode then
+        return nil
+    end
+    
+    -- Step 2: Tìm Payzone trong Episode
+    local payzone = nil
+    for _, child in ipairs(episode:GetDescendants()) do
+        if child:IsA("BasePart") then
+            local childName = child.Name:lower()
+            if childName:find("payzone") then
+                payzone = child
+                break
+            end
         end
     end
-    return best and best + Vector3.new(0, 2, 0) or nil, bestDist
+    
+    if not payzone then
+        return nil
+    end
+    
+    -- Step 3: Return center position của Payzone
+    return payzone.Position
 end
 
 local function teleportDirect(targetPos)
@@ -2230,19 +2224,19 @@ local function teleportDirect(targetPos)
     local hum = char:FindFirstChild("Humanoid")
     if not root or not hum then return false end
 
-    local tween = TweenService:Create(root, TweenInfo.new(FARM_CONFIG.TweenDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = CFrame.new(targetPos)})
+    -- Teleport instantly
+    local tween = TweenService:Create(root, TweenInfo.new(FARM_CONFIG.TweenDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = CFrame.new(targetPos + Vector3.new(0, 3, 0))})
     tween:Play()
     tween.Completed:Wait()
 
     hum.Sit = false
     setNoClip()
-    setFlySpeed(FARM_CONFIG.FlySpeed)
 
     farmTeleportCount = farmTeleportCount + 1
     return true
 end
 
--- Auto Farm Loop
+-- Auto Farm Loop - Teleport to Payzone center
 spawn(function()
     while true do
         if _G.isFarmingActive then
@@ -2252,10 +2246,9 @@ spawn(function()
                 local hum = char:FindFirstChild("Humanoid")
                 if root and hum then
                     setNoClip()
-                    setFlySpeed(FARM_CONFIG.FlySpeed)
-                    local targetPos, dist = getBestZone()
-                    if targetPos and dist > 5 then
-                        teleportDirect(targetPos)
+                    local payzonePos = findPayzoneInEpisode()
+                    if payzonePos then
+                        teleportDirect(payzonePos)
                     end
                 end
             end
@@ -2264,17 +2257,108 @@ spawn(function()
     end
 end)
 
+-- ════════════════════════════════════════════════════════════
+--  SMART FARM - DETECT EPISODE → TELEPORT TO COORDINATES
+-- ════════════════════════════════════════════════════════════
+
+local FARM_LOCATIONS = {
+    ["TechHqFire"] = {x = 1335, y = 180, z = 1343},
+    ["BeachDay"] = {x = 1942, y = 7, z = 934},
+    ["AbandonedWarehouseShipment"] = {x = -319, y = 21, z = -241},
+    ["JazzClubSocial"] = {x = -5162, y = -157, z = 1957},
+    ["YakuzaSafehouseFire"] = {x = 1936, y = 22, z = 1381},
+    ["BathhouseSocial"] = {x = 2659, y = 145, z = -535},
+    ["BankRobbery"] = {x = 1545, y = 32, z = 1564},
+    ["ParkFestival"] = {x = 2723, y = 159, z = -397},
+    ["FastFoodFire"] = {x = 1715, y = 20, z = 1796},
+    ["AlleyCrimeScene"] = {x = 1833, y = 15, z = 1433},
+    ["SushiHappyHour"] = {x = 1922, y = 33, z = 1404},
+    ["HospitalCrisis"] = {x = 1966, y = 19, z = 1094},
+    ["ArcadeSocialEvent"] = {x = -4154, y = -207, z = 3378},
+    ["FightingTournament"] = {x = -5161, y = -195, z = 1767},
+    ["PrisonBreak"] = {x = -5569, y = -161, z = 1901},
+    ["FashionEvent"] = {x = 1543, y = 18, z = 1742},
+}
+
+_G.SmartFarmConfig = {
+    Enabled = false,
+    CheckInterval = 1,
+}
+
+-- Detect current episode (by pattern matching - handle random IDs)
+local function detectCurrentEpisode()
+    for name, coords in pairs(FARM_LOCATIONS) do
+        -- Search in workspace for episode with this name pattern
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj:IsA("Folder") then
+                -- Episode name format: "Episode_AlleyCrimeScene_d9eeeefe-f0..."
+                -- Search by pattern (ignore random ID suffix)
+                if obj.Name:find(name) or obj.Name:find("Episode_" .. name) then
+                    print("✅ Detected:", obj.Name)
+                    return name, coords
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+-- Teleport to episode coordinates
+local function teleportToEpisode(coords)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    
+    local targetPos = Vector3.new(coords.x, coords.y + 3, coords.z)
+    
+    pcall(function()
+        local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut)
+        local tween = TweenService:Create(root, tweenInfo, {CFrame = CFrame.new(targetPos)})
+        tween:Play()
+        tween.Completed:Wait()
+    end)
+    
+    return true
+end
+
+-- Smart Farm Loop
+spawn(function()
+    while true do
+        if _G.SmartFarmConfig.Enabled then
+            local char = LocalPlayer.Character
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    -- Enable NoClip
+                    setNoClip()
+                    
+                    -- Detect current episode
+                    local episodeName, coords = detectCurrentEpisode()
+                    
+                    if episodeName and coords then
+                        -- Teleport to episode coordinates
+                        teleportToEpisode(coords)
+                    end
+                end
+            end
+        end
+        task.wait(_G.SmartFarmConfig.CheckInterval)
+    end
+end)
+
 local mainTab
 local mainTab = win:CreateTab("Main", "IMG:tabMain")
 
 -- ════ ACTIVE FEATURES ════
-mainTab:AddSection("⚙️ FARM FEATURES")
-mainTab:AddToggle("fram no work soon fix Please show your support to give us motivation to do it. ", "farmActive", function(val)
-    _G.isFarmingActive = val
+mainTab:AddSection("💰 FARM FEATURES")
+mainTab:AddToggle("Fram JCOIN", "framJCOIN", function(val)
+    _G.SmartFarmConfig.Enabled = val
     if val then
-        ShowToast("🚀 Auto Farm Started!", "✅")
+        ShowToast("🚀 Smart Farm Started!", "✅")
     else
-        ShowToast("⏹ Auto Farm Stopped!", "⏸")
+        ShowToast("⏹ Smart Farm Stopped!", "⏸")
     end
 end)
 

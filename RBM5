@@ -191,6 +191,8 @@ local Config = {
 	VehicleFly_ToggleKey = Enum.KeyCode.X,
 	VehicleFly_UpKey     = Enum.KeyCode.E,
 	VehicleFly_DownKey   = Enum.KeyCode.Q,
+	Spinbot              = false,
+	SpinbotSpeed         = 20,
 }
 
 -- ==========================================
@@ -218,6 +220,7 @@ local Places = {
 local InventoryService, ReplicatorService, ClientService, WorldService, BulletService
 local CharacterController, ControllerService, FirearmInventoryClass, ActorClass, Recoiler, EffectsService
 local CalibersTable, VehicleService, FirearmInventory, EnvironmentService, CharacterCamera
+local TurretController, Network
 
 local WeaponManager = {
 	Equipped     = nil,
@@ -263,26 +266,48 @@ local lastCollections = nil
 -- BALLISTICS
 -- ==========================================
 local function SolveLead(sourcePos, targetPos, targetVelocity, bulletSpeed, gravity)
-	local distance = (targetPos - sourcePos).Magnitude
-	local time     = distance / bulletSpeed
+	local displacement = targetPos - sourcePos
+	local vSq = bulletSpeed * bulletSpeed
+	local g   = gravity
+	local x   = Vector3_new(displacement.X, 0, displacement.Z).Magnitude
+	local y   = displacement.Y
 
-	local predictedPos = targetPos
-	if targetVelocity and targetVelocity.Magnitude > 0.1 then
-		predictedPos = targetPos + (targetVelocity * time)
+	local time = x / bulletSpeed
+	local predictedTarget = targetPos + ((targetVelocity and targetVelocity.Magnitude > 0.1) and (targetVelocity * time) or Vector3_new())
+
+	displacement = predictedTarget - sourcePos
+	x = Vector3_new(displacement.X, 0, displacement.Z).Magnitude
+	y = displacement.Y
+
+	local root = vSq * vSq - g * (g * x * x + 2 * y * vSq)
+
+	if root < 0 then
+		return predictedTarget + Vector3_new(0, 0.5 * g * time * time, 0), time
 	end
 
-	distance = (predictedPos - sourcePos).Magnitude
-	time     = distance / bulletSpeed
-	if targetVelocity and targetVelocity.Magnitude > 0.1 then
-		predictedPos = targetPos + (targetVelocity * time)
-	end
+	local theta = math.atan((vSq - math.sqrt(root)) / (g * x))
+	local vx    = bulletSpeed * math.cos(theta)
 
-	local dropCompensation = 0.5 * gravity * (time * time)
-	predictedPos = predictedPos + Vector3_new(0, dropCompensation, 0)
+	if vx <= 0 then return predictedTarget, time end
 
-	return predictedPos, time
+	local realTime = x / vx
+	local drop     = 0.5 * g * realTime * realTime
+	return predictedTarget + Vector3_new(0, drop, 0), realTime
 end
 
+local function GetBulletDamage(caliber, distance, part)
+	if not caliber or not caliber.Damage or not caliber.Dropoff then return 25 end
+	local dmgTable = caliber.Damage[part or "Torso"] or caliber.Damage["Torso"] or {0}
+	local dropoff  = caliber.Dropoff
+	local index    = 1
+	for i, d in ipairs(dropoff) do
+		if distance <= d then index = i; break end
+		index = i
+	end
+	return dmgTable[index] or 0
+end
+
+-- Damage dropoff calculation mirroring BulletService.GetDamageGraph
 local function GetBulletDamage(caliber, distance, part)
 	if not caliber or not caliber.Damage or not caliber.Dropoff then return 25 end
 	local dmgTable = caliber.Damage[part or "Torso"] or caliber.Damage["Torso"] or {0}
@@ -343,6 +368,8 @@ local function BulkScan()
 				found.CalibersTable = obj
 			elseif not found.EffectsService and rawget(obj, "BulletLand") and rawget(obj, "BulletFired") then
 				found.EffectsService = obj
+			elseif not found.Network and rawget(obj, "FireServer") and rawget(obj, "_events") then
+				found.Network = obj
 			elseif rawget(obj, "SetCFrame") and rawget(obj, "SetVehicleGoal") then
 				if rawget(obj, "__index") == obj or not rawget(obj, "Parent") then
 					found.CharacterController = obj
@@ -385,6 +412,8 @@ local function BulkScan()
 	Recoiler           = logService("Recoiler",           found.Recoiler)           or Recoiler
 	ActorClass         = logService("ActorClass",         found.ActorClass)         or ActorClass
 	CharacterCamera    = logService("CharacterCamera",    found.CharacterCamera)    or (shared.Engine and shared.Engine.CharacterCamera)
+	if found.TurretController then TurretController = logService("TurretController", found.TurretController) or TurretController end
+	if found.Network          then Network          = logService("Network",          found.Network)          or Network          end
 
 	FirearmInventory = collections.FirearmInventory
 	lastCollections  = collections
@@ -2400,8 +2429,19 @@ local function ApplyVehicleFly(vehicle, dt, originalUpdate)
 	if vehicle.Hitbox then vehicle.Hitbox.CFrame = newCF end
 
 	pcall(function()
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			if ctrl._vehicle == vehicle and ctrl._solver and ctrl._solver.SetState then
+				ctrl._solver:SetState(newCF, Vector3_new(), Vector3_new(), vehicle.ComponentReplicates)
+			end
+		end
 		if vehicle.Controller and vehicle.Controller.SetTarget then
 			vehicle.Controller:SetTarget(newCF)
+		end
+	end)
+	pcall(function()
+		if ReplicatorService and ReplicatorService.LocalActor then
+			ReplicatorService.LocalActor.SimulatedPosition = newCF.Position
 		end
 	end)
 end
@@ -2600,6 +2640,12 @@ TabMisc:CreateToggle({ Name="No Fog", CurrentValue=false, Flag="Misc_NoFog", Cal
 TabMisc:CreateSection("FPS Boost")
 TabMisc:CreateToggle({ Name="No Rain", CurrentValue=false, Flag="FPS_NoRain", Callback=function(v) Config.FPS_NoRain=v; if v and EnvironmentService then pcall(function() if EnvironmentService._rain then EnvironmentService._rain.Enabled=false end end) end end })
 TabMisc:CreateToggle({ Name="No Effects", CurrentValue=false, Flag="FPS_NoEffects", Callback=function(v) Config.FPS_NoEffects=v; if v then for _, e in ipairs(Workspace:GetDescendants()) do if e:IsA("ParticleEmitter") or e:IsA("Smoke") or e:IsA("Fire") then e.Enabled=false end end end end })
+
+TabMisc:CreateSection("Spinbot")
+TabMisc:CreateToggle({ Name="Spinbot", CurrentValue=false, Flag="Misc_Spinbot",
+	Callback=function(v) Config.Spinbot=v end })
+TabMisc:CreateSlider({ Name="Spin Speed", Range={1,50}, Increment=1, Suffix="x", CurrentValue=20, Flag="Misc_SpinbotSpeed",
+	Callback=function(v) Config.SpinbotSpeed=v end })
 
 TabMisc:CreateSection("Info")
 TabMisc:CreateButton({ Name="Force Rescan Services", Callback=function() gcCache=nil; lastScan=0; task.spawn(function() local ok=InitializeServices(); Rayfield:Notify({ Title="Tokai Hub", Content=ok and "Services rescanned OK" or "Rescan failed — retry", Duration=3, Image=4483362458 }) end) end })

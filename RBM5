@@ -38,7 +38,6 @@ local ESPEnabled = true
 -- Các hàm `replay_packet`, `RefreshMonitorTable`, `TogglePacketMonitor`, `RefreshStorageMonitor`, `ToggleStorageMonitor`
 -- đã được sửa như tôi đã cung cấp ở các tin nhắn trước.
 
-        local Version = "v1.0.1"
         local oldWarn = warn
         local oldPrint = print
         getgenv().warn = function(...)

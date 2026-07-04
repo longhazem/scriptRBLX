@@ -4977,8 +4977,8 @@ table.insert(getgenv().Moon_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
-	Title = "Moon",
-	Content = "Moon loaded successfully!",
+	Title = "tokai",
+	Content = "tokai loaded successfully!",
 	Duration = 5,
 	Icon = "rbxassetid://124218764552179"
 });

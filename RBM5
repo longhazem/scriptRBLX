@@ -1,19 +1,3 @@
--- ==========================================
--- TOKAI HUB — RAYFIELD BUILD
--- BRM5 Logic + Rayfield UI, fully merged
--- ==========================================
-
--- Singleton cleanup
-local scriptId = tick()
-getgenv().Moon_ScriptId = scriptId
-
-if getgenv().Moon_Connections then
-	for _, conn in pairs(getgenv().Moon_Connections) do
-		if conn then pcall(function() conn:Disconnect() end) end
-	end
-end
-getgenv().Moon_Connections = {}
-
 -- Cleanup previous instances (Singleton)
 local scriptId = tick()
 getgenv().Moon_ScriptId = scriptId
@@ -24,6 +8,128 @@ if getgenv().Moon_Connections then
 	end
 end
 getgenv().Moon_Connections = {}
+
+-- ==========================================
+-- EXECUTOR COMPATIBILITY LAYER
+-- PC:  Delta / Synapse Z / Wave / Volt / Potassium
+--      Codex / OpiumWare / Xeno / Solar / Electron
+-- Mobile: Arceus X / Fluxus / Hydrogen / Delta Mobile
+-- ==========================================
+
+-- 1. filtergc: Delta/Xeno have it; most others only expose getgc
+if not filtergc then
+	filtergc = function(typeFilter)
+		local ok, gc = pcall(function() return getgc(true) end)
+		if not ok or type(gc) ~= "table" then return {} end
+		if not typeFilter then return gc end
+		local r = {}
+		for _, v in pairs(gc) do
+			if type(v) == typeFilter then r[#r+1] = v end
+		end
+		return r
+	end
+end
+
+-- 2. getgc: Volt / Solar may not expose it
+if not getgc then
+	if debug and debug.getregistry then
+		getgc = function(inc)
+			local out = {}
+			for _, v in pairs(debug.getregistry()) do
+				if inc or type(v) == "function" then out[#out+1] = v end
+			end
+			return out
+		end
+	else
+		getgc = function() return {} end
+		warn("[Tokai Hub] getgc unavailable — BulkScan disabled.")
+	end
+end
+
+-- 3. newcclosure: Codex / Volt / Solar may not have it
+if not newcclosure then
+	newcclosure = function(f) return f end
+end
+
+-- 4. setreadonly: Wave / Volt / Codex / mobile executors often skip it
+if not setreadonly then
+	setreadonly = function() end
+end
+
+-- 5. make_writeable: OpiumWare / Codex alternative name
+if not make_writeable then
+	make_writeable = function(t)
+		if setreadonly then pcall(setreadonly, t, false) end
+	end
+end
+
+-- 6. getrawmetatable: all major executors have this, but guard anyway
+if not getrawmetatable then
+	getrawmetatable = function(o)
+		return (debug and debug.getmetatable and debug.getmetatable(o))
+			or getmetatable(o)
+	end
+end
+
+-- 7. gethui: Delta / Synapse Z / Xeno have it; mobile executors often don't
+if not gethui then
+	gethui = function()
+		local ok, r = pcall(function() return game:GetService("CoreGui") end)
+		return ok and r or nil
+	end
+end
+
+-- 8. syn.protect_gui: Synapse Z only; everything else gets a no-op
+if not syn then syn = {} end
+if not syn.protect_gui then syn.protect_gui = function() end end
+
+-- 9. task: Codex / older mobile executors use coroutine/spawn instead
+if not task then
+	task = {
+		wait  = function(t) return wait(t or 0) end,
+		spawn = function(f, ...) local a={...}; return spawn(function() f(table.unpack(a)) end) end,
+		defer = function(f, ...) local a={...}; return spawn(function() wait() f(table.unpack(a)) end) end,
+	}
+end
+
+-- 10. getgenv: Hydrogen / Fluxus mobile may not expose it
+if not getgenv then
+	local _env = {}
+	getgenv = function() return _env end
+end
+
+-- 11. Drawing API: all listed executors support it, but mobile ones
+--     may have reduced Drawing.new types — guard with a stub
+if not Drawing or not Drawing.new then
+	local function _stub()
+		return {
+			Visible=false, Color=Color3.new(1,1,1), Thickness=1,
+			Transparency=1, Filled=false, ZIndex=1, From=Vector2.new(),
+			To=Vector2.new(), Position=Vector2.new(), Size=Vector2.new(),
+			Text="", Font=2, Center=false, Outline=false,
+			Radius=1, NumSides=4, Remove=function() end,
+		}
+	end
+	Drawing = { new = function() return _stub() end }
+	warn("[Tokai Hub] Drawing API missing — ESP visuals disabled.")
+end
+
+-- 12. HttpGet compat: some executors expose HttpGetAsync instead
+local function _httpGet(url)
+	local ok, r = pcall(function() return game:HttpGet(url) end)
+	if ok and r then return r end
+	local ok2, r2 = pcall(function() return game:HttpGetAsync(url) end)
+	if ok2 and r2 then return r2 end
+	return nil
+end
+
+-- 13. Mobile: UserInputService.TouchEnabled detection
+--     BRM5 controller logic already handles this; we just flag it.
+getgenv()._IsMobile = UserInputService and UserInputService.TouchEnabled or false
+
+-- ==========================================
+-- END COMPATIBILITY LAYER
+-- ==========================================
 
 -- Localize Globals
 local Vector3_new   = Vector3.new
@@ -45,8 +151,7 @@ local rawget        = rawget
 local pcall         = pcall
 local tostring      = tostring
 local getgenv       = getgenv
-local getgc         = getgc
-local filtergc      = filtergc
+-- getgc / filtergc resolved after compat layer — do NOT alias here
 local Drawing       = Drawing
 local Drawing_new   = Drawing and Drawing.new
 
@@ -193,6 +298,9 @@ local Config = {
 	VehicleFly_DownKey   = Enum.KeyCode.Q,
 	Spinbot              = false,
 	SpinbotSpeed         = 20,
+	-- Auto Reload
+	AutoReload           = false,
+	AutoReload_Threshold = 1,  -- reload khi còn <= N viên
 }
 
 -- ==========================================
@@ -2468,6 +2576,51 @@ end
 -- ==========================================
 -- MAIN LOOP
 -- ==========================================
+
+-- ==========================================
+-- AUTO RELOAD
+-- Tận dụng đúng field path của Ragebot:
+--   _mag.Capacity  = số đạn còn trong mag
+--   _item.MetaData.Chamber = 1 nếu còn đạn trong buồng
+-- Mặc định reload khi còn <= 1 viên (threshold)
+-- ==========================================
+local _arLastTick = 0
+
+local function UpdateAutoReload()
+	if not Config.AutoReload then return end
+
+	local now = tick()
+	if now - _arLastTick < 0.15 then return end -- ~7Hz, không cần nhanh hơn
+	_arLastTick = now
+
+	-- Lấy controller đúng như Ragebot lấy
+	local equippedController = WeaponManager.Equipped
+		or (InventoryService and InventoryService.Equipped
+			and InventoryService.Equipped.Handler)
+	if not equippedController then return end
+
+	-- Skip nếu đang reload rồi (giống Ragebot check)
+	if equippedController._reloading or equippedController._isReloading then return end
+
+	-- Đúng field path mà Ragebot dùng để check ammo
+	local magCount  = equippedController._mag
+		and equippedController._mag.Capacity or 0
+	local inChamber = (equippedController._item
+		and equippedController._item.MetaData
+		and equippedController._item.MetaData.Chamber) and 1 or 0
+	local totalAmmo = magCount + inChamber
+
+	-- Reload khi totalAmmo <= threshold (mặc định 1 viên)
+	local threshold = tonumber(Config.AutoReload_Threshold) or 1
+
+	if totalAmmo <= threshold then
+		-- Đúng call path của Ragebot
+		if equippedController.Reload and not equippedController._reloading then
+			pcall(function() equippedController:Reload() end)
+		end
+	end
+end
+
 local frameCount = 0
 local espLoop = RunService.RenderStepped:Connect(function()
 	frameCount = (frameCount + 1) % 60
@@ -2488,6 +2641,7 @@ local espLoop = RunService.RenderStepped:Connect(function()
 	if frameCount % 2 == 0 then UpdateVehicles(frameCount, Config) end
 
 	UpdateCombat(frameCount)
+	UpdateAutoReload()
 end)
 table.insert(getgenv().Moon_Connections, espLoop)
 
@@ -2501,7 +2655,34 @@ table.insert(getgenv().Moon_Connections, flyKeybind)
 -- ==========================================
 -- RAYFIELD UI
 -- ==========================================
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+-- Rayfield load with HttpGet/HttpGetAsync compat + headless fallback
+local Rayfield
+do
+	local src = _httpGet('https://sirius.menu/rayfield')
+	if src then
+		local ok, r = pcall(loadstring(src))
+		if ok then Rayfield = r end
+	end
+	if not Rayfield then
+		warn("[Tokai Hub] Rayfield failed to load — running headless.")
+		local function _stubTab()
+			local t = {}
+			t.CreateSection    = function() end
+			t.CreateToggle     = function() end
+			t.CreateSlider     = function() end
+			t.CreateDropdown   = function() end
+			t.CreateButton     = function() end
+			t.CreateKeybind    = function() end
+			t.CreateColorPicker = function() end
+			return t
+		end
+		Rayfield = {
+			CreateWindow      = function() return { CreateTab=function() return _stubTab() end } end,
+			Notify            = function() end,
+			LoadConfiguration = function() end,
+		}
+	end
+end
 
 local Window = Rayfield:CreateWindow({
 	Name              = "Tokai Hub",
@@ -2578,6 +2759,12 @@ TabCombat:CreateSection("Turret")
 TabCombat:CreateToggle({ Name="Turret No Recoil", CurrentValue=false, Flag="Turret_NoRecoil", Callback=function(v) Config.TurretNoRecoil=v end })
 TabCombat:CreateToggle({ Name="Turret No Spread", CurrentValue=false, Flag="Turret_NoSpread", Callback=function(v) Config.TurretNoSpread=v end })
 TabCombat:CreateToggle({ Name="Turret Unlock Firemodes", CurrentValue=false, Flag="Turret_Firemodes", Callback=function(v) Config.TurretUnlockFiremodes=v end })
+
+TabCombat:CreateSection("Auto Reload")
+TabCombat:CreateToggle({ Name="Auto Reload", CurrentValue=false, Flag="AR_Enabled",
+	Callback=function(v) Config.AutoReload=v end })
+TabCombat:CreateSlider({ Name="Reload khi còn N viên", Range={0,10}, Increment=1, Suffix=" viên", CurrentValue=1, Flag="AR_Threshold",
+	Callback=function(v) Config.AutoReload_Threshold=v end })
 
 -- ==========================================
 -- ESP TAB

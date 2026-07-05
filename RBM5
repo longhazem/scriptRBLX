@@ -14,44 +14,106 @@
 -- ==========================================
 
 -- Multi-executor HTTP fetch: tries every known method in order
+-- Normalize response table from any executor into a plain string body
+local function _extractBody(res)
+	if type(res) == "string" then return res end
+	if type(res) ~= "table" then return nil end
+	local body = res.Body or res.body or res[1]
+	if type(body) ~= "string" then return nil end
+	-- Reject empty or error-only bodies
+	if #body < 10 then return nil end
+	-- Reject if executor returned an HTTP error status (Solara sometimes does this silently)
+	local status = res.StatusCode or res.statusCode or res.status or 200
+	if type(status) == "number" and status >= 400 then return nil end
+	return body
+end
+
+-- Retry wrapper: Xeno drops first request ~30% of the time on cold start
+local function _tryFetch(fn, attempts)
+	attempts = attempts or 2
+	for i = 1, attempts do
+		local ok, res = pcall(fn)
+		if ok then
+			local body = _extractBody(res)
+			if body and #body > 200 then return body end
+		end
+		if i < attempts then task.wait(0.3) end
+	end
+	return nil
+end
+
 local function FetchUrl(url)
+	local r
+
 	-- 1. Standard HttpGet with trust flag (Delta, Synapse Z, Wave, Codex)
-	local ok, r = pcall(function() return game:HttpGet(url, true) end)
-	if ok and type(r) == "string" and #r > 200 then return r end
+	r = _tryFetch(function() return game:HttpGet(url, true) end)
+	if r then return r end
 
 	-- 2. HttpGet without flag (Volt, older Potassium)
-	ok, r = pcall(function() return game:HttpGet(url) end)
-	if ok and type(r) == "string" and #r > 200 then return r end
+	r = _tryFetch(function() return game:HttpGet(url) end)
+	if r then return r end
 
 	-- 3. HttpGetAsync (older Synapse, OpiumWare)
-	ok, r = pcall(function() return game:HttpGetAsync(url) end)
-	if ok and type(r) == "string" and #r > 200 then return r end
+	r = _tryFetch(function() return game:HttpGetAsync(url) end)
+	if r then return r end
 
 	-- 4. syn.request (Fluxus, Arceus X, Hydrogen mobile)
 	if syn and syn.request then
-		ok, r = pcall(function()
-			local res = syn.request({ Url = url, Method = "GET" })
-			return res and res.Body
+		r = _tryFetch(function()
+			return syn.request({ Url = url, Method = "GET", Headers = { ["User-Agent"] = "TokaiHub/1.0" } })
 		end)
-		if ok and type(r) == "string" and #r > 200 then return r end
+		if r then return r end
 	end
 
 	-- 5. http.request (some mobile executors)
 	if http and http.request then
-		ok, r = pcall(function()
-			local res = http.request({ Url = url, Method = "GET" })
-			return res and res.Body
+		r = _tryFetch(function()
+			return http.request({ Url = url, Method = "GET" })
 		end)
-		if ok and type(r) == "string" and #r > 200 then return r end
+		if r then return r end
 	end
 
-	-- 6. request() global (Xeno, Solar)
+	-- 6. request() global — Xeno primary path
+	--    Retried twice: Xeno cold-start drops ~30% of first requests silently
 	if request then
-		ok, r = pcall(function()
-			local res = request({ Url = url, Method = "GET" })
-			return res and res.Body
-		end)
-		if ok and type(r) == "string" and #r > 200 then return r end
+		r = _tryFetch(function()
+			return request({
+				Url    = url,
+				Method = "GET",
+				Headers = { ["Cache-Control"] = "no-cache" },
+			})
+		end, 3)
+		if r then return r end
+	end
+
+	-- 7. http_request — Solara primary path
+	--    Solara: status 0 = network not ready, retry once after 0.5s
+	if http_request then
+		r = _tryFetch(function()
+			local res = http_request({
+				Url     = url,
+				Method  = "GET",
+				Headers = { ["Cache-Control"] = "no-cache" },
+			})
+			-- Solara sometimes wraps body in res.response instead of res.Body
+			if type(res) == "table" then
+				res.Body = res.Body or res.body or res.response or res.content
+			end
+			return res
+		end, 3)
+		if r then return r end
+	end
+
+	-- 8. Solara alternate: fetchget global (some builds expose this separately)
+	if fetchget then
+		r = _tryFetch(function() return fetchget(url) end)
+		if r then return r end
+	end
+
+	-- 9. SolaraHttpGet fallback
+	if SolaraHttpGet then
+		r = _tryFetch(function() return SolaraHttpGet(url) end)
+		if r then return r end
 	end
 
 	return nil
@@ -83,7 +145,7 @@ local function PatchObsidianSource(source)
 	return source
 end
 
--- Primary repo: mmr1337 fork (same as Moon uses)
+-- Primary repo: mmr1337 fork (Obsidian UI layer)
 -- Fallback repo: deividcomsono original
 local Repos = {
 	"https://raw.githubusercontent.com/mmr1337/Obsidian/main/",
@@ -162,8 +224,8 @@ Library.CornerRadius              = Library.CornerRadius or 8
 local Options = Library.Options
 local Toggles = Library.Toggles
 
--- MoonUI compatibility shim — keeps existing tab/section code working unchanged
-local MoonUI = {
+-- TokaiUI compatibility shim — keeps existing tab/section code working unchanged
+local TokaiUI = {
 	Scale  = { Window = 1 },
 	Colors = {
 		Highlight  = Color3.fromRGB(88, 101, 242),
@@ -178,11 +240,11 @@ local MoonUI = {
 	},
 }
 
-function MoonUI:SetTheme() end
-function MoonUI:RefreshCurrentColor() end
-function MoonUI:ConfigManager(Data) return Data or {} end
+function TokaiUI:SetTheme() end
+function TokaiUI:RefreshCurrentColor() end
+function TokaiUI:ConfigManager(Data) return Data or {} end
 
-function MoonUI.newNotify()
+function TokaiUI.newNotify()
 	return {
 		new = function(Data)
 			pcall(function()
@@ -364,14 +426,14 @@ local function WrapTab(Tab)
 	}
 end
 
-local _ConfigManager = MoonUI:ConfigManager({})
+local _ConfigManager = TokaiUI:ConfigManager({})
 
-function MoonUI.new(Data)
+function TokaiUI.new(Data)
 	local ok, Window = pcall(function()
 		return Library:CreateWindow({
 			Title            = "Tokai Hub",
 			Footer           = "BRM5 Edition",
-			Icon             = 124218764552179,
+			Icon             = 0,
 			Center           = true,
 			AutoShow         = true,
 			Resizable        = true,
@@ -440,14 +502,14 @@ end
 
 -- Cleanup previous instances (Singleton)
 local scriptId = tick()
-getgenv().Moon_ScriptId = scriptId
+getgenv().Tokai_ScriptId = scriptId
 
-if getgenv().Moon_Connections then
-	for _, conn in pairs(getgenv().Moon_Connections) do
+if getgenv().Tokai_Connections then
+	for _, conn in pairs(getgenv().Tokai_Connections) do
 		if conn then pcall(function() conn:Disconnect() end) end
 	end
 end
-getgenv().Moon_Connections = {}
+getgenv().Tokai_Connections = {}
 
 
 -- ==========================================
@@ -2070,7 +2132,7 @@ function EnableSpeedController()
 		actor.SpeedPenalty = multiplier
 	end)
 
-	table.insert(getgenv().Moon_Connections, SpeedControllerConnection)
+	table.insert(getgenv().Tokai_Connections, SpeedControllerConnection)
 	-- print removed
 end
 
@@ -2546,7 +2608,7 @@ local function UpdateCombat(frameId)
 			WeaponManager.Connection = InterfaceStateChanged:Connect(function()
 				WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
 			end)
-			table.insert(getgenv().Moon_Connections, WeaponManager.Connection)
+			table.insert(getgenv().Tokai_Connections, WeaponManager.Connection)
 		end
 		-- Initial Sync
 		WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
@@ -3856,22 +3918,22 @@ end
 --[[
     INITIALIZATION
 ]]
--- Initialize Moon notifier
-local Notifier = MoonUI.newNotify();
+-- Initialize Tokai notifier
+local Notifier = TokaiUI.newNotify();
 
 -- Create Window
-local Window = MoonUI.new({
-	Name = "Moon",
+local Window = TokaiUI.new({
+	Name = "Tokai Hub",
 	Keybind = "LeftAlt",
 	Logo = "rbxassetid://124218764552179",
-	Scale = MoonUI.Scale.Window,
+	Scale = TokaiUI.Scale.Window,
 	TextSize = 14,
 });
 
 -- Initialize Config Manager
-local _ConfigManager = MoonUI:ConfigManager({ 
-	Directory = "Moon", 
-	Config = "Moon" 
+local _ConfigManager = TokaiUI:ConfigManager({ 
+	Directory = "TokaiHub", 
+	Config = "TokaiHub" 
 })
 _ConfigManager.EnableNotify = true
 
@@ -4927,9 +4989,9 @@ MenuGroup:AddButton({
 	Callback = function()
 		pcall(function() Library:Unload() end)
 		pcall(function() Window:Unload() end)
-		if getgenv().Moon_Connections then
-			for _, c in pairs(getgenv().Moon_Connections) do c:Disconnect() end
-			getgenv().Moon_Connections = {}
+		if getgenv().Tokai_Connections then
+			for _, c in pairs(getgenv().Tokai_Connections) do c:Disconnect() end
+			getgenv().Tokai_Connections = {}
 		end
 		for uid in pairs(ESPElements) do RemoveESP(uid) end
 	end,
@@ -4973,14 +5035,14 @@ local espLoop = RunService.RenderStepped:Connect(function()
 	UpdateCombat(frameCount)
 	UpdateAutoReload()
 end)
-table.insert(getgenv().Moon_Connections, espLoop)
+table.insert(getgenv().Tokai_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
-	Title = "tokai",
-	Content = "tokai loaded successfully!",
+	Title = "Tokai Hub",
+	Content = "Tokai Hub loaded successfully!",
 	Duration = 5,
-	Icon = "rbxassetid://124218764552179"
+	Icon = ""
 });
 
 -- Initial Map Detection
@@ -5008,4 +5070,196 @@ local flyKeybind = UserInputService.InputBegan:Connect(function(input, gameProce
 		VehicleFly.Toggle()
 	end
 end)
-table.insert(getgenv().Moon_Connections, flyKeybind)
+table.insert(getgenv().Tokai_Connections, flyKeybind)
+
+-- =========================================================
+-- TOKAI HUB — ANTI FALL DAMAGE + AUTO RELOAD
+-- F9 = toggle anti fall | F10 = toggle auto reload
+-- =========================================================
+
+local _player     = Players.LocalPlayer
+local _character  = _player.Character or _player.CharacterAdded:Wait()
+
+-- ─── EXECUTOR DETECTION ──────────────────────────────────
+local _executor = "generic"
+if syn and syn.request   then _executor = "synapse"
+elseif http_request      then _executor = "solara"
+elseif request           then _executor = "xeno"
+elseif KRNL_LOADED       then _executor = "krnl"
+elseif fluxus            then _executor = "fluxus"
+end
+
+-- ─── ANTI FALL DAMAGE ────────────────────────────────────
+local antiFallEnabled = true
+
+local function _setupAntiFall(char)
+	local hum = char:WaitForChild("Humanoid")
+
+	-- Layer 1: StateChanged — cancel FallingDown before engine applies damage
+	local stConn = hum.StateChanged:Connect(function(_, newState)
+		if not antiFallEnabled then return end
+
+		if newState == Enum.HumanoidStateType.Landed then
+			local savedHp = hum.Health
+			task.defer(function()
+				if hum and hum.Parent then
+					hum.Health = math.max(savedHp, hum.Health)
+				end
+			end)
+		end
+
+		if newState == Enum.HumanoidStateType.FallingDown then
+			task.defer(function()
+				if not (hum and hum.Parent) then return end
+				hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+				hum:ChangeState(Enum.HumanoidStateType.Freefall)
+				task.wait(0.05)
+				hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+			end)
+		end
+	end)
+	table.insert(getgenv().Tokai_Connections, stConn)
+
+	-- Layer 2: Heartbeat — catch any fall damage that slips past layer 1
+	local lastHp   = hum.Health
+	local hbConn   = RunService.Heartbeat:Connect(function()
+		if not antiFallEnabled then lastHp = hum.Health; return end
+		if not (hum and hum.Parent) then return end
+
+		local state    = hum:GetState()
+		local airborne = (
+			state == Enum.HumanoidStateType.Freefall or
+			state == Enum.HumanoidStateType.Jumping  or
+			state == Enum.HumanoidStateType.Flying
+		)
+
+		local current = hum.Health
+		local delta   = lastHp - current
+
+		-- sudden >10 HP drop on landing frame = fall damage, restore
+		if not airborne and delta > 10 and delta < 100 then
+			hum.Health = lastHp
+		end
+
+		lastHp = hum.Health
+	end)
+	table.insert(getgenv().Tokai_Connections, hbConn)
+end
+
+_setupAntiFall(_character)
+
+-- ─── AUTO RELOAD ─────────────────────────────────────────
+local autoReloadEnabled = true
+local _RELOAD_KEY       = Enum.KeyCode.R
+local _reloading        = false
+local _lastAmmo         = nil
+
+-- Executor-safe key injection
+local function _fireKey(keyCode)
+	if _executor == "xeno" or _executor == "solara" or _executor == "krnl" or _executor == "synapse" then
+		if keypress and keyrelease then
+			pcall(function()
+				keypress(keyCode.Value)
+				task.wait(0.05)
+				keyrelease(keyCode.Value)
+			end)
+			return
+		end
+	end
+	-- Generic fallback: VirtualInputManager (Delta, Wave, Codex, Fluxus)
+	local ok, vim = pcall(function() return game:GetService("VirtualInputManager") end)
+	if ok and vim then
+		pcall(function()
+			vim:SendKeyEvent(true,  keyCode, false, game)
+			task.wait(0.05)
+			vim:SendKeyEvent(false, keyCode, false, game)
+		end)
+	end
+end
+
+-- Scan tool for ammo value across common attribute/value naming conventions
+local function _getAmmo(tool)
+	if not tool then return nil end
+	local attrNames = {
+		"Ammo", "ammo", "CurrentAmmo", "Bullets",
+		"BulletCount", "MagAmmo", "Magazine", "Clip"
+	}
+	for _, name in ipairs(attrNames) do
+		local v = tool:GetAttribute(name)
+		if type(v) == "number" then return v end
+	end
+	for _, child in ipairs(tool:GetDescendants()) do
+		if child:IsA("NumberValue") or child:IsA("IntValue") then
+			local n = child.Name:lower()
+			if n:find("ammo") or n:find("bullet") or n:find("mag") or n:find("clip") then
+				return child.Value
+			end
+		end
+	end
+	return nil
+end
+
+local function _watchTool(tool)
+	if not tool then return end
+	_reloading = false
+	_lastAmmo  = nil
+
+	local toolConn = RunService.Heartbeat:Connect(function()
+		if not autoReloadEnabled           then return end
+		if not (tool and tool.Parent)      then return end
+		if _reloading                      then return end
+
+		local ammo = _getAmmo(tool)
+		if ammo == nil                     then return end
+
+		if ammo == 0 and _lastAmmo ~= 0 then
+			_reloading = true
+			task.spawn(function()
+				task.wait(0.1)      -- let game register empty mag
+				_fireKey(_RELOAD_KEY)
+				task.wait(2.5)      -- cover standard reload animation length
+				_reloading = false
+			end)
+		end
+
+		_lastAmmo = ammo
+	end)
+	table.insert(getgenv().Tokai_Connections, toolConn)
+end
+
+local function _hookCharacter(char)
+	local addConn = char.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then _watchTool(child) end
+	end)
+	table.insert(getgenv().Tokai_Connections, addConn)
+	for _, child in ipairs(char:GetChildren()) do
+		if child:IsA("Tool") then _watchTool(child) end
+	end
+end
+
+_hookCharacter(_character)
+
+-- ─── RESPAWN HANDLING ────────────────────────────────────
+local respawnConn = _player.CharacterAdded:Connect(function(newChar)
+	_character  = newChar
+	_reloading  = false
+	_lastAmmo   = nil
+	_setupAntiFall(newChar)
+	_hookCharacter(newChar)
+end)
+table.insert(getgenv().Tokai_Connections, respawnConn)
+
+-- ─── TOGGLE KEYBINDS ─────────────────────────────────────
+-- F9 = anti fall | F10 = auto reload
+local toggleConn = UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == Enum.KeyCode.F9 then
+		antiFallEnabled = not antiFallEnabled
+	elseif input.KeyCode == Enum.KeyCode.F10 then
+		autoReloadEnabled = not autoReloadEnabled
+		_reloading = false
+	end
+end)
+table.insert(getgenv().Tokai_Connections, toggleConn)
+
+-- =========================================================

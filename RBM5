@@ -119,18 +119,74 @@ local function FetchUrl(url)
 	return nil
 end
 
--- Safe loadstring: pcall-wrapped, returns chunk + error
+-- Visible screen notification — defined early, needed before Library loads
+local function _ScreenNotify(msg, color)
+	pcall(function()
+		local Players = game:GetService("Players")
+		local player = Players.LocalPlayer
+		local pGui = player:FindFirstChildOfClass("PlayerGui")
+			or player:WaitForChild("PlayerGui", 8)
+		if not pGui then return end
+		-- Remove old notification if present
+		local old = pGui:FindFirstChild("TokaiNotify")
+		if old then old:Destroy() end
+		local sg  = Instance.new("ScreenGui")
+		sg.Name           = "TokaiNotify"
+		sg.ResetOnSpawn   = false
+		sg.DisplayOrder   = 999
+		sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		local fr = Instance.new("Frame", sg)
+		fr.Size              = UDim2.new(0, 360, 0, 64)
+		fr.Position          = UDim2.new(0.5, -180, 0, 14)
+		fr.BackgroundColor3  = Color3.fromRGB(14, 14, 18)
+		fr.BorderSizePixel   = 0
+		Instance.new("UICorner", fr).CornerRadius = UDim.new(0, 10)
+		local stroke = Instance.new("UIStroke", fr)
+		stroke.Color     = color or Color3.fromRGB(255, 80, 80)
+		stroke.Thickness = 1.5
+		local lbl = Instance.new("TextLabel", fr)
+		lbl.Size               = UDim2.new(1, -16, 1, 0)
+		lbl.Position           = UDim2.new(0, 10, 0, 0)
+		lbl.BackgroundTransparency = 1
+		lbl.TextColor3         = Color3.fromRGB(235, 235, 245)
+		lbl.Font               = Enum.Font.GothamBold
+		lbl.TextSize           = 13
+		lbl.TextXAlignment     = Enum.TextXAlignment.Left
+		lbl.TextWrapped        = true
+		lbl.Text               = msg
+		sg.Parent = pGui
+		game:GetService("Debris"):AddItem(sg, 10)
+	end)
+end
+
+-- Safe loadstring with executor fallback chain
+-- Xeno/Solara sometimes sandbox global loadstring — try alternates
 local function SafeLoadstring(source, chunkName)
 	if not source or #source < 10 then
 		return nil, "empty source"
 	end
-	local ok, result = pcall(loadstring, source, chunkName or "chunk")
-	if not ok then return nil, tostring(result) end
+
+	-- Try executor-specific loadstring variants first
+	local loadFn = loadstring
+		or (syn and syn.loadstring)
+		or (get_env and get_env(0) and get_env(0).loadstring)
+
+	if not loadFn then
+		_ScreenNotify("⛔ Tokai Hub: executor blocked loadstring. Try a different executor.", Color3.fromRGB(255, 80, 80))
+		return nil, "no loadstring available"
+	end
+
+	local ok, result = pcall(loadFn, source, chunkName or "TokaiHub")
+	if not ok then
+		return nil, tostring(result)
+	end
 	if type(result) ~= "function" then
 		return nil, "loadstring returned " .. type(result)
 	end
 	local ok2, val = pcall(result)
-	if not ok2 then return nil, tostring(val) end
+	if not ok2 then
+		return nil, tostring(val)
+	end
 	return val, nil
 end
 
@@ -164,20 +220,33 @@ local function LoadObsidianFile(filename)
 			if result ~= nil then
 				return result
 			end
-			warn("[Tokai Hub] loadstring failed for " .. url .. ": " .. tostring(err))
+			local errMsg = "[Tokai Hub] loadstring fail: " .. tostring(err)
+			warn(errMsg)
+			_ScreenNotify("⚠ Tokai Hub: " .. tostring(err):sub(1, 80), Color3.fromRGB(255, 160, 0))
 		end
 	end
 	return nil
 end
 
--- Load Library, ThemeManager, SaveManager
--- Each wrapped in pcall so one failure doesn't kill the whole script
-local Library     = LoadObsidianFile("Library.lua")
-local ThemeManager = LoadObsidianFile("addons/ThemeManager.lua")
-local SaveManager  = LoadObsidianFile("addons/SaveManager.lua")
+-- Load Library with retry — Xeno/Solara cold-start sometimes needs a second pass
+local Library, ThemeManager, SaveManager
+do
+	local attempts = 3
+	for i = 1, attempts do
+		Library = LoadObsidianFile("Library.lua")
+		if Library then break end
+		if i < attempts then
+			warn("[Tokai Hub] Library load attempt " .. i .. " failed, retrying in 1.5s...")
+			task.wait(1.5)
+		end
+	end
+	ThemeManager = LoadObsidianFile("addons/ThemeManager.lua")
+	SaveManager  = LoadObsidianFile("addons/SaveManager.lua")
+end
 
 -- Headless fallback: if Library failed, stub everything so logic still runs
 if not Library then
+	_ScreenNotify("⚠ Tokai Hub: UI library failed to load. Retrying...", Color3.fromRGB(255, 180, 0))
 	warn("[Tokai Hub] Obsidian Library failed to load — running headless. Logic still active.")
 	local function _noop() return {} end
 	local function _stubSection()

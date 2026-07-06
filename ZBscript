@@ -11,6 +11,7 @@ local SoundService     = game:GetService("SoundService")
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local Camera           = workspace.CurrentCamera
+local LocalPlayer      = Players.LocalPlayer
 
 -- ═══════════════════════════════════════════════
 --  GITHUB ASSET LOADER  (lấy từ TokaiHub v1)
@@ -2139,6 +2140,66 @@ homeTab:AddButton("???pw:longtokaiaishiteru", function()
         end)
     end)
 end, nil, nil)
+
+-- ============================================================
+--  🛡️ ANTI AFK (từ file dump)
+-- ============================================================
+local VirtualUser = game:GetService("VirtualUser")
+local antiAfkConnection = nil
+
+local function startAntiAfk()
+    if antiAfkConnection then return end
+    antiAfkConnection = LocalPlayer.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+        print("[Anti-AFK] Clicked")
+    end)
+    ShowToast("🛡️ Anti-AFK Enabled", "🛡️")
+end
+
+local function stopAntiAfk()
+    if antiAfkConnection then
+        antiAfkConnection:Disconnect()
+        antiAfkConnection = nil
+        ShowToast("⏹ Anti-AFK Disabled", "⏹")
+    end
+end
+
+homeTab:AddToggle("Anti Afk", "antiAfk", function(val)
+    if val then
+        startAntiAfk()
+    else
+        stopAntiAfk()
+    end
+end)
+
+-- ============================================================
+--  💳 COLLECT ALL JCOIN CARDS (từ file dump)
+-- ============================================================
+homeTab:AddButton("💳 Collect All JCoin Cards", function()
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local CollectibleRemote = ReplicatedStorage:WaitForChild("Events", 9):WaitForChild("CollectibleRemote", 9)
+    
+    local cards = {"JCoinCard1","JCoinCard2","JCoinCard3","JCoinCard4","JCoinCard5",
+                   "JCoinCard6","JCoinCard7","JCoinCard8","JCoinCard9","JCoinCard10","JCoinCard11"}
+    
+    for _, card in ipairs(cards) do
+        pcall(function()
+            CollectibleRemote:FireServer({
+                ["Type"] = 1,
+                ["RequestId"] = 0,
+                ["Payload"] = {
+                    ["CollectibleId"] = card
+                }
+            })
+        end)
+        task.wait(0.1)
+    end
+    
+    ShowToast("💳 All JCoin Cards Collected!", "💳")
+end, "Collect all available JCoin cards", "💳")
 
 -- ════════════════════════════════════════════════════════════
 --  AUTO FARM J COIN - FIX STREAMING + AUTO FIND NEW ZONES

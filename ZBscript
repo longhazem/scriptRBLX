@@ -113,7 +113,7 @@ local startTime = os.time()
 local gmtOffset = 7  -- GMT+7 mặc định (Việt Nam), thay đổi qua Settings
 _G.ToggleKey   = Enum.KeyCode.RightControl
 local isLocked = false
-local DISCORD  = "https://discord.gg/nn783R2fK2"
+local DISCORD  = "https://discord.gg/deVVQEVybd"
 
 -- ═══════════════════════════════════════════════
 --  EXECUTOR COMPATIBILITY LAYER

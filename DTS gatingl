@@ -1,24 +1,56 @@
-_G.Config = {
-    gatlingcooldown = 0.01,
-    multiplytimes   = 50,
-    norecoil        = true,
-    auto_fire       = true,   -- bật mặc định
-    enabled         = true,
-    aimRadius       = 300,
-    maxRange        = 500
-}
+-- TOKAIHUB GATLING — FPS Toggle, Full Merge
+-- Frame: 370 → 416px | Border: 376 → 422px
+-- Row 6 (FPS Mode) at y=292 | syncBtn y=338 | footerLbl y=386
 
-local Network       = game.ReplicatedStorage:WaitForChild("Network", 8)
-local GatlingNetwork = Network and Network:WaitForChild("GatlingGun", 8)
-local RE_Fire       = GatlingNetwork and GatlingNetwork:WaitForChild("RE:Fire", 8)
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-if not RE_Fire then return end
+getgenv().gatlingcooldown = 0.05
+getgenv().multiplytimes   = 10
+getgenv().auto_fire       = true
+getgenv().fps_mode        = false
+getgenv().targetMode      = 1
+getgenv().showChams       = true
 
-local uis     = game:GetService("UserInputService")
-local Players = game:GetService("Players")
-local camera  = workspace.CurrentCamera
-local player  = Players.LocalPlayer
-local npcs    = workspace:WaitForChild("NPCs")
+local LocalPlayer       = Players.LocalPlayer
+local Workspace_Towers  = workspace:WaitForChild("Towers")
+local NPCs              = workspace:WaitForChild("NPCs")
+local GameStateReplicator = ReplicatedStorage
+    :WaitForChild("StateReplicators")
+    :WaitForChild("GameStateReplicator")
+
+local Network        = require(ReplicatedStorage.Resources.Universal.NewNetwork)
+local GatlingChannel = Network.Channel("GatlingGun")
+local remoteFunc     = ReplicatedStorage:WaitForChild("RemoteFunction")
+
+local TimeScale = GameStateReplicator:GetAttribute("TimeScale") or 1
+GameStateReplicator:GetAttributeChangedSignal("TimeScale"):Connect(function()
+    TimeScale = GameStateReplicator:GetAttribute("TimeScale") or 1
+end)
+
+local trackedNPCs     = {}
+local trackedGatlings = {}
+
+local function getNPCHealth(folder)
+    return folder:GetAttribute("Health") or 0
+end
+
+local function isValidNPC(model)
+    if not model or not model.Parent then return false end
+    if not model:IsA("Model") then return false end
+    local rp = model:FindFirstChild("RootPointer")
+    if not rp or not rp.Value then return false end
+    local folder   = rp.Value
+    local fakeUnit = folder:GetAttribute("FakeUnit")
+    local unitType = folder:GetAttribute("Type")
+    if fakeUnit ~= false then return false end
+    if unitType ~= "Enemies" then return false end
+    if getNPCHealth(folder) <= 0 then return false end
+    return true
+end
 
 local function getEnemyRoot(model)
     return model:FindFirstChild("HumanoidRootPart")
@@ -27,149 +59,518 @@ local function getEnemyRoot(model)
         or model:FindFirstChildWhichIsA("BasePart")
 end
 
-local function getEnemies()
-    local list = {}
-    for _, model in ipairs(npcs:GetChildren()) do
-        if model:IsA("Model") then
-            local rp = model:FindFirstChild("RootPointer")
-            if rp and rp.Value then
-                local folder   = rp.Value
-                local fakeUnit = folder:GetAttribute("FakeUnit")
-                local unitType = folder:GetAttribute("Type")
-                if fakeUnit == false and unitType == "Enemies" then
-                    local root = getEnemyRoot(model)
-                    local hp   = folder:GetAttribute("Health") or 0
-                    if root and hp > 0 then
-                        table.insert(list, { model = model, root = root, hp = hp })
-                    end
-                end
-            end
-        end
-    end
-    return list
+local function registerNPC(model)
+    if not isValidNPC(model) then return end
+    local rp   = model:FindFirstChild("RootPointer")
+    local root = getEnemyRoot(model)
+    if not root then return end
+    trackedNPCs[model] = { folder = rp.Value, root = root }
 end
 
-local function getAimTarget()
-    local viewportSize = camera.ViewportSize
-    local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
-    local enemies      = getEnemies()
-    if #enemies == 0 then return nil end
+local function unregisterNPC(model)   trackedNPCs[model] = nil end
 
-    local bestEnemy  = nil
-    local bestDist2D = math.huge
-
-    for _, e in ipairs(enemies) do
-        local screenPos, onScreen = camera:WorldToViewportPoint(e.root.Position)
-        if onScreen then
-            local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-            if dist2D < _G.Config.aimRadius and dist2D < bestDist2D then
-                local dist3D = (e.root.Position - camera.CFrame.Position).Magnitude
-                if dist3D <= _G.Config.maxRange then
-                    bestDist2D = dist2D
-                    bestEnemy  = e
-                end
-            end
-        end
-    end
-
-    return bestEnemy
-end
-
-local function getFallbackPosition()
-    local viewportSize = camera.ViewportSize
-    local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
-    local ray          = camera:ViewportPointToRay(screenCenter.X, screenCenter.Y, 0)
-
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    local ignore = {}
-    if player.Character then table.insert(ignore, player.Character) end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character then table.insert(ignore, p.Character) end
-    end
-    local towers = workspace:FindFirstChild("Towers")
-    if towers then table.insert(ignore, towers) end
-    rayParams.FilterDescendantsInstances = ignore
-
-    local result = workspace:Raycast(ray.Origin, ray.Direction * _G.Config.maxRange, rayParams)
-    return result and result.Position or (ray.Origin + ray.Direction * _G.Config.maxRange)
-end
-
-local function sendFirePacket()
-    if not _G.Config.enabled then return end
-
-    local enemy     = getAimTarget()
-    local targetPos
-
-    if enemy then
-        local vel     = enemy.root.AssemblyLinearVelocity
-        local predicted = enemy.root.Position + vel * 0.05
-        targetPos     = Vector3.new(predicted.X, predicted.Y, predicted.Z)
-    else
-        targetPos = getFallbackPosition()
-    end
-
-    local sync       = workspace:GetAttribute("Sync") or 0
-    local serverTime = workspace:GetServerTimeNow()
-
-    for i = 1, _G.Config.multiplytimes do
-        pcall(function()
-            RE_Fire:FireServer(
-                vector.create(targetPos.X, targetPos.Y, targetPos.Z),
-                sync,
-                serverTime + (i * 0.0005)
-            )
-        end)
+local function registerGatling(model)
+    task.wait(0.3)
+    if not model or not model.Parent then return end
+    local tr = model:FindFirstChild("TowerReplicator")
+    if not tr then return end
+    if tr:GetAttribute("Name") == "Gatling Gun" then
+        trackedGatlings[model] = tr
     end
 end
 
--- ── Manual click fire ────────────────────────────────────────────────────────
-local manualFiring = false
+local function unregisterGatling(model) trackedGatlings[model] = nil end
 
-uis.InputBegan:Connect(function(input, gp)
-    if gp or not _G.Config.enabled then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        manualFiring = true
-        task.spawn(function()
-            while manualFiring and uis:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
-                sendFirePacket()
-                task.wait(_G.Config.gatlingcooldown)
-            end
-            manualFiring = false
-        end)
+for _, model in ipairs(NPCs:GetChildren()) do registerNPC(model) end
+for _, model in ipairs(Workspace_Towers:GetChildren()) do
+    local tr = model:FindFirstChild("TowerReplicator")
+    if tr and tr:GetAttribute("Name") == "Gatling Gun" then
+        trackedGatlings[model] = tr
     end
-end)
+end
 
-uis.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        manualFiring = false
-    end
-end)
+NPCs.ChildAdded:Connect(registerNPC)
+NPCs.ChildRemoved:Connect(unregisterNPC)
+Workspace_Towers.ChildAdded:Connect(registerGatling)
+Workspace_Towers.ChildRemoved:Connect(unregisterGatling)
 
--- ── Auto fire — chạy độc lập, không bị manualFiring chặn ────────────────────
+-- Stale purge every 0.5s
 task.spawn(function()
     while true do
-        task.wait(_G.Config.gatlingcooldown)
-        if _G.Config.enabled and _G.Config.auto_fire then
-            sendFirePacket()
+        task.wait(0.5)
+        for model, entry in pairs(trackedNPCs) do
+            if not model.Parent
+            or not entry.root.Parent
+            or getNPCHealth(entry.folder) <= 0
+            or not isValidNPC(model) then
+                trackedNPCs[model] = nil
+            end
         end
     end
 end)
 
--- ── Config updater ────────────────────────────────────────────────────────────
-_G.UpdateGatling = function(newConfig)
-    for k, v in pairs(newConfig) do
-        if _G.Config[k] ~= nil then
-            _G.Config[k] = v
+local function getTarget()
+    local mode    = getgenv().targetMode
+    local best    = nil
+    local bestVal = nil
+
+    for model, entry in pairs(trackedNPCs) do
+        local root   = entry.root
+        local folder = entry.folder
+
+        if not model.Parent or not root.Parent then
+            trackedNPCs[model] = nil
+        else
+            local hp = getNPCHealth(folder)
+            if hp <= 0 then
+                trackedNPCs[model] = nil
+            else
+                local pos = root.Position
+
+                if mode == 1 then
+                    local myPos = LocalPlayer.Character
+                        and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        and LocalPlayer.Character.HumanoidRootPart.Position
+                        or Vector3.zero
+                    local dist = (pos - myPos).Magnitude
+                    if bestVal == nil or dist > bestVal then bestVal = dist; best = root end
+
+                elseif mode == 2 then
+                    local idx = model:GetAttribute("PathIndex") or 0
+                    if bestVal == nil or idx > bestVal then bestVal = idx; best = root end
+
+                elseif mode == 3 then
+                    if bestVal == nil or hp > bestVal then bestVal = hp; best = root end
+
+                elseif mode == 4 then
+                    if bestVal == nil or hp < bestVal then bestVal = hp; best = root end
+                end
+            end
         end
     end
-    print(string.format(
-        "[TokaiHub] Config updated — Multiply: %d | Cooldown: %.3f | AimRadius: %d | AutoFire: %s",
-        _G.Config.multiplytimes,
-        _G.Config.gatlingcooldown,
-        _G.Config.aimRadius,
-        tostring(_G.Config.auto_fire)
-    ))
+
+    return best
 end
 
-print("[TokaiHub] Gatling loaded. AutoFire:", _G.Config.auto_fire)
+local function syncAllGatlings(target)
+    local sync       = workspace:GetAttribute("Sync") or 0
+    local serverTime = workspace:GetServerTimeNow()
+    local pos        = target.Position
+
+    for _, tr in pairs(trackedGatlings) do
+        for i = 1, getgenv().multiplytimes do
+            pcall(function()
+                GatlingChannel:fireServer(
+                    "Fire",
+                    vector.create(pos.X, pos.Y, pos.Z),
+                    sync,
+                    serverTime + (i * 0.0008)
+                )
+            end)
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(getgenv().gatlingcooldown)
+        if getgenv().auto_fire then
+            local target = getTarget()
+            if target then syncAllGatlings(target) end
+        end
+    end
+end)
+
+-- ── FPS Mode call ─────────────────────────────────────────────────────────────
+local function setFPSMode(enabled)
+    getgenv().fps_mode = enabled
+    pcall(function()
+        remoteFunc:InvokeServer(
+            "Troops", "Abilities", "Activate",
+            {
+                Troop = workspace:WaitForChild("Towers"):WaitForChild("Default"),
+                Name  = "FPS",
+                Data  = { enabled = enabled }
+            }
+        )
+    end)
+    print("[TokaiHub] FPS Mode:", enabled and "ON" or "OFF")
+end
+
+-- Auto-activate on load if already true
+if getgenv().fps_mode then
+    task.spawn(function() task.wait(1); setFPSMode(true) end)
+end
+
+-- ── GUI ───────────────────────────────────────────────────────────────────────
+local UDim2_New   = UDim2.new
+local Vector2_New = Vector2.new
+local FromRGB     = Color3.fromRGB
+local UDim_New    = UDim.new
+local TI          = TweenInfo.new
+
+local TokaiHub          = Instance.new("ScreenGui")
+TokaiHub.Name           = "TokaiHub"
+TokaiHub.ResetOnSpawn   = false
+TokaiHub.IgnoreGuiInset = true
+TokaiHub.Parent         = LocalPlayer.PlayerGui
+
+-- Border — 422px tall now
+local Border = Instance.new("Frame")
+Border.Size                   = UDim2_New(0, 246, 0, 422)
+Border.Position               = UDim2_New(0.5, 0, 0.5, 0)
+Border.AnchorPoint            = Vector2_New(0.5, 0.5)
+Border.BackgroundColor3       = FromRGB(255, 255, 255)
+Border.BackgroundTransparency = 1
+Border.BorderSizePixel        = 0
+Border.ZIndex                 = 0
+Border.Parent                 = TokaiHub
+
+Instance.new("UICorner", Border).CornerRadius = UDim_New(0, 16)
+local BorderScale = Instance.new("UIScale", Border)
+BorderScale.Scale = 0
+
+local BorderGrad = Instance.new("UIGradient", Border)
+BorderGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0,   FromRGB(6, 0, 14)),
+    ColorSequenceKeypoint.new(0.3, FromRGB(130, 50, 240)),
+    ColorSequenceKeypoint.new(0.5, FromRGB(200, 110, 255)),
+    ColorSequenceKeypoint.new(0.7, FromRGB(90, 30, 180)),
+    ColorSequenceKeypoint.new(1,   FromRGB(6, 0, 14)),
+}
+
+-- Main panel — 416px tall now
+local Frame = Instance.new("Frame")
+Frame.Size             = UDim2_New(0, 240, 0, 416)
+Frame.Position         = UDim2_New(0.5, 0, 0.5, 0)
+Frame.AnchorPoint      = Vector2_New(0.5, 0.5)
+Frame.BackgroundColor3 = FromRGB(12, 8, 22)
+Frame.BorderSizePixel  = 0
+Frame.Parent           = TokaiHub
+
+Instance.new("UICorner", Frame).CornerRadius = UDim_New(0, 14)
+local FrameScale = Instance.new("UIScale", Frame)
+FrameScale.Scale = 0
+
+task.spawn(function()
+    local r = 0
+    while Border.Parent do
+        r = (r + 1.2) % 360
+        BorderGrad.Rotation = r
+        Border.Position     = Frame.Position
+        task.wait(0.03)
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if Frame.Parent and Border.Parent then
+        Border.Position = Frame.Position
+    end
+end)
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size             = UDim2_New(1, 0, 0, 48)
+TitleBar.BackgroundColor3 = FromRGB(20, 10, 40)
+TitleBar.BorderSizePixel  = 0
+TitleBar.Parent           = Frame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim_New(0, 14)
+
+local TitleCap = Instance.new("Frame")
+TitleCap.Size             = UDim2_New(1, 0, 0.5, 0)
+TitleCap.Position         = UDim2_New(0, 0, 0.5, 0)
+TitleCap.BackgroundColor3 = FromRGB(20, 10, 40)
+TitleCap.BorderSizePixel  = 0
+TitleCap.Parent           = TitleBar
+
+local TitleGrad = Instance.new("UIGradient", TitleBar)
+TitleGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, FromRGB(100, 40, 200)),
+    ColorSequenceKeypoint.new(1, FromRGB(180, 80, 255)),
+}
+TitleGrad.Rotation = 90
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size               = UDim2_New(1, -10, 1, 0)
+TitleLabel.Position           = UDim2_New(0, 10, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text               = ""
+TitleLabel.TextColor3         = FromRGB(255, 255, 255)
+TitleLabel.TextScaled         = true
+TitleLabel.Font               = Enum.Font.GothamBold
+TitleLabel.TextXAlignment     = Enum.TextXAlignment.Left
+TitleLabel.Parent             = TitleBar
+
+task.spawn(function()
+    task.wait(0.6)
+    local title = "TOKAIHUB GATLING"
+    for i = 1, #title do
+        TitleLabel.Text = title:sub(1, i) .. "_"
+        task.wait(0.06)
+    end
+    TitleLabel.Text = title
+    for _ = 1, 3 do
+        task.wait(0.25); TitleLabel.Text = title .. "_"
+        task.wait(0.25); TitleLabel.Text = title
+    end
+end)
+
+local Sep = Instance.new("Frame")
+Sep.Size             = UDim2_New(1, -20, 0, 1)
+Sep.Position         = UDim2_New(0, 10, 0, 50)
+Sep.BackgroundColor3 = FromRGB(120, 60, 220)
+Sep.BorderSizePixel  = 0
+Sep.Parent           = Frame
+
+local dragging, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = input.Position; startPos = Frame.Position
+    end
+end)
+TitleBar.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement or
+        input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local d = input.Position - dragStart
+        Frame.Position = UDim2_New(startPos.X.Scale, startPos.X.Offset + d.X,
+                                   startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end)
+TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = input.Position - dragStart
+        Frame.Position = UDim2_New(startPos.X.Scale, startPos.X.Offset + d.X,
+                                   startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end)
+
+local function makeRow(yOffset)
+    local row = Instance.new("Frame")
+    row.Size             = UDim2_New(1, -20, 0, 38)
+    row.Position         = UDim2_New(0, 10, 0, yOffset)
+    row.BackgroundColor3 = FromRGB(22, 14, 42)
+    row.BorderSizePixel  = 0
+    row.Parent           = Frame
+    Instance.new("UICorner", row).CornerRadius = UDim_New(0, 8)
+    return row
+end
+
+local function makeLabel(parent, text)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size               = UDim2_New(0.65, 0, 1, 0)
+    lbl.Position           = UDim2_New(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text               = text
+    lbl.TextColor3         = FromRGB(210, 200, 230)
+    lbl.TextSize           = 13
+    lbl.Font               = Enum.Font.Gotham
+    lbl.TextXAlignment     = Enum.TextXAlignment.Left
+    lbl.Parent             = parent
+    return lbl
+end
+
+local function makeToggle(parent, defaultOn)
+    local track = Instance.new("Frame")
+    track.Size             = UDim2_New(0, 42, 0, 22)
+    track.Position         = UDim2_New(1, -52, 0.5, -11)
+    track.BackgroundColor3 = defaultOn and FromRGB(140, 70, 240) or FromRGB(50, 40, 70)
+    track.BorderSizePixel  = 0
+    track.Parent           = parent
+    Instance.new("UICorner", track).CornerRadius = UDim_New(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.Size             = UDim2_New(0, 16, 0, 16)
+    knob.Position         = defaultOn and UDim2_New(1,-19,0.5,-8) or UDim2_New(0,3,0.5,-8)
+    knob.BackgroundColor3 = FromRGB(255, 255, 255)
+    knob.BorderSizePixel  = 0
+    knob.Parent           = track
+    Instance.new("UICorner", knob).CornerRadius = UDim_New(1, 0)
+
+    return track, knob
+end
+
+local function makeInputBox(parent, defaultText)
+    local box = Instance.new("TextBox")
+    box.Size             = UDim2_New(0, 60, 0, 24)
+    box.Position         = UDim2_New(1, -72, 0.5, -12)
+    box.BackgroundColor3 = FromRGB(30, 20, 55)
+    box.BorderSizePixel  = 0
+    box.Text             = defaultText
+    box.PlaceholderText  = defaultText
+    box.TextColor3       = FromRGB(200, 180, 255)
+    box.TextSize         = 13
+    box.Font             = Enum.Font.GothamBold
+    box.Parent           = parent
+    Instance.new("UICorner", box).CornerRadius = UDim_New(0, 6)
+    local s = Instance.new("UIStroke", box)
+    s.Color = FromRGB(100, 50, 180); s.Thickness = 1
+    return box
+end
+
+-- ── Row 1: Auto Fire — y=62 ───────────────────────────────────────────────────
+local rowAF = makeRow(62)
+makeLabel(rowAF, "Auto Fire")
+local trackAF, knobAF = makeToggle(rowAF, true)
+local btnAF = Instance.new("TextButton")
+btnAF.Size = UDim2_New(1,0,1,0); btnAF.BackgroundTransparency = 1
+btnAF.Text = ""; btnAF.Parent = rowAF
+btnAF.MouseButton1Click:Connect(function()
+    getgenv().auto_fire = not getgenv().auto_fire
+    local on = getgenv().auto_fire
+    TweenService:Create(trackAF, TI(0.15), {
+        BackgroundColor3 = on and FromRGB(140,70,240) or FromRGB(50,40,70)
+    }):Play()
+    TweenService:Create(knobAF, TI(0.15), {
+        Position = on and UDim2_New(1,-19,0.5,-8) or UDim2_New(0,3,0.5,-8)
+    }):Play()
+end)
+
+-- ── Row 2: Multiply Times — y=108 ────────────────────────────────────────────
+local rowMT = makeRow(108)
+makeLabel(rowMT, "Multiply Times")
+local boxMT = makeInputBox(rowMT, "10")
+boxMT.FocusLost:Connect(function()
+    local v = tonumber(boxMT.Text)
+    if v and v > 0 and v <= 100 then getgenv().multiplytimes = v end
+end)
+
+-- ── Row 3: Cooldown — y=154 ──────────────────────────────────────────────────
+local rowCD = makeRow(154)
+makeLabel(rowCD, "Cooldown")
+local boxCD = makeInputBox(rowCD, "0.05")
+boxCD.FocusLost:Connect(function()
+    local v = tonumber(boxCD.Text)
+    if v and v >= 0 then getgenv().gatlingcooldown = v end
+end)
+
+-- ── Row 4: Target Mode — y=200 ───────────────────────────────────────────────
+local rowTM = makeRow(200)
+makeLabel(rowTM, "Target Mode")
+local modeNames = { "Farthest", "First", "Strongest", "SmartAmmo" }
+local modeLbl = Instance.new("TextLabel")
+modeLbl.Size               = UDim2_New(0, 80, 1, 0)
+modeLbl.Position           = UDim2_New(1, -90, 0, 0)
+modeLbl.BackgroundTransparency = 1
+modeLbl.Text               = modeNames[getgenv().targetMode]
+modeLbl.TextColor3         = FromRGB(180, 140, 255)
+modeLbl.TextSize           = 12
+modeLbl.Font               = Enum.Font.GothamBold
+modeLbl.TextXAlignment     = Enum.TextXAlignment.Right
+modeLbl.Parent             = rowTM
+local btnTM = Instance.new("TextButton")
+btnTM.Size = UDim2_New(1,0,1,0); btnTM.BackgroundTransparency = 1
+btnTM.Text = ""; btnTM.Parent = rowTM
+btnTM.MouseButton1Click:Connect(function()
+    getgenv().targetMode = (getgenv().targetMode % 4) + 1
+    modeLbl.Text = modeNames[getgenv().targetMode]
+end)
+
+-- ── Row 5: Show Targets — y=246 ──────────────────────────────────────────────
+local rowST = makeRow(246)
+makeLabel(rowST, "Show Targets")
+local trackST, knobST = makeToggle(rowST, true)
+local btnST = Instance.new("TextButton")
+btnST.Size = UDim2_New(1,0,1,0); btnST.BackgroundTransparency = 1
+btnST.Text = ""; btnST.Parent = rowST
+btnST.MouseButton1Click:Connect(function()
+    getgenv().showChams = not getgenv().showChams
+    local on = getgenv().showChams
+    TweenService:Create(trackST, TI(0.15), {
+        BackgroundColor3 = on and FromRGB(120,60,220) or FromRGB(50,40,70)
+    }):Play()
+    TweenService:Create(knobST, TI(0.15), {
+        Position = on and UDim2_New(1,-19,0.5,-8) or UDim2_New(0,3,0.5,-8)
+    }):Play()
+end)
+
+-- ── Row 6: FPS Mode — y=292 (NEW) ────────────────────────────────────────────
+local rowFPS = makeRow(292)
+makeLabel(rowFPS, "FPS Mode")
+local trackFPS, knobFPS = makeToggle(rowFPS, false)
+local btnFPS = Instance.new("TextButton")
+btnFPS.Size = UDim2_New(1,0,1,0); btnFPS.BackgroundTransparency = 1
+btnFPS.Text = ""; btnFPS.Parent = rowFPS
+btnFPS.MouseButton1Click:Connect(function()
+    local newState = not getgenv().fps_mode
+    setFPSMode(newState)
+    TweenService:Create(trackFPS, TI(0.15), {
+        BackgroundColor3 = newState and FromRGB(140,70,240) or FromRGB(50,40,70)
+    }):Play()
+    TweenService:Create(knobFPS, TI(0.15), {
+        Position = newState and UDim2_New(1,-19,0.5,-8) or UDim2_New(0,3,0.5,-8)
+    }):Play()
+end)
+
+-- ── Sync button — y=338 (pushed down 38px) ───────────────────────────────────
+local syncBtn = Instance.new("TextButton")
+syncBtn.Size             = UDim2_New(1,-20,0,38)
+syncBtn.Position         = UDim2_New(0,10,0,338)
+syncBtn.BackgroundColor3 = FromRGB(100,45,200)
+syncBtn.BorderSizePixel  = 0
+syncBtn.Text             = "Sync All Gatling Guns"
+syncBtn.TextColor3       = FromRGB(255,255,255)
+syncBtn.TextSize         = 13
+syncBtn.Font             = Enum.Font.GothamBold
+syncBtn.Parent           = Frame
+Instance.new("UICorner", syncBtn).CornerRadius = UDim_New(0, 8)
+local syncGrad = Instance.new("UIGradient", syncBtn)
+syncGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, FromRGB(120,50,220)),
+    ColorSequenceKeypoint.new(1, FromRGB(180,90,255)),
+}
+syncGrad.Rotation = 90
+syncBtn.MouseButton1Click:Connect(function()
+    setFPSMode(true)   -- sync button also activates FPS mode
+    -- visual feedback on FPS toggle too
+    TweenService:Create(trackFPS, TI(0.15), {
+        BackgroundColor3 = FromRGB(140,70,240)
+    }):Play()
+    TweenService:Create(knobFPS, TI(0.15), {
+        Position = UDim2_New(1,-19,0.5,-8)
+    }):Play()
+    syncBtn.Text = "Synced!"
+    task.wait(1.2)
+    syncBtn.Text = "Sync All Gatling Guns"
+end)
+syncBtn.MouseEnter:Connect(function()
+    TweenService:Create(syncBtn, TI(0.15), { BackgroundColor3 = FromRGB(140,60,245) }):Play()
+end)
+syncBtn.MouseLeave:Connect(function()
+    TweenService:Create(syncBtn, TI(0.15), { BackgroundColor3 = FromRGB(100,45,200) }):Play()
+end)
+
+-- ── Footer — y=386 (pushed down 38px) ────────────────────────────────────────
+local footerLbl = Instance.new("TextLabel")
+footerLbl.Size               = UDim2_New(1,-20,0,24)
+footerLbl.Position           = UDim2_New(0,10,0,386)
+footerLbl.BackgroundTransparency = 1
+footerLbl.Text               = "TokaiHub — Gatling Module"
+footerLbl.TextColor3         = FromRGB(160,100,255)
+footerLbl.TextSize           = 11
+footerLbl.Font               = Enum.Font.Gotham
+footerLbl.TextXAlignment     = Enum.TextXAlignment.Left
+footerLbl.Parent             = Frame
+
+task.spawn(function()
+    task.wait(0.05)
+    TweenService:Create(FrameScale,  TI(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+    TweenService:Create(BorderScale, TI(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+end)
+
+pcall(function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title    = "TokaiHub Loaded",
+        Text     = "FPS toggle active. Stale purge: ON.",
+        Duration = 5,
+    })
+end)
+
+print("[TokaiHub] Gatling loaded. FPS toggle: wired. Stale purge: ON.")

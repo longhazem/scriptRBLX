@@ -1,342 +1,105 @@
--- ==========================================
--- TOKAI HUB — MOON STRUCTURE, OBSIDIAN UI
--- Full executor support + Auto Reload
--- PC:  Delta / Synapse Z / Wave / Volt / Potassium
---      Codex / OpiumWare / Xeno / Solar
--- Mobile: Arceus X / Fluxus / Hydrogen
--- ==========================================
+local Repository = "https://raw.githubusercontent.com/mmr1337/Obsidian/main/"
 
--- ==========================================
--- OBSIDIAN LOADER — FULL EXECUTOR SUPPORT
--- Volt / Potassium / Synapse Z / Wave / Delta
--- Codex / OpiumWare / Xeno / Solar / Electron
--- Arceus X / Fluxus / Hydrogen / Delta Mobile
--- ==========================================
-
--- Multi-executor HTTP fetch: tries every known method in order
--- Normalize response table from any executor into a plain string body
-local function _extractBody(res)
-	if type(res) == "string" then return res end
-	if type(res) ~= "table" then return nil end
-	local body = res.Body or res.body or res[1]
-	if type(body) ~= "string" then return nil end
-	-- Reject empty or error-only bodies
-	if #body < 10 then return nil end
-	-- Reject if executor returned an HTTP error status (Solara sometimes does this silently)
-	local status = res.StatusCode or res.statusCode or res.status or 200
-	if type(status) == "number" and status >= 400 then return nil end
-	return body
-end
-
--- Retry wrapper: Xeno drops first request ~30% of the time on cold start
-local function _tryFetch(fn, attempts)
-	attempts = attempts or 2
-	for i = 1, attempts do
-		local ok, res = pcall(fn)
-		if ok then
-			local body = _extractBody(res)
-			if body and #body > 200 then return body end
-		end
-		if i < attempts then task.wait(0.3) end
-	end
-	return nil
-end
-
-local function FetchUrl(url)
-	local r
-
-	-- 1. Standard HttpGet with trust flag (Delta, Synapse Z, Wave, Codex)
-	r = _tryFetch(function() return game:HttpGet(url, true) end)
-	if r then return r end
-
-	-- 2. HttpGet without flag (Volt, older Potassium)
-	r = _tryFetch(function() return game:HttpGet(url) end)
-	if r then return r end
-
-	-- 3. HttpGetAsync (older Synapse, OpiumWare)
-	r = _tryFetch(function() return game:HttpGetAsync(url) end)
-	if r then return r end
-
-	-- 4. syn.request (Fluxus, Arceus X, Hydrogen mobile)
-	if syn and syn.request then
-		r = _tryFetch(function()
-			return syn.request({ Url = url, Method = "GET", Headers = { ["User-Agent"] = "TokaiHub/1.0" } })
+local function GetLoadstringSource(Url)
+	local Result = game:HttpGet(Url)
+	if typeof(Result) == "Instance" then
+		local Ok, Source = pcall(function()
+			return Result.Source
 		end)
-		if r then return r end
-	end
-
-	-- 5. http.request (some mobile executors)
-	if http and http.request then
-		r = _tryFetch(function()
-			return http.request({ Url = url, Method = "GET" })
-		end)
-		if r then return r end
-	end
-
-	-- 6. request() global — Xeno primary path
-	--    Retried twice: Xeno cold-start drops ~30% of first requests silently
-	if request then
-		r = _tryFetch(function()
-			return request({
-				Url    = url,
-				Method = "GET",
-				Headers = { ["Cache-Control"] = "no-cache" },
-			})
-		end, 3)
-		if r then return r end
-	end
-
-	-- 7. http_request — Solara primary path
-	--    Solara: status 0 = network not ready, retry once after 0.5s
-	if http_request then
-		r = _tryFetch(function()
-			local res = http_request({
-				Url     = url,
-				Method  = "GET",
-				Headers = { ["Cache-Control"] = "no-cache" },
-			})
-			-- Solara sometimes wraps body in res.response instead of res.Body
-			if type(res) == "table" then
-				res.Body = res.Body or res.body or res.response or res.content
-			end
-			return res
-		end, 3)
-		if r then return r end
-	end
-
-	-- 8. Solara alternate: fetchget global (some builds expose this separately)
-	if fetchget then
-		r = _tryFetch(function() return fetchget(url) end)
-		if r then return r end
-	end
-
-	-- 9. SolaraHttpGet fallback
-	if SolaraHttpGet then
-		r = _tryFetch(function() return SolaraHttpGet(url) end)
-		if r then return r end
-	end
-
-	return nil
-end
-
--- Visible screen notification — defined early, needed before Library loads
-local function _ScreenNotify(msg, color)
-	pcall(function()
-		local Players = game:GetService("Players")
-		local player = Players.LocalPlayer
-		local pGui = player:FindFirstChildOfClass("PlayerGui")
-			or player:WaitForChild("PlayerGui", 8)
-		if not pGui then return end
-		-- Remove old notification if present
-		local old = pGui:FindFirstChild("TokaiNotify")
-		if old then old:Destroy() end
-		local sg  = Instance.new("ScreenGui")
-		sg.Name           = "TokaiNotify"
-		sg.ResetOnSpawn   = false
-		sg.DisplayOrder   = 999
-		sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-		local fr = Instance.new("Frame", sg)
-		fr.Size              = UDim2.new(0, 360, 0, 64)
-		fr.Position          = UDim2.new(0.5, -180, 0, 14)
-		fr.BackgroundColor3  = Color3.fromRGB(14, 14, 18)
-		fr.BorderSizePixel   = 0
-		Instance.new("UICorner", fr).CornerRadius = UDim.new(0, 10)
-		local stroke = Instance.new("UIStroke", fr)
-		stroke.Color     = color or Color3.fromRGB(255, 80, 80)
-		stroke.Thickness = 1.5
-		local lbl = Instance.new("TextLabel", fr)
-		lbl.Size               = UDim2.new(1, -16, 1, 0)
-		lbl.Position           = UDim2.new(0, 10, 0, 0)
-		lbl.BackgroundTransparency = 1
-		lbl.TextColor3         = Color3.fromRGB(235, 235, 245)
-		lbl.Font               = Enum.Font.GothamBold
-		lbl.TextSize           = 13
-		lbl.TextXAlignment     = Enum.TextXAlignment.Left
-		lbl.TextWrapped        = true
-		lbl.Text               = msg
-		sg.Parent = pGui
-		game:GetService("Debris"):AddItem(sg, 10)
-	end)
-end
-
--- Safe loadstring with executor fallback chain
--- Xeno/Solara sometimes sandbox global loadstring — try alternates
-local function SafeLoadstring(source, chunkName)
-	if not source or #source < 10 then
-		return nil, "empty source"
-	end
-
-	-- Try executor-specific loadstring variants first
-	local loadFn = loadstring
-		or (syn and syn.loadstring)
-		or (get_env and get_env(0) and get_env(0).loadstring)
-
-	if not loadFn then
-		_ScreenNotify("⛔ Tokai Hub: executor blocked loadstring. Try a different executor.", Color3.fromRGB(255, 80, 80))
-		return nil, "no loadstring available"
-	end
-
-	local ok, result = pcall(loadFn, source, chunkName or "TokaiHub")
-	if not ok then
-		return nil, tostring(result)
-	end
-	if type(result) ~= "function" then
-		return nil, "loadstring returned " .. type(result)
-	end
-	local ok2, val = pcall(result)
-	if not ok2 then
-		return nil, tostring(val)
-	end
-	return val, nil
-end
-
--- Patch Obsidian source for executor compat
--- Prevents crash on invalid property assignments (NumSides etc.)
-local function PatchObsidianSource(source)
-	-- Guard property assignments that not all executors support
-	source = source:gsub(
-		"Instance%[key%] = value",
-		[[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]]
-	)
-	return source
-end
-
--- Primary repo: mmr1337 fork (Obsidian UI layer)
--- Fallback repo: deividcomsono original
-local Repos = {
-	"https://raw.githubusercontent.com/mmr1337/Obsidian/main/",
-	"https://raw.githubusercontent.com/deividcomsono/Obsidian/main/",
-}
-
-local function LoadObsidianFile(filename)
-	for _, repo in ipairs(Repos) do
-		local url    = repo .. filename
-		local source = FetchUrl(url)
-		if source then
-			if filename:find("Library%.lua") then
-				source = PatchObsidianSource(source)
-			end
-			local result, err = SafeLoadstring(source, filename)
-			if result ~= nil then
-				return result
-			end
-			local errMsg = "[Tokai Hub] loadstring fail: " .. tostring(err)
-			warn(errMsg)
-			_ScreenNotify("⚠ Tokai Hub: " .. tostring(err):sub(1, 80), Color3.fromRGB(255, 160, 0))
+		if Ok and typeof(Source) == "string" then
+			Result = Source
+		else
+			error("HttpGet returned an Instance instead of source text for: " .. tostring(Url), 2)
 		end
 	end
-	return nil
+	if typeof(Result) ~= "string" then
+		error("HttpGet returned " .. typeof(Result) .. " instead of source text for: " .. tostring(Url), 2)
+	end
+	return Result
 end
 
--- Load Library with retry — Xeno/Solara cold-start sometimes needs a second pass
-local Library, ThemeManager, SaveManager
-do
-	local attempts = 3
-	for i = 1, attempts do
-		Library = LoadObsidianFile("Library.lua")
-		if Library then break end
-		if i < attempts then
-			warn("[Tokai Hub] Library load attempt " .. i .. " failed, retrying in 1.5s...")
-			task.wait(1.5)
-		end
-	end
-	ThemeManager = LoadObsidianFile("addons/ThemeManager.lua")
-	SaveManager  = LoadObsidianFile("addons/SaveManager.lua")
+local function PatchObsidianSource(Source)
+	-- Studio/executor compatibility: some environments inject/forward invalid GUI properties
+	-- such as NumSides into Obsidian's generic New() creator. Ignore invalid property
+	-- assignments instead of crashing during CreateWindow.
+	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
+	return Source
 end
 
--- Headless fallback: if Library failed, stub everything so logic still runs
-if not Library then
-	_ScreenNotify("⚠ Tokai Hub: UI library failed to load. Retrying...", Color3.fromRGB(255, 180, 0))
-	warn("[Tokai Hub] Obsidian Library failed to load — running headless. Logic still active.")
-	local function _noop() return {} end
-	local function _stubSection()
-		return {
-			AddToggle     = _noop, AddSlider     = _noop,
-			AddDropdown   = _noop, AddColorPicker = _noop,
-			AddKeybind    = _noop, AddButton     = _noop,
-			AddLabel      = _noop,
-		}
+local function LoadRemote(Url)
+	local Source = GetLoadstringSource(Url)
+	if string.find(Url, "Obsidian/main/Library.lua", 1, true) then
+		Source = PatchObsidianSource(Source)
 	end
-	local function _stubTab()
-		return {
-			DrawSection = function() return _stubSection() end,
-		}
+	local Chunk, LoadError = loadstring(Source)
+	if not Chunk then
+		error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(LoadError), 2)
 	end
-	Library = {
-		CreateWindow  = function() return {
-			DrawTab    = function() return _stubTab() end,
-			DrawConfig = function() return { Init = function() end } end,
-		} end,
-		Options  = {}, Toggles = {},
-		Notify   = function() end,
-		Unload   = function() end,
-		KeybindFrame = nil,
-		ShowCustomCursor = false,
-		ToggleKeybind    = nil,
-		CornerRadius     = 8,
-		ForceCheckbox    = false,
-		ShowToggleFrameInKeybinds = true,
-	}
-	ThemeManager = { SetLibrary=function()end, SetFolder=function()end, AddThemeOptions=function()end }
-	SaveManager  = {
-		SetLibrary=function()end, SetFolder=function()end,
-		IgnoreThemeSettings=function()end, SetIgnoreIndexes=function()end,
-		SetSubFolder=function()end, BuildConfigSection=function()end,
-		AddThemeOptions=function()end, LoadAutoloadConfig=function()end,
-	}
+	return Chunk()
 end
 
-Library.ForceCheckbox             = false
+local Library = LoadRemote(Repository .. "Library.lua")
+local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
+local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
+
+Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
-Library.CornerRadius              = Library.CornerRadius or 8
+Library.CornerRadius = Library.CornerRadius or 8
 
 local Options = Library.Options
 local Toggles = Library.Toggles
 
--- TokaiUI compatibility shim — keeps existing tab/section code working unchanged
-local TokaiUI = {
-	Scale  = { Window = 1 },
+local MoonUI = {
+	Scale = { Window = 1 },
 	Colors = {
-		Highlight  = Color3.fromRGB(88, 101, 242),
-		Toggle     = Color3.fromRGB(88, 101, 242),
-		Risky      = Color3.fromRGB(255, 80, 80),
-		BGDBColor  = Color3.fromRGB(20, 20, 24),
+		Highlight = Color3.fromRGB(88, 101, 242),
+		Toggle = Color3.fromRGB(88, 101, 242),
+		Risky = Color3.fromRGB(255, 80, 80),
+		BGDBColor = Color3.fromRGB(20, 20, 24),
 		BlockColor = Color3.fromRGB(28, 28, 34),
-		StrokeColor= Color3.fromRGB(60, 60, 70),
-		SwitchColor= Color3.fromRGB(235, 235, 245),
-		LineColor  = Color3.fromRGB(80, 80, 90),
-		DropColor  = Color3.fromRGB(32, 32, 38),
+		StrokeColor = Color3.fromRGB(60, 60, 70),
+		SwitchColor = Color3.fromRGB(235, 235, 245),
+		LineColor = Color3.fromRGB(80, 80, 90),
+		DropColor = Color3.fromRGB(32, 32, 38),
 	},
 }
 
-function TokaiUI:SetTheme() end
-function TokaiUI:RefreshCurrentColor() end
-function TokaiUI:ConfigManager(Data) return Data or {} end
+function MoonUI:SetTheme() end
+function MoonUI:RefreshCurrentColor() end
+function MoonUI:ConfigManager(Data)
+	return Data or {}
+end
 
-function TokaiUI.newNotify()
+function MoonUI.newNotify()
 	return {
 		new = function(Data)
-			pcall(function()
-				Library:Notify({
-					Title       = (Data and Data.Title)   or "Tokai Hub",
-					Description = (Data and (Data.Content or Data.Description)) or "",
-					Icon        = (Data and Data.Icon)    or "info",
-					Time        = (Data and Data.Duration) or 5,
-				})
-			end)
+			Library:Notify({
+				Title = (Data and Data.Title) or "Moon",
+				Description = (Data and (Data.Content or Data.Description)) or "",
+				Icon = (Data and Data.Icon) or "info",
+				Time = (Data and Data.Duration) or 5,
+			})
 		end,
 	}
 end
 
 local function NormalizeUIString(Value, Fallback)
-	if typeof(Value) == "EnumItem" then return Value.Name end
-	if Value == nil then return Fallback end
+	if typeof(Value) == "EnumItem" then
+		return Value.Name
+	end
+	if Value == nil then
+		return Fallback
+	end
 	return tostring(Value)
 end
 
 local function NormalizeKey(Value, Fallback)
-	if typeof(Value) == "EnumItem" then return Value.Name end
-	if Value == nil then return Fallback or "None" end
+	if typeof(Value) == "EnumItem" then
+		return Value.Name
+	end
+	if Value == nil then
+		return Fallback or "None"
+	end
 	return tostring(Value)
 end
 
@@ -344,126 +107,80 @@ local function WrapSection(Groupbox)
 	local Section = {}
 
 	function Section:AddToggle(Data)
-		local Flag   = NormalizeUIString(Data.Flag or Data.Name, "Toggle")
-		local ok, Toggle = pcall(function()
-			return Groupbox:AddToggle(Flag, {
-				Text    = NormalizeUIString(Data.Name or Flag, Flag),
-				Default = Data.Default or false,
-				Tooltip = Data.Tooltip,
-			})
-		end)
-		if ok and Toggle then
-			if Data.Callback then pcall(function() Toggle:OnChanged(Data.Callback) end) end
-			return {
-				Instance = Toggle,
-				SetValue = function(_, v) pcall(function() Toggle:SetValue(v) end) end,
-				GetValue = function(_) local ok2, v = pcall(function() return Toggle.Value end); return ok2 and v or false end,
-				Link = {
-					AddKeybind = function(_, KeyData)
-						local KeyFlag = NormalizeUIString(KeyData.Flag or KeyData.Name or (Flag.."_Key"), Flag.."_Key")
-						pcall(function()
-							Toggle:AddKeyPicker(KeyFlag, {
-								Default          = NormalizeKey(KeyData.Default, "None"),
-								Text             = NormalizeUIString(KeyData.Name or "Keybind", "Keybind"),
-								Mode             = NormalizeUIString(KeyData.Mode or "Toggle", "Toggle"),
-								NoUI             = KeyData.NoUI or false,
-								SyncToggleState  = KeyData.SyncToggleState or false,
-							})
-							if KeyData.Callback and Options[KeyFlag] then
-								Options[KeyFlag]:OnChanged(KeyData.Callback)
-							end
-						end)
-						return Options[KeyFlag]
-					end,
-				},
-			}
-		end
-		-- Stub fallback so callers don't nil-index
-		return { Instance=nil, SetValue=function()end, GetValue=function() return false end, Link={ AddKeybind=function() return nil end } }
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Toggle")
+		local Toggle = Groupbox:AddToggle(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or false, Tooltip = Data.Tooltip })
+		if Data.Callback then Toggle:OnChanged(Data.Callback) end
+		return {
+			Instance = Toggle,
+			Link = {
+				AddKeybind = function(_, KeyData)
+					local KeyFlag = NormalizeUIString(KeyData.Flag or KeyData.Name or (Flag .. "_Key"), Flag .. "_Key")
+					Toggle:AddKeyPicker(KeyFlag, {
+						Default = NormalizeKey(KeyData.Default, "None"),
+						Text = NormalizeUIString(KeyData.Name or "Keybind", "Keybind"),
+						Mode = NormalizeUIString(KeyData.Mode or "Toggle", "Toggle"),
+						NoUI = KeyData.NoUI or false,
+						SyncToggleState = KeyData.SyncToggleState or false,
+					})
+					if KeyData.Callback and Options[KeyFlag] then
+						Options[KeyFlag]:OnChanged(KeyData.Callback)
+					end
+					return Options[KeyFlag]
+				end,
+			},
+		}
 	end
 
 	function Section:AddSlider(Data)
 		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Slider")
-		local ok, Slider = pcall(function()
-			return Groupbox:AddSlider(Flag, {
-				Text    = NormalizeUIString(Data.Name or Flag, Flag),
-				Default = Data.Default or Data.Min or 0,
-				Min     = Data.Min or 0,
-				Max     = Data.Max or 100,
-				Rounding= Data.Rounding or 0,
-				Suffix  = Data.Suffix,
-				Compact = Data.Compact or false,
-			})
-		end)
-		if ok and Slider then
-			if Data.Callback then pcall(function() Slider:OnChanged(Data.Callback) end) end
-			return Slider
-		end
-		return nil
+		local Slider = Groupbox:AddSlider(Flag, {
+			Text = NormalizeUIString(Data.Name or Flag, Flag),
+			Default = Data.Default or Data.Min or 0,
+			Min = Data.Min or 0,
+			Max = Data.Max or 100,
+			Rounding = Data.Rounding or 0,
+			Suffix = Data.Suffix,
+			Compact = Data.Compact or false,
+		})
+		if Data.Callback then Slider:OnChanged(Data.Callback) end
+		return Slider
 	end
 
 	function Section:AddDropdown(Data)
 		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Dropdown")
-		local ok, Dropdown = pcall(function()
-			return Groupbox:AddDropdown(Flag, {
-				Text    = NormalizeUIString(Data.Name or Flag, Flag),
-				Values  = Data.Values or {},
-				Default = Data.Default,
-				Multi   = Data.Multi or false,
-				Tooltip = Data.Tooltip,
-			})
-		end)
-		if ok and Dropdown then
-			if Data.Callback then pcall(function() Dropdown:OnChanged(Data.Callback) end) end
-			return Dropdown
-		end
-		return nil
+		local Dropdown = Groupbox:AddDropdown(Flag, {
+			Text = NormalizeUIString(Data.Name or Flag, Flag),
+			Values = Data.Values or {},
+			Default = Data.Default,
+			Multi = Data.Multi or false,
+			Tooltip = Data.Tooltip,
+		})
+		if Data.Callback then Dropdown:OnChanged(Data.Callback) end
+		return Dropdown
 	end
 
 	function Section:AddColorPicker(Data)
 		local Flag = NormalizeUIString(Data.Flag or Data.Name, "ColorPicker")
-		pcall(function()
-			local Toggle = Groupbox:AddToggle(Flag.."_ColorToggle", {
-				Text    = NormalizeUIString(Data.Name or Flag, Flag),
-				Default = false,
-			})
-			Toggle:AddColorPicker(Flag, {
-				Default = Data.Default or Color3.new(1, 1, 1),
-				Title   = NormalizeUIString(Data.Name or Flag, Flag),
-			})
-			if Data.Callback and Options[Flag] then
-				Options[Flag]:OnChanged(Data.Callback)
-			end
-		end)
+		local Toggle = Groupbox:AddToggle(Flag .. "_ColorToggle", { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = false })
+		Toggle:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1, 1, 1), Title = NormalizeUIString(Data.Name or Flag, Flag) })
+		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
 		return Options[Flag]
 	end
 
 	function Section:AddKeybind(Data)
 		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Keybind")
-		pcall(function()
-			local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
-			Label:AddKeyPicker(Flag, {
-				Default = NormalizeKey(Data.Default, "None"),
-				Text    = NormalizeUIString(Data.Name or Flag, Flag),
-				NoUI    = Data.NoUI or false,
-				Mode    = NormalizeUIString(Data.Mode or "Toggle", "Toggle"),
-			})
-			if Data.Callback and Options[Flag] then
-				Options[Flag]:OnChanged(Data.Callback)
-			end
-		end)
+		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
+		Label:AddKeyPicker(Flag, { Default = NormalizeKey(Data.Default, "None"), Text = NormalizeUIString(Data.Name or Flag, Flag), NoUI = Data.NoUI or false, Mode = NormalizeUIString(Data.Mode or "Toggle", "Toggle") })
+		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
 		return Options[Flag]
 	end
 
 	function Section:AddButton(Data)
-		local ok, btn = pcall(function()
-			return Groupbox:AddButton({
-				Text    = Data.Name or Data.Text or "Button",
-				Func    = Data.Callback or Data.Func or function() end,
-				Tooltip = Data.Tooltip,
-			})
-		end)
-		return ok and btn or nil
+		return Groupbox:AddButton({
+			Text = Data.Name or Data.Text or "Button",
+			Func = Data.Callback or Data.Func or function() end,
+			Tooltip = Data.Tooltip,
+		})
 	end
 
 	return Section
@@ -472,217 +189,66 @@ end
 local function WrapTab(Tab)
 	return {
 		DrawSection = function(_, Data)
-			local Name     = Data.Name or "Section"
+			local Name = Data.Name or "Section"
 			local Position = string.lower(Data.Position or "left")
-			local ok, gb   = pcall(function()
-				if Position == "right" then
-					return Tab:AddRightGroupbox(Name)
-				else
-					return Tab:AddLeftGroupbox(Name)
-				end
-			end)
-			if ok and gb then return WrapSection(gb) end
-			-- Stub so callers don't crash
-			local s = {}
-			s.AddToggle=function() return {Instance=nil,SetValue=function()end,GetValue=function()return false end,Link={AddKeybind=function()return nil end}} end
-			s.AddSlider=function() return nil end
-			s.AddDropdown=function() return nil end
-			s.AddColorPicker=function() return nil end
-			s.AddKeybind=function() return nil end
-			s.AddButton=function() return nil end
-			return s
+			if Position == "right" then
+				return WrapSection(Tab:AddRightGroupbox(Name))
+			else
+				return WrapSection(Tab:AddLeftGroupbox(Name))
+			end
 		end,
 	}
 end
 
-local _ConfigManager = TokaiUI:ConfigManager({})
-
-function TokaiUI.new(Data)
-	local ok, Window = pcall(function()
-		return Library:CreateWindow({
-			Title            = "Tokai Hub",
-			Footer           = "BRM5 Edition",
-			Icon             = 0,
-			Center           = true,
-			AutoShow         = true,
-			Resizable        = true,
-			NotifySide       = "Right",
-			ShowCustomCursor = false,
-		})
-	end)
-	if not ok or not Window then
-		warn("[Tokai Hub] CreateWindow failed — UI disabled, logic running.")
-		local stubTab = WrapTab({
-			AddLeftGroupbox  = function() return {} end,
-			AddRightGroupbox = function() return {} end,
-		})
-		return {
-			Raw = nil,
-			DrawTab    = function() return stubTab end,
-			DrawConfig = function() return { Init=function() end } end,
-			SetMenuKey = function() end,
-			Unload     = function() end,
-		}
-	end
-
+function MoonUI.new(Data)
+	local Window = Library:CreateWindow({ Title = "Moon", Footer = "discord.gg/6zSx7gUeMQ", Icon = 124218764552179, Center = true, AutoShow = true, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
 	local SettingsTab
-	return {
+	local Wrapped = {
 		Raw = Window,
 		DrawTab = function(_, TabData)
 			local Name = TabData.Name or "Tab"
-			local ok2, Tab = pcall(function()
-				return Window:AddTab(Name, TabData.Icon, Name)
-			end)
-			if ok2 and Tab then
-				if Name == "Settings" or Name == "System" then SettingsTab = Tab end
-				return WrapTab(Tab)
+			local Tab = Window:AddTab(Name, TabData.Icon, Name)
+			if Name == "Settings" or Name == "System" then
+				SettingsTab = Tab
 			end
-			return WrapTab({ AddLeftGroupbox=function() return {} end, AddRightGroupbox=function() return {} end })
+			return WrapTab(Tab)
 		end,
 		DrawConfig = function(_, ConfigData)
-			SettingsTab = SettingsTab or (function()
-				local ok3, t = pcall(function() return Window:AddTab("Settings","settings","UI settings") end)
-				return ok3 and t or nil
-			end)()
-			pcall(function() ThemeManager:SetLibrary(Library) end)
-			pcall(function() SaveManager:SetLibrary(Library) end)
-			pcall(function() SaveManager:IgnoreThemeSettings() end)
-			pcall(function() SaveManager:SetIgnoreIndexes({"MenuKeybind"}) end)
-			pcall(function() ThemeManager:SetFolder("TokaiHub") end)
-			pcall(function() SaveManager:SetFolder("TokaiHub/saves") end)
+			SettingsTab = SettingsTab or Window:AddTab("Settings", "settings", "UI settings and configurations")
+			ThemeManager:SetLibrary(Library)
+			SaveManager:SetLibrary(Library)
+			SaveManager:IgnoreThemeSettings()
+			SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+			ThemeManager:SetFolder("Moon")
+			SaveManager:SetFolder("Moon/specific-game")
 			if SaveManager.SetSubFolder then
-				pcall(function() SaveManager:SetSubFolder(tostring(game.PlaceId)) end)
+				SaveManager:SetSubFolder("specific-place")
 			end
-			if SettingsTab then
-				pcall(function() SaveManager:BuildConfigSection(SettingsTab) end)
-				pcall(function() ThemeManager:AddThemeOptions(SettingsTab) end)
-			end
-			pcall(function() SaveManager:LoadAutoloadConfig() end)
+			SaveManager:BuildConfigSection(SettingsTab)
+			ThemeManager:AddThemeOptions(SettingsTab)
+			SaveManager:LoadAutoloadConfig()
 			return { Init = function() end }
 		end,
 		SetMenuKey = function(_, Key)
-			pcall(function() Library.ToggleKeybind = Options.MenuKeybind end)
+			Library.ToggleKeybind = Options.MenuKeybind
 		end,
 		Unload = function()
-			pcall(function() Library:Unload() end)
+			Library:Unload()
 		end,
 	}
+	return Wrapped
 end
-
 -- Cleanup previous instances (Singleton)
 local scriptId = tick()
-getgenv().Tokai_ScriptId = scriptId
+getgenv().Moon_ScriptId = scriptId
 
-if getgenv().Tokai_Connections then
-	for _, conn in pairs(getgenv().Tokai_Connections) do
+if getgenv().Moon_Connections then
+	for _, conn in pairs(getgenv().Moon_Connections) do
 		if conn then pcall(function() conn:Disconnect() end) end
 	end
 end
-getgenv().Tokai_Connections = {}
+getgenv().Moon_Connections = {}
 
-
--- ==========================================
--- EXECUTOR COMPATIBILITY LAYER
--- PC:     Delta / Synapse Z / Wave / Volt / Potassium
---         Codex / OpiumWare / Xeno / Solar / Electron
--- Mobile: Arceus X / Fluxus / Hydrogen / Delta Mobile
--- ==========================================
-
--- getgc: Volt/Solar may not expose it directly
-if not getgc then
-	if debug and debug.getregistry then
-		getgc = function(inc)
-			local ok, reg = pcall(function() return debug.getregistry() end)
-			if not ok or type(reg) ~= "table" then return {} end
-			local out = {}
-			for _, v in pairs(reg) do
-				if inc or type(v) == "function" then out[#out+1] = v end
-			end
-			return out
-		end
-	else
-		getgc = function() return {} end
-	end
-end
-
--- filtergc: shim for executors that only have getgc
-if not filtergc then
-	filtergc = function(typeFilter)
-		local ok, gc = pcall(function() return getgc(true) end)
-		if not ok or type(gc) ~= "table" then
-			ok, gc = pcall(function() return getgc() end)
-		end
-		if not ok or type(gc) ~= "table" then return {} end
-		if not typeFilter then return gc end
-		local r = {}
-		for _, v in pairs(gc) do if type(v) == typeFilter then r[#r+1] = v end end
-		return r
-	end
-end
-
--- newcclosure: Codex/Volt/Solar may not have it
-if not newcclosure then newcclosure = function(f) return f end end
-
--- setreadonly: Wave/Volt/Codex/mobile often skip it
-if not setreadonly then setreadonly = function() end end
-
--- make_writeable: OpiumWare/Codex alternative
-if not make_writeable then
-	make_writeable = function(t) if setreadonly then pcall(setreadonly, t, false) end end
-end
-
--- getrawmetatable: guard for edge-case executors
-if not getrawmetatable then
-	getrawmetatable = function(o)
-		return (debug and debug.getmetatable and debug.getmetatable(o)) or getmetatable(o)
-	end
-end
-
--- gethui: Delta/Synapse Z/Xeno have it; mobile often doesn't
-if not gethui then
-	gethui = function()
-		local ok, r = pcall(function() return game:GetService("CoreGui") end)
-		return ok and r or nil
-	end
-end
-
--- syn.protect_gui: Synapse Z only
-if not syn then syn = {} end
-if not syn.protect_gui then syn.protect_gui = function() end end
-
--- task: Codex/older mobile use coroutine/spawn
-if not task then
-	local _unpack = table.unpack or unpack
-	task = {
-		wait  = function(t) return wait(t or 0) end,
-		spawn = function(f, ...) local a={...}; return spawn(function() f(_unpack(a)) end) end,
-		defer = function(f, ...) local a={...}; return spawn(function() wait() f(_unpack(a)) end) end,
-	}
-end
-
--- getgenv: Hydrogen/Fluxus mobile may not expose it
-if not getgenv then local _e={}; getgenv = function() return _e end end
-
--- Drawing API guard
-if not Drawing or not Drawing.new then
-	local function _nd()
-		return {Visible=false,Color=Color3.new(1,1,1),Thickness=1,Transparency=1,
-			Filled=false,ZIndex=1,From=Vector2.new(),To=Vector2.new(),
-			Position=Vector2.new(),Size=Vector2.new(),Text="",Font=2,
-			Center=false,Outline=false,Radius=1,NumSides=4,Remove=function()end}
-	end
-	Drawing = { new = function() return _nd() end }
-end
-
--- Mobile detection (guarded)
-do
-	local ok, uis = pcall(function() return game:GetService("UserInputService") end)
-	getgenv()._IsMobile = ok and uis and uis.TouchEnabled or false
-end
-
--- ==========================================
--- END COMPATIBILITY LAYER
--- ==========================================
 -- Localize Globals and Methods for Performance
 local Vector3_new = Vector3.new
 local Vector2_new = Vector2.new
@@ -848,6 +414,7 @@ local Config = {
 	-- Silent Aim
 	SilentAim = false,
 	SilentAimFOV = 100,
+	SilentAimFOVLocked = false,
 	SilentAimHitChance = 100,
 	SilentAimTargetPart = "Head",
 
@@ -863,8 +430,7 @@ local Config = {
 	BulletDrop = false,
 	ShowPrediction = false,
 	PredictionColor = Color3.fromRGB(255, 0, 0),
-	HitboxExpander = false,
-	HitboxSize = 4,
+
 	SmartTargetSwitch = false, -- Auto-switch to next target when current will die
 
 	-- Character Movement
@@ -883,6 +449,8 @@ local Config = {
 	NoFog = false,
 	ThermalVision = false,
 	NightVision = false,
+	ClearNVGInterface = false,
+	FullBright = false,
 
 	-- Colors
 	BoxColor = nil, -- Default to Entity Color
@@ -926,10 +494,7 @@ local Config = {
 	VehicleFly_Speed = 100,
 	VehicleFly_ToggleKey = Enum.KeyCode.X,
 	VehicleFly_UpKey = Enum.KeyCode.E,
-	VehicleFly_DownKey = Enum.KeyCode.Q,
-	-- Auto Reload
-	AutoReload           = false,
-	AutoReload_Threshold = 1,
+	VehicleFly_DownKey = Enum.KeyCode.Q
 }
 
 -- ==========================================
@@ -2201,7 +1766,7 @@ function EnableSpeedController()
 		actor.SpeedPenalty = multiplier
 	end)
 
-	table.insert(getgenv().Tokai_Connections, SpeedControllerConnection)
+	table.insert(getgenv().Moon_Connections, SpeedControllerConnection)
 	-- print removed
 end
 
@@ -2677,7 +2242,7 @@ local function UpdateCombat(frameId)
 			WeaponManager.Connection = InterfaceStateChanged:Connect(function()
 				WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
 			end)
-			table.insert(getgenv().Tokai_Connections, WeaponManager.Connection)
+			table.insert(getgenv().Moon_Connections, WeaponManager.Connection)
 		end
 		-- Initial Sync
 		WeaponManager.Equipped = InventoryService.Equipped and InventoryService.Equipped.Handler
@@ -3085,6 +2650,27 @@ local function ShouldShowEntity(actor, entityType, cachedLocalSquad)
 
 	-- User filter settings
 	if entityType == "Player" then
+		-- PVP map fix (2v2 / 5v5): Roblox assigns Teams in PVP lobbies.
+		-- IsTeammate uses Team equality, which causes enemies on the OPPOSITE
+		-- team to still be hidden because the squad check falls through.
+		-- Explicit enemy-team check: if actor's team differs from local team,
+		-- they are always an enemy — never filter them regardless of squad.
+		local mapType = Config.CurrentMapType
+		if mapType == "PVP" then
+			local ownerPlayer = actor.Owner and Players:GetPlayerByUserId(actor.Owner.UserId)
+			if ownerPlayer and ownerPlayer ~= LocalPlayer then
+				-- Different team = confirmed enemy, always show if ShowPlayers is on
+				if ownerPlayer.Team and LocalPlayer.Team and ownerPlayer.Team ~= LocalPlayer.Team then
+					return Config.ShowPlayers
+				end
+				-- Same team = teammate in PVP, respect ShowSquadMembers
+				if not Config.ShowSquadMembers then
+					return false
+				end
+				return Config.ShowPlayers
+			end
+		end
+
 		if IsTeammate(actor, cachedLocalSquad) and not Config.ShowSquadMembers then
 			return false
 		end
@@ -3263,33 +2849,6 @@ local function SetAllVisible(drawings, espData, visible)
 end
 
 -- Hitbox Expander Helper
-local OriginalSizes = setmetatable({}, { __mode = "k" })
-local function ApplyHitboxExpander(actor, espData, cfg)
-	local head = espData.CachedHead
-	local enabled = cfg.HitboxExpander
-
-	if not head or not head.Parent then
-		local char = actor.Character
-		head = char and char:FindFirstChild("Head")
-		espData.CachedHead = head
-	end
-
-	if not head then return end
-
-	if enabled and actor.Alive then
-		if not OriginalSizes[head] then OriginalSizes[head] = head.Size end
-		local sz = cfg.HitboxSize or 4
-		head.Size = Vector3_new(sz, sz, sz)
-		head.Transparency = 0.5
-		head.CanCollide = false
-	elseif OriginalSizes[head] then
-		head.Size = OriginalSizes[head]
-		head.Transparency = 0
-		head.CanCollide = true
-		OriginalSizes[head] = nil
-	end
-end
-
 local function RemoveESP(uid)
 	local espData = ESPElements[uid]
 	if not espData then return end
@@ -3334,9 +2893,6 @@ local function UpdateESPForActor(uid, espData, frameId, cachedCfg, localSquad)
 		RemoveESP(uid)
 		return
 	end
-
-	-- Hitbox Expander Integration
-	ApplyHitboxExpander(actor, espData, cachedCfg)
 
 	-- Bug Fix: Re-check filters for existing elements
 	if not ShouldShowEntity(actor, entityType, localSquad) then
@@ -3910,10 +3466,6 @@ task.spawn(function()
 	local oldIndex = mt.__index
 
 	mt.__index = newcclosure(function(self, key)
-		if key == "Size" and Config.HitboxExpander and OriginalSizes[self] then
-			return OriginalSizes[self]
-		end
-
 		if type(oldIndex) == "function" then
 			local success, result = pcall(oldIndex, self, key)
 			if success then return result end
@@ -3927,7 +3479,7 @@ task.spawn(function()
 end)
 
 local function UpdateESP()
-	if not ESPEnabled and not Config.HitboxExpander then return end
+	if not ESPEnabled then return end
 	if not ReplicatorService then return end
 
 	CurrentFrameId = CurrentFrameId + 1
@@ -3950,8 +3502,6 @@ local function UpdateESP()
 		SimpleESP = Config.SimpleESP,
 		TextScale = (Config.TextScale or 1.2),
 		DynamicTextScaling = true,
-		HitboxExpander = Config.HitboxExpander,
-		HitboxSize = Config.HitboxSize
 	}
 
 	-- Process Actor Lists
@@ -3987,22 +3537,22 @@ end
 --[[
     INITIALIZATION
 ]]
--- Initialize Tokai notifier
-local Notifier = TokaiUI.newNotify();
+-- Initialize Moon notifier
+local Notifier = MoonUI.newNotify();
 
 -- Create Window
-local Window = TokaiUI.new({
-	Name = "Tokai Hub",
+local Window = MoonUI.new({
+	Name = "Moon",
 	Keybind = "LeftAlt",
 	Logo = "rbxassetid://124218764552179",
-	Scale = TokaiUI.Scale.Window,
+	Scale = MoonUI.Scale.Window,
 	TextSize = 14,
 });
 
 -- Initialize Config Manager
-local _ConfigManager = TokaiUI:ConfigManager({ 
-	Directory = "TokaiHub", 
-	Config = "TokaiHub" 
+local _ConfigManager = MoonUI:ConfigManager({ 
+	Directory = "Moon", 
+	Config = "Moon" 
 })
 _ConfigManager.EnableNotify = true
 
@@ -4120,8 +3670,21 @@ S_SilentAim:AddSlider({
 	Default = 100, 
 	Flag = "Combat_SilentAimFOV", 
 	Callback = function(v) 
-		Config.SilentAimFOV = v
+		if not Config.SilentAimFOVLocked then
+			Config.SilentAimFOV = v
+			if FOVCircle then FOVCircle.Radius = v end
+		end
 	end 
+})
+
+S_SilentAim:AddToggle({
+	Name = "Lock FOV (Mobile)",
+	Flag = "Combat_SilentAimFOVLock",
+	Default = false,
+	Tooltip = "Khóa FOV Silent Aim — dành cho mobile, tránh bị thay đổi ngoài ý muốn",
+	Callback = function(v)
+		Config.SilentAimFOVLocked = v
+	end
 })
 
 S_SilentAim:AddSlider({ 
@@ -4169,30 +3732,7 @@ S_SilentAim:AddToggle({
 	end 
 })
 
--- Hitbox Expander
-S_SilentAim:AddToggle({ 
-	Name = "Hitbox Expander", 
-	Flag = "Comb_HitboxExpander", 
-	Default = false,
-	Callback = function(v) 
-		Config.HitboxExpander = v
-		if not v then
-			-- Reset hitboxes when disabled
-			-- This requires a function reference, waiting for implementation
-		end
-	end 
-})
 
-S_SilentAim:AddSlider({ 
-	Name = "Hitbox Size", 
-	Min = 2, 
-	Max = 15, 
-	Default = 4, 
-	Flag = "Comb_HitboxSize", 
-	Callback = function(v) 
-		Config.HitboxSize = v
-	end 
-})
 
 
 
@@ -4241,59 +3781,6 @@ S_GunMods:AddSlider({
 	Callback = function(v) 
 		Config.RPMValue = v
 	end 
-})
-
-
--- ==========================================
--- AUTO RELOAD
--- Exact field path from Ragebot:
---   ctrl._mag.Capacity + _item.MetaData.Chamber
--- ==========================================
-local _arLastTick = 0
-
-local function UpdateAutoReload()
-	if not Config.AutoReload then return end
-	local now = tick()
-	if now - _arLastTick < 0.15 then return end
-	_arLastTick = now
-
-	local ctrl = WeaponManager.Equipped
-		or (InventoryService and InventoryService.Equipped
-			and InventoryService.Equipped.Handler)
-	if not ctrl then return end
-	if ctrl._reloading or ctrl._isReloading then return end
-
-	local magCount  = ctrl._mag and ctrl._mag.Capacity or 0
-	local inChamber = (ctrl._item and ctrl._item.MetaData
-		and ctrl._item.MetaData.Chamber) and 1 or 0
-	local totalAmmo = magCount + inChamber
-
-	if totalAmmo <= (Config.AutoReload_Threshold or 1) then
-		if ctrl.Reload and not ctrl._reloading then
-			pcall(function() ctrl:Reload() end)
-		end
-	end
-end
-
-
-
--- Auto Reload Section
-local S_AutoReload = CombatTab:DrawSection({ Name = "Auto Reload", Position = "right" })
-
-S_AutoReload:AddToggle({
-	Name = "Auto Reload",
-	Flag = "AR_Enabled",
-	Default = false,
-	Callback = function(v) Config.AutoReload = v end
-})
-
-S_AutoReload:AddSlider({
-	Name = "Reload khi còn N viên",
-	Min = 0,
-	Max = 10,
-	Default = 1,
-	Flag = "AR_Threshold",
-	Callback = function(v) Config.AutoReload_Threshold = v end
 })
 
 
@@ -4705,6 +4192,39 @@ local NVGColors = {
 }
 local CurrentNVGColor = "Green"
 
+-- FullBright state (store/restore pattern)
+local FullBrightState = {
+	applied = false,
+	original = {}
+}
+
+local function FullBright_Store(lighting)
+	FullBrightState.original = {
+		Brightness    = lighting.Brightness,
+		ClockTime     = lighting.ClockTime,
+		FogEnd        = lighting.FogEnd,
+		GlobalShadows = lighting.GlobalShadows,
+		Ambient       = lighting.Ambient,
+	}
+end
+
+local function FullBright_Apply(lighting)
+	lighting.Brightness    = 2
+	lighting.ClockTime     = 12
+	lighting.FogEnd        = 100000
+	lighting.GlobalShadows = false
+	lighting.Ambient       = Color3.new(1, 1, 1)
+	FullBrightState.applied = true
+end
+
+local function FullBright_Restore(lighting)
+	if not FullBrightState.applied then return end
+	for prop, val in pairs(FullBrightState.original) do
+		pcall(function() lighting[prop] = val end)
+	end
+	FullBrightState.applied = false
+end
+
 local function ApplyNVGEffect()
 	if Config.NightVision and NVGColorCorrection then
 		NVGColorCorrection.TintColor = NVGColors[CurrentNVGColor] or NVGColors["Green"]
@@ -4748,6 +4268,44 @@ S_World:AddDropdown({
 	Callback = function(v)
 		CurrentNVGColor = v
 		ApplyNVGEffect()
+	end
+})
+
+S_World:AddToggle({
+	Name = "Clear NVG Interface",
+	Flag = "World_ClearNVGInterface",
+	Default = false,
+	Tooltip = "Xóa NVGInterface ScreenGui khỏi PlayerGui (tắt overlay NVG gốc của game)",
+	Callback = function(v)
+		Config.ClearNVGInterface = v
+		if v then
+			local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+			for _, guiElement in ipairs(playerGui:GetChildren()) do
+				if guiElement:IsA("ScreenGui") and guiElement.Name == "NVGInterface" then
+					guiElement:Destroy()
+				end
+			end
+		end
+	end
+})
+
+S_World:AddToggle({
+	Name = "Full Bright",
+	Flag = "World_FullBright",
+	Default = false,
+	Tooltip = "Làm sáng toàn màn — override Brightness, ClockTime, FogEnd, GlobalShadows, Ambient. Tắt thì khôi phục lại giá trị gốc.",
+	Callback = function(v)
+		Config.FullBright = v
+		local lighting = game:GetService("Lighting")
+		if v then
+			-- Store original values once before first apply
+			if not FullBrightState.applied then
+				FullBright_Store(lighting)
+			end
+			FullBright_Apply(lighting)
+		else
+			FullBright_Restore(lighting)
+		end
 	end
 })
 
@@ -5058,9 +4616,9 @@ MenuGroup:AddButton({
 	Callback = function()
 		pcall(function() Library:Unload() end)
 		pcall(function() Window:Unload() end)
-		if getgenv().Tokai_Connections then
-			for _, c in pairs(getgenv().Tokai_Connections) do c:Disconnect() end
-			getgenv().Tokai_Connections = {}
+		if getgenv().Moon_Connections then
+			for _, c in pairs(getgenv().Moon_Connections) do c:Disconnect() end
+			getgenv().Moon_Connections = {}
 		end
 		for uid in pairs(ESPElements) do RemoveESP(uid) end
 	end,
@@ -5102,16 +4660,15 @@ local espLoop = RunService.RenderStepped:Connect(function()
 
 	-- CRITICAL: Run Combat Logic EVERY FRAME for maximum Ragebot/Silent Aim speed (144Hz+)
 	UpdateCombat(frameCount)
-	UpdateAutoReload()
 end)
-table.insert(getgenv().Tokai_Connections, espLoop)
+table.insert(getgenv().Moon_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
-	Title = "Tokai Hub",
-	Content = "Tokai Hub loaded successfully!",
+	Title = "tokai",
+	Content = "tokaihub loaded successfully!",
 	Duration = 5,
-	Icon = ""
+	Icon = "rbxassetid://124218764552179"
 });
 
 -- Initial Map Detection
@@ -5139,196 +4696,4 @@ local flyKeybind = UserInputService.InputBegan:Connect(function(input, gameProce
 		VehicleFly.Toggle()
 	end
 end)
-table.insert(getgenv().Tokai_Connections, flyKeybind)
-
--- =========================================================
--- TOKAI HUB — ANTI FALL DAMAGE + AUTO RELOAD
--- F9 = toggle anti fall | F10 = toggle auto reload
--- =========================================================
-
-local _player     = Players.LocalPlayer
-local _character  = _player.Character or _player.CharacterAdded:Wait()
-
--- ─── EXECUTOR DETECTION ──────────────────────────────────
-local _executor = "generic"
-if syn and syn.request   then _executor = "synapse"
-elseif http_request      then _executor = "solara"
-elseif request           then _executor = "xeno"
-elseif KRNL_LOADED       then _executor = "krnl"
-elseif fluxus            then _executor = "fluxus"
-end
-
--- ─── ANTI FALL DAMAGE ────────────────────────────────────
-local antiFallEnabled = true
-
-local function _setupAntiFall(char)
-	local hum = char:WaitForChild("Humanoid")
-
-	-- Layer 1: StateChanged — cancel FallingDown before engine applies damage
-	local stConn = hum.StateChanged:Connect(function(_, newState)
-		if not antiFallEnabled then return end
-
-		if newState == Enum.HumanoidStateType.Landed then
-			local savedHp = hum.Health
-			task.defer(function()
-				if hum and hum.Parent then
-					hum.Health = math.max(savedHp, hum.Health)
-				end
-			end)
-		end
-
-		if newState == Enum.HumanoidStateType.FallingDown then
-			task.defer(function()
-				if not (hum and hum.Parent) then return end
-				hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-				hum:ChangeState(Enum.HumanoidStateType.Freefall)
-				task.wait(0.05)
-				hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
-			end)
-		end
-	end)
-	table.insert(getgenv().Tokai_Connections, stConn)
-
-	-- Layer 2: Heartbeat — catch any fall damage that slips past layer 1
-	local lastHp   = hum.Health
-	local hbConn   = RunService.Heartbeat:Connect(function()
-		if not antiFallEnabled then lastHp = hum.Health; return end
-		if not (hum and hum.Parent) then return end
-
-		local state    = hum:GetState()
-		local airborne = (
-			state == Enum.HumanoidStateType.Freefall or
-			state == Enum.HumanoidStateType.Jumping  or
-			state == Enum.HumanoidStateType.Flying
-		)
-
-		local current = hum.Health
-		local delta   = lastHp - current
-
-		-- sudden >10 HP drop on landing frame = fall damage, restore
-		if not airborne and delta > 10 and delta < 100 then
-			hum.Health = lastHp
-		end
-
-		lastHp = hum.Health
-	end)
-	table.insert(getgenv().Tokai_Connections, hbConn)
-end
-
-_setupAntiFall(_character)
-
--- ─── AUTO RELOAD ─────────────────────────────────────────
-local autoReloadEnabled = true
-local _RELOAD_KEY       = Enum.KeyCode.R
-local _reloading        = false
-local _lastAmmo         = nil
-
--- Executor-safe key injection
-local function _fireKey(keyCode)
-	if _executor == "xeno" or _executor == "solara" or _executor == "krnl" or _executor == "synapse" then
-		if keypress and keyrelease then
-			pcall(function()
-				keypress(keyCode.Value)
-				task.wait(0.05)
-				keyrelease(keyCode.Value)
-			end)
-			return
-		end
-	end
-	-- Generic fallback: VirtualInputManager (Delta, Wave, Codex, Fluxus)
-	local ok, vim = pcall(function() return game:GetService("VirtualInputManager") end)
-	if ok and vim then
-		pcall(function()
-			vim:SendKeyEvent(true,  keyCode, false, game)
-			task.wait(0.05)
-			vim:SendKeyEvent(false, keyCode, false, game)
-		end)
-	end
-end
-
--- Scan tool for ammo value across common attribute/value naming conventions
-local function _getAmmo(tool)
-	if not tool then return nil end
-	local attrNames = {
-		"Ammo", "ammo", "CurrentAmmo", "Bullets",
-		"BulletCount", "MagAmmo", "Magazine", "Clip"
-	}
-	for _, name in ipairs(attrNames) do
-		local v = tool:GetAttribute(name)
-		if type(v) == "number" then return v end
-	end
-	for _, child in ipairs(tool:GetDescendants()) do
-		if child:IsA("NumberValue") or child:IsA("IntValue") then
-			local n = child.Name:lower()
-			if n:find("ammo") or n:find("bullet") or n:find("mag") or n:find("clip") then
-				return child.Value
-			end
-		end
-	end
-	return nil
-end
-
-local function _watchTool(tool)
-	if not tool then return end
-	_reloading = false
-	_lastAmmo  = nil
-
-	local toolConn = RunService.Heartbeat:Connect(function()
-		if not autoReloadEnabled           then return end
-		if not (tool and tool.Parent)      then return end
-		if _reloading                      then return end
-
-		local ammo = _getAmmo(tool)
-		if ammo == nil                     then return end
-
-		if ammo == 0 and _lastAmmo ~= 0 then
-			_reloading = true
-			task.spawn(function()
-				task.wait(0.1)      -- let game register empty mag
-				_fireKey(_RELOAD_KEY)
-				task.wait(2.5)      -- cover standard reload animation length
-				_reloading = false
-			end)
-		end
-
-		_lastAmmo = ammo
-	end)
-	table.insert(getgenv().Tokai_Connections, toolConn)
-end
-
-local function _hookCharacter(char)
-	local addConn = char.ChildAdded:Connect(function(child)
-		if child:IsA("Tool") then _watchTool(child) end
-	end)
-	table.insert(getgenv().Tokai_Connections, addConn)
-	for _, child in ipairs(char:GetChildren()) do
-		if child:IsA("Tool") then _watchTool(child) end
-	end
-end
-
-_hookCharacter(_character)
-
--- ─── RESPAWN HANDLING ────────────────────────────────────
-local respawnConn = _player.CharacterAdded:Connect(function(newChar)
-	_character  = newChar
-	_reloading  = false
-	_lastAmmo   = nil
-	_setupAntiFall(newChar)
-	_hookCharacter(newChar)
-end)
-table.insert(getgenv().Tokai_Connections, respawnConn)
-
--- ─── TOGGLE KEYBINDS ─────────────────────────────────────
--- F9 = anti fall | F10 = auto reload
-local toggleConn = UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then return end
-	if input.KeyCode == Enum.KeyCode.F9 then
-		antiFallEnabled = not antiFallEnabled
-	elseif input.KeyCode == Enum.KeyCode.F10 then
-		autoReloadEnabled = not autoReloadEnabled
-		_reloading = false
-	end
-end)
-table.insert(getgenv().Tokai_Connections, toggleConn)
-
--- =========================================================
+table.insert(getgenv().Moon_Connections, flyKeybind)

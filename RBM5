@@ -201,7 +201,7 @@ local function WrapTab(Tab)
 end
 
 function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Moon", Footer = "discord.gg/6zSx7gUeMQ", Icon = 124218764552179, Center = true, AutoShow = true, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
+	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/deVVQEVybd", Icon = nil, Center = true, AutoShow = true, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
 	local SettingsTab
 	local Wrapped = {
 		Raw = Window,
@@ -2526,7 +2526,9 @@ local function UpdateCombat(frameId)
 		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
 		if FOVCircle.Visible then
 			FOVCircle.Position = mouse
-			FOVCircle.Radius = Config.SilentAimFOV
+			if not Config.SilentAimFOVLocked then
+				FOVCircle.Radius = Config.SilentAimFOV
+			end
 		end
 	end
 
@@ -3542,9 +3544,9 @@ local Notifier = MoonUI.newNotify();
 
 -- Create Window
 local Window = MoonUI.new({
-	Name = "Moon",
+	Name = "Tokaihub",
 	Keybind = "LeftAlt",
-	Logo = "rbxassetid://124218764552179",
+	Logo = nil,
 	Scale = MoonUI.Scale.Window,
 	TextSize = 14,
 });
@@ -4665,10 +4667,10 @@ table.insert(getgenv().Moon_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
-	Title = "tokai",
-	Content = "tokaihub loaded successfully!",
+	Title = "Tokaihub",
+	Content = "Tokaihub loaded successfully!",
 	Duration = 5,
-	Icon = "rbxassetid://124218764552179"
+	Icon = "info"
 });
 
 -- Initial Map Detection

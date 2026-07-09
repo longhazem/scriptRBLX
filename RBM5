@@ -88,13 +88,13 @@ end
 -- ═══════════════════════════════════════════════
 -- LOCK FOV SILENT AIM — FIXED VERSION
 -- ═══════════════════════════════════════════════
-local LockFOVSilent = {}
-LockFOVSilent.enabled = false
-LockFOVSilent.fov = 50  -- degrees
-LockFOVSilent.target = nil
-LockFOVSilent.lastUpdate = 0
+local LockFOV = {}
+LockFOV.enabled = false
+LockFOV.fov = 50  -- degrees
+LockFOV.target = nil
+LockFOV.lastUpdate = 0
 
-function LockFOVSilent:getVisibleTargets(fov)
+function LockFOV:getVisibleTargets(fov)
 	local targets = {}
 	local cam = workspace.CurrentCamera
 	local player = game:GetService("Players").LocalPlayer
@@ -141,7 +141,7 @@ function LockFOV:update()
 	self.target = targets[1] and targets[1].player or nil
 end
 
-function LockFOVSilent:toggle()
+function LockFOV:toggle()
 	self.enabled = not self.enabled
 	if self.enabled then
 		print("[RBM5] ✓ Lock FOV Silent: ENABLED (FOV: " .. self.fov .. "°)")
@@ -4893,15 +4893,15 @@ UserInputService.InputBegan:Connect(function(input, proc)
 	-- Check for Ctrl+L combination
 	local ctrlPressed = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
 	if ctrlPressed and input.KeyCode == Enum.KeyCode.L then
-		pcall(function() LockFOVSilent:toggle() end)
+		pcall(function() LockFOV:toggle() end)
 		print("[RBM5] Ctrl+L pressed - Lock FOV toggled")
 	end
 end)
 
 -- Continuous Lock FOV update in heartbeat
 RunService.Heartbeat:Connect(function()
-	if LockFOVSilent and LockFOVSilent.enabled then
-		pcall(function() LockFOVSilent:update() end)
+	if LockFOV and LockFOV.enabled then
+		pcall(function() LockFOV:update() end)
 	end
 end)
 

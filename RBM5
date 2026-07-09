@@ -1,112 +1,21 @@
 local Repository = "https://raw.githubusercontent.com/mmr1337/Obsidian/main/"
 
--- ──────────────────────────────────────────────────────────────
--- EXECUTOR COMPATIBILITY LAYER
--- Supports: Volt, Potassium, Synapse Z, Wave, Delta, Codex,
---           OpiumWare, Xenk, Solara — and game:HttpGet fallback
--- ──────────────────────────────────────────────────────────────
-local function ExecutorHttpGet(Url)
-	-- Method 1: request() — Synapse Z, Wave, Delta, Codex, Solara, Xenk, OpiumWare
-	if request then
-		local ok, res = pcall(request, { Url = Url, Method = "GET" })
-		if ok and res and res.Body and typeof(res.Body) == "string" then
-			return res.Body, res.StatusCode
-		end
-	end
-
-	-- Method 2: http_request() — Volt, Potassium, older Synapse
-	if http_request then
-		local ok, res = pcall(http_request, { Url = Url, Method = "GET" })
-		if ok and res and res.Body and typeof(res.Body) == "string" then
-			return res.Body, res.StatusCode
-		end
-	end
-
-	-- Method 3: syn.request() — legacy Synapse X
-	if syn and syn.request then
-		local ok, res = pcall(syn.request, { Url = Url, Method = "GET" })
-		if ok and res and res.Body and typeof(res.Body) == "string" then
-			return res.Body, res.StatusCode
-		end
-	end
-
-	-- Method 4: fluxus_request() — Fluxus executor
-	if fluxus and fluxus.request then
-		local ok, res = pcall(fluxus.request, { Url = Url, Method = "GET" })
-		if ok and res and res.Body and typeof(res.Body) == "string" then
-			return res.Body, res.StatusCode
-		end
-	end
-
-	-- Method 5: game:HttpGet() — fallback, works on most executors
-	if game and game.HttpGet then
-		local ok, res = pcall(function() return game:HttpGet(Url) end)
-		if ok and typeof(res) == "string" then
-			return res, 200
-		end
-		-- Some executors return Instance via HttpGet
-		if ok and typeof(res) == "Instance" then
-			local iok, src = pcall(function() return res.Source end)
-			if iok and typeof(src) == "string" then
-				return src, 200
-			end
-		end
-	end
-
-	return nil, 0
-end
-
 local function GetLoadstringSource(Url)
-	local MAX_RETRIES = 5
-	local BASE_DELAY  = 3
-
-	for attempt = 1, MAX_RETRIES do
-		local body, statusCode = ExecutorHttpGet(Url)
-
-		-- No body at all — executor method mismatch or network dead
-		if not body then
-			if attempt == MAX_RETRIES then
-				error(
-					"[Tokaihub] Không lấy được file sau " .. MAX_RETRIES .. " lần thử.\n" ..
-					"Executor của bạn có thể không hỗ trợ HTTP request.\n" ..
-					"URL: " .. tostring(Url), 2
-				)
-			end
-			warn("[Tokaihub] HTTP request failed — retry " .. attempt .. "/" .. MAX_RETRIES)
-			task.wait(BASE_DELAY * attempt)
-			continue
+	local Result = game:HttpGet(Url)
+	if typeof(Result) == "Instance" then
+		local Ok, Source = pcall(function()
+			return Result.Source
+		end)
+		if Ok and typeof(Source) == "string" then
+			Result = Source
+		else
+			error("HttpGet returned an Instance instead of source text for: " .. tostring(Url), 2)
 		end
-
-		-- 429 rate limit — exponential backoff
-		if statusCode == 429 or body:match("^429") or body:lower():match("rate limit") then
-			if attempt == MAX_RETRIES then
-				error(
-					"[Tokaihub] GitHub rate limit (429) sau " .. MAX_RETRIES .. " lần thử.\n" ..
-					"Chờ 5-10 phút rồi chạy lại script.", 2
-				)
-			end
-			local waitTime = BASE_DELAY * (2 ^ (attempt - 1))
-			warn("[Tokaihub] Rate limit 429 — chờ " .. waitTime .. "s (lần " .. attempt .. "/" .. MAX_RETRIES .. ")")
-			task.wait(waitTime)
-			continue
-		end
-
-		-- Other HTTP error codes
-		if statusCode and statusCode ~= 0 and statusCode ~= 200 then
-			error("[Tokaihub] HTTP " .. tostring(statusCode) .. " khi load: " .. tostring(Url), 2)
-		end
-
-		-- Validate it's actual Lua source, not an HTML error page
-		if body:match("^<!DOCTYPE") or body:match("^<html") then
-			if attempt == MAX_RETRIES then
-				error("[Tokaihub] Server trả về trang HTML thay vì Lua source. URL sai hoặc repo bị xóa.", 2)
-			end
-			task.wait(BASE_DELAY * attempt)
-			continue
-		end
-
-		return body
 	end
+	if typeof(Result) ~= "string" then
+		error("HttpGet returned " .. typeof(Result) .. " instead of source text for: " .. tostring(Url), 2)
+	end
+	return Result
 end
 
 local function PatchObsidianSource(Source)
@@ -130,6 +39,107 @@ local function LoadRemote(Url)
 end
 
 local Library = LoadRemote(Repository .. "Library.lua")
+
+-- ═══════════════════════════════════════════════
+-- FULLBRIGHT MODULE
+-- ═══════════════════════════════════════════════
+local Fullbright = {}
+Fullbright.enabled = false
+Fullbright.original = {}
+
+function Fullbright:init()
+	local lighting = game:GetService("Lighting")
+	self.original = {
+		Brightness = lighting.Brightness,
+		ClockTime = lighting.ClockTime,
+		FogEnd = lighting.FogEnd,
+		GlobalShadows = lighting.GlobalShadows,
+		Ambient = lighting.Ambient:Clone()
+	}
+	print("[RBM5] Fullbright initialized")
+end
+
+function Fullbright:toggle(state)
+	if state == nil then state = not self.enabled end
+	local lighting = game:GetService("Lighting")
+	
+	if state then
+		lighting.Brightness = 2
+		lighting.ClockTime = 12
+		lighting.FogEnd = 100000
+		lighting.GlobalShadows = false
+		lighting.Ambient = Color3.new(1, 1, 1)
+		self.enabled = true
+		print("[RBM5] Fullbright: ENABLED")
+	else
+		for k, v in pairs(self.original) do
+			if k == "Ambient" then
+				lighting.Ambient = v
+			else
+				lighting[k] = v
+			end
+		end
+		self.enabled = false
+		print("[RBM5] Fullbright: DISABLED")
+	end
+end
+
+
+-- ═══════════════════════════════════════════════
+-- LOCK FOV SILENT AIM (Mobile-optimized)
+-- ═══════════════════════════════════════════════
+local LockFOVSilent = {}
+LockFOVSilent.enabled = false
+LockFOVSilent.fov = 50  -- degrees
+LockFOVSilent.target = nil
+
+function LockFOVSilent:getVisibleTargets(fov)
+	local targets = {}
+	local cam = workspace.CurrentCamera
+	local player = game:GetService("Players").LocalPlayer
+	
+	for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
+		if p == player or not p.Character then continue end
+		local char = p.Character
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if not hum or hum.Health <= 0 then continue end
+		
+		local targetPos = (char:FindFirstChild("Head") or char.PrimaryPart).Position
+		local relPos = targetPos - cam.CFrame.Position
+		local angle = math.acos(math.min(1, cam.CFrame.LookVector:Dot(relPos.Unit)))
+		local angleDeg = math.deg(angle)
+		
+		if angleDeg <= fov / 2 then
+			table.insert(targets, {player = p, angle = angleDeg})
+		end
+	end
+	
+	table.sort(targets, function(a, b) return a.angle < b.angle end)
+	return targets
+end
+
+function LockFOVSilent:update()
+	if not self.enabled then return end
+	
+	local targets = self:getVisibleTargets(self.fov)
+	if #targets == 0 then
+		self.target = nil
+		return
+	end
+	
+	self.target = targets[1].player
+end
+
+function LockFOVSilent:toggle()
+	self.enabled = not self.enabled
+	if self.enabled then
+		print("[RBM5] Lock FOV Silent: ENABLED (FOV: " .. self.fov .. "°)")
+	else
+		self.target = nil
+		print("[RBM5] Lock FOV Silent: DISABLED")
+	end
+end
+
 local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
 local SaveManager = LoadRemote(Repository .. "addons/SaveManager.lua")
 
@@ -618,13 +628,13 @@ local function ApplyVehicleFly(vehicle, dt, originalUpdate)
 	if moveDir.Magnitude > 0 then moveDir = moveDir.Unit end
 
 	-- Calculate new position
-	local currentCF = vehicle.CFrame or (vehicle.Hitbox and vehicle.Hitbox.CFrame) or CFrame_new()
+	local currentCF = vehicle.CFrame or CFrame_new()
 	local newPos = currentCF.Position + (moveDir * Config.VehicleFly_Speed * dt)
 	local newCF = CFrame.lookAt(newPos, newPos + Camera.CFrame.LookVector)
 
 	-- Update vehicle
 	vehicle.CFrame = newCF
-	if vehicle.Hitbox then vehicle.Hitbox.CFrame = newCF end
+
 
 	-- Update controller solver if available
 	pcall(function()
@@ -2984,7 +2994,6 @@ local function SetAllVisible(drawings, espData, visible)
 	end
 end
 
--- Hitbox Expander Helper
 local function RemoveESP(uid)
 	local espData = ESPElements[uid]
 	if not espData then return end
@@ -3583,36 +3592,6 @@ local function UpdateVehicles(frameId, cachedCfg)
 	end
 end
 
--- IsEnemy helper for Hitbox Expander
-local function IsEnemyForExpander(player)
-	if not player or not LocalPlayer then return false end
-	-- If using team system
-	if player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then return false end
-	-- Fallback/Safety: consider everyone else enemy if not same team
-	return true
-end
-
--- Hitbox expander merged into ESP loop
-
--- Server Hide Hook (Spoof Size property)
-task.spawn(function()
-	if not getrawmetatable then return end
-	local mt = getrawmetatable(game)
-	setreadonly(mt, false)
-	local oldIndex = mt.__index
-
-	mt.__index = newcclosure(function(self, key)
-		if type(oldIndex) == "function" then
-			local success, result = pcall(oldIndex, self, key)
-			if success then return result end
-		elseif type(oldIndex) == "table" then
-			local success, result = pcall(function() return oldIndex[key] end)
-			if success then return result end
-		end
-		return nil 
-	end)
-	setreadonly(mt, true)
-end)
 
 local function UpdateESP()
 	if not ESPEnabled then return end
@@ -4877,6 +4856,35 @@ task.spawn(function()
 	-- Initialize Vehicle Fly hooks
 	task.wait(0.5)
 	VehicleFly.HookVehicles()
+
+-- ═══════════════════════════════════════════════
+-- FEATURE KEYBINDS
+-- ═══════════════════════════════════════════════
+
+-- Initialize features
+Fullbright:init()
+
+-- F11: Toggle Fullbright
+UserInputService.InputBegan:Connect(function(input, proc)
+	if proc then return end
+	if input.KeyCode == Enum.KeyCode.F11 then
+		Fullbright:toggle()
+	end
+end)
+
+-- Ctrl+L: Toggle Lock FOV Silent
+UserInputService.InputBegan:Connect(function(input, proc)
+	if proc then return end
+	if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) and input.KeyCode == Enum.KeyCode.L then
+		LockFOVSilent:toggle()
+	end
+end)
+
+-- Update Lock FOV in heartbeat
+local hb = RunService.Heartbeat:Connect(function()
+	LockFOVSilent:update()
+end)
+
 	print("[Vehicle Fly] Ready! Press X to toggle")
 end)
 

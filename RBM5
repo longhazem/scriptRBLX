@@ -1,55 +1,111 @@
 local Repository = "https://raw.githubusercontent.com/mmr1337/Obsidian/main/"
 
+-- ──────────────────────────────────────────────────────────────
+-- EXECUTOR COMPATIBILITY LAYER
+-- Supports: Volt, Potassium, Synapse Z, Wave, Delta, Codex,
+--           OpiumWare, Xenk, Solara — and game:HttpGet fallback
+-- ──────────────────────────────────────────────────────────────
+local function ExecutorHttpGet(Url)
+	-- Method 1: request() — Synapse Z, Wave, Delta, Codex, Solara, Xenk, OpiumWare
+	if request then
+		local ok, res = pcall(request, { Url = Url, Method = "GET" })
+		if ok and res and res.Body and typeof(res.Body) == "string" then
+			return res.Body, res.StatusCode
+		end
+	end
+
+	-- Method 2: http_request() — Volt, Potassium, older Synapse
+	if http_request then
+		local ok, res = pcall(http_request, { Url = Url, Method = "GET" })
+		if ok and res and res.Body and typeof(res.Body) == "string" then
+			return res.Body, res.StatusCode
+		end
+	end
+
+	-- Method 3: syn.request() — legacy Synapse X
+	if syn and syn.request then
+		local ok, res = pcall(syn.request, { Url = Url, Method = "GET" })
+		if ok and res and res.Body and typeof(res.Body) == "string" then
+			return res.Body, res.StatusCode
+		end
+	end
+
+	-- Method 4: fluxus_request() — Fluxus executor
+	if fluxus and fluxus.request then
+		local ok, res = pcall(fluxus.request, { Url = Url, Method = "GET" })
+		if ok and res and res.Body and typeof(res.Body) == "string" then
+			return res.Body, res.StatusCode
+		end
+	end
+
+	-- Method 5: game:HttpGet() — fallback, works on most executors
+	if game and game.HttpGet then
+		local ok, res = pcall(function() return game:HttpGet(Url) end)
+		if ok and typeof(res) == "string" then
+			return res, 200
+		end
+		-- Some executors return Instance via HttpGet
+		if ok and typeof(res) == "Instance" then
+			local iok, src = pcall(function() return res.Source end)
+			if iok and typeof(src) == "string" then
+				return src, 200
+			end
+		end
+	end
+
+	return nil, 0
+end
+
 local function GetLoadstringSource(Url)
 	local MAX_RETRIES = 5
-	local RETRY_DELAY = 3 -- seconds, doubles each attempt
+	local BASE_DELAY  = 3
 
 	for attempt = 1, MAX_RETRIES do
-		local ok, Result = pcall(function()
-			return game:HttpGet(Url)
-		end)
+		local body, statusCode = ExecutorHttpGet(Url)
 
-		if not ok then
-			-- HttpGet itself threw (network error, timeout, etc.)
+		-- No body at all — executor method mismatch or network dead
+		if not body then
 			if attempt == MAX_RETRIES then
-				error("HttpGet failed after " .. MAX_RETRIES .. " attempts for: " .. tostring(Url) .. " | Error: " .. tostring(Result), 2)
+				error(
+					"[Tokaihub] Không lấy được file sau " .. MAX_RETRIES .. " lần thử.\n" ..
+					"Executor của bạn có thể không hỗ trợ HTTP request.\n" ..
+					"URL: " .. tostring(Url), 2
+				)
 			end
-			task.wait(RETRY_DELAY * attempt)
+			warn("[Tokaihub] HTTP request failed — retry " .. attempt .. "/" .. MAX_RETRIES)
+			task.wait(BASE_DELAY * attempt)
 			continue
 		end
 
-		-- Handle Instance return (some executors return Instance instead of string)
-		if typeof(Result) == "Instance" then
-			local instOk, Source = pcall(function() return Result.Source end)
-			if instOk and typeof(Source) == "string" then
-				Result = Source
-			else
-				error("HttpGet returned an Instance instead of source text for: " .. tostring(Url), 2)
+		-- 429 rate limit — exponential backoff
+		if statusCode == 429 or body:match("^429") or body:lower():match("rate limit") then
+			if attempt == MAX_RETRIES then
+				error(
+					"[Tokaihub] GitHub rate limit (429) sau " .. MAX_RETRIES .. " lần thử.\n" ..
+					"Chờ 5-10 phút rồi chạy lại script.", 2
+				)
 			end
+			local waitTime = BASE_DELAY * (2 ^ (attempt - 1))
+			warn("[Tokaihub] Rate limit 429 — chờ " .. waitTime .. "s (lần " .. attempt .. "/" .. MAX_RETRIES .. ")")
+			task.wait(waitTime)
+			continue
 		end
 
-		if typeof(Result) ~= "string" then
-			error("HttpGet returned " .. typeof(Result) .. " instead of source text for: " .. tostring(Url), 2)
+		-- Other HTTP error codes
+		if statusCode and statusCode ~= 0 and statusCode ~= 200 then
+			error("[Tokaihub] HTTP " .. tostring(statusCode) .. " khi load: " .. tostring(Url), 2)
 		end
 
-		-- Check for HTTP error codes embedded in response (some executors return error text)
-		if Result:match("^HTTP %d%d%d") then
-			local code = Result:match("^HTTP (%d%d%d)")
-			if code == "429" then
-				if attempt == MAX_RETRIES then
-					error("GitHub rate limit (429) hit after " .. MAX_RETRIES .. " retries. Chờ vài phút rồi chạy lại.", 2)
-				end
-				-- Exponential backoff: 3s, 6s, 12s, 24s
-				local waitTime = RETRY_DELAY * (2 ^ (attempt - 1))
-				warn("Tokaihub: HTTP 429 rate limit — retry " .. attempt .. "/" .. MAX_RETRIES .. " sau " .. waitTime .. "s")
-				task.wait(waitTime)
-				continue
-			else
-				error("HttpGet returned HTTP " .. code .. " for: " .. tostring(Url), 2)
+		-- Validate it's actual Lua source, not an HTML error page
+		if body:match("^<!DOCTYPE") or body:match("^<html") then
+			if attempt == MAX_RETRIES then
+				error("[Tokaihub] Server trả về trang HTML thay vì Lua source. URL sai hoặc repo bị xóa.", 2)
 			end
+			task.wait(BASE_DELAY * attempt)
+			continue
 		end
 
-		return Result
+		return body
 	end
 end
 

@@ -201,7 +201,7 @@ local function WrapTab(Tab)
 end
 
 function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/deVVQEVybd", Icon = nil, Center = true, AutoShow = true, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
+	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/deVVQEVybd", Icon = nil, Center = true, AutoShow = false, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
 	local SettingsTab
 	local Wrapped = {
 		Raw = Window,
@@ -415,6 +415,7 @@ local Config = {
 	SilentAim = false,
 	SilentAimFOV = 100,
 	SilentAimFOVLocked = false,
+	SilentAimFOVTransparency = 0,
 	SilentAimHitChance = 100,
 	SilentAimTargetPart = "Head",
 
@@ -436,6 +437,7 @@ local Config = {
 	-- Character Movement
 	Character_Fly = false,
 	Character_FlySpeed = 50,
+	AntiFall = false,
 	Character_WalkSpeedEnabled = false,
 	Character_WalkSpeed = 16,
 	Character_SprintSpeedEnabled = false,
@@ -1692,6 +1694,7 @@ FOVCircle.Radius = Config.SilentAimFOV
 FOVCircle.Filled = false
 FOVCircle.Visible = false
 FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Transparency = 0
 
 -- Velocity Cache
 getgenv().VelocityCache = {}
@@ -2038,6 +2041,19 @@ local function SetupEnvironmentHooks()
 					-- 2. Force Overrides AFTER game logic
 					local lighting = game:GetService("Lighting")
 
+					-- FullBright: re-applied every frame so EnvironmentService cannot revert it
+					if Config.FullBright then
+						if not FullBrightState.applied then
+							FullBright_Store(lighting)
+						end
+						lighting.Brightness    = 2
+						lighting.ClockTime     = 12
+						lighting.FogEnd        = 100000
+						lighting.GlobalShadows = false
+						lighting.Ambient       = Color3.new(1, 1, 1)
+						FullBrightState.applied = true
+					end
+
 					if Config.AlwaysDay then
 						lighting.ClockTime = 12
 					end
@@ -2080,6 +2096,13 @@ local function SetupEnvironmentHooks()
 
 					-- Direct Force Fallback
 					local lighting = game:GetService("Lighting")
+					if Config.FullBright then
+						if not FullBrightState.applied then FullBright_Store(lighting) end
+						lighting.Brightness = 2; lighting.ClockTime = 12
+						lighting.FogEnd = 100000; lighting.GlobalShadows = false
+						lighting.Ambient = Color3.new(1,1,1)
+						FullBrightState.applied = true
+					end
 					if Config.AlwaysDay then lighting.ClockTime = 12 end
 					if Config.NoFog then
 						lighting.FogEnd = 100000
@@ -2170,6 +2193,7 @@ function SetupHooks()
 				self.IsGrounded = true
 
 				local camCF = Camera.CFrame
+
 				local dir = Vector3_new(0, 0, 0)
 
 				if viewInput and viewInput.Magnitude > 0 then
@@ -2209,7 +2233,21 @@ function SetupHooks()
 					end
 				end
 
-				return OldUpdate(self, viewInput, dt, ...)
+				local result = OldUpdate(self, viewInput, dt, ...)
+
+				-- AntiFall: cancel fall damage and gravity accumulation post-update
+				if Config.AntiFall then
+					self.VelocityGravity = 0
+					self.HeightState     = 0
+					self.IsGrounded      = true
+					self.FallHeight      = 0
+					if self._localActor then
+						self._localActor.FallHeight  = 0
+						self._localActor.Grounded     = true
+					end
+				end
+
+				return result
 			end
 		end
 	else
@@ -2525,8 +2563,13 @@ local function UpdateCombat(frameId)
 	if FOVCircle then
 		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
 		if FOVCircle.Visible then
-			FOVCircle.Position = mouse
-			if not Config.SilentAimFOVLocked then
+			FOVCircle.Transparency = Config.SilentAimFOVTransparency or 0
+			if Config.SilentAimFOVLocked then
+				-- Mobile: pin FOV circle to screen center instead of mouse/touch position
+				local vp = Camera.ViewportSize
+				FOVCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+			else
+				FOVCircle.Position = mouse
 				FOVCircle.Radius = Config.SilentAimFOV
 			end
 		end
@@ -4130,6 +4173,16 @@ S_Movement:AddSlider({
 
 })
 
+S_Movement:AddToggle({
+	Name = "Anti Fall",
+	Flag = "Char_AntiFall",
+	Default = false,
+	Tooltip = "Hủy fall damage và gravity tích lũy — tận dụng fly controller hook, không cần fly bật",
+	Callback = function(v)
+		Config.AntiFall = v
+	end
+})
+
 S_Movement:AddToggle({ 
 	Name = "Walk Speed", 
 	Flag = "Char_WalkSpeedEnabled", 
@@ -4170,8 +4223,8 @@ S_Movement:AddSlider({
 	end 
 })
 
--- World Section (based on EnvironmentService analysis)
-local S_World = CharacterTab:DrawSection({ Name = "World", Position = "right" })
+-- World Section moved to VisualsTab — visual effects belong here, not Character
+local S_World = VisualsTab:DrawSection({ Name = "Visual Effects", Position = "right" })
 
 S_World:AddToggle({ 
 	Name = "Thermal Vision", 
@@ -4273,19 +4326,35 @@ S_World:AddDropdown({
 	end
 })
 
+-- NVG Clear: track watcher connection so we can stop it when toggled off
+local _nvgClearWatcher = nil
+
 S_World:AddToggle({
 	Name = "Clear NVG Interface",
 	Flag = "World_ClearNVGInterface",
 	Default = false,
-	Tooltip = "Xóa NVGInterface ScreenGui khỏi PlayerGui (tắt overlay NVG gốc của game)",
+	Tooltip = "Xóa và chặn NVGInterface ScreenGui. Tắt toggle sẽ dừng chặn nhưng không khôi phục GUI đã bị xóa.",
 	Callback = function(v)
 		Config.ClearNVGInterface = v
 		if v then
+			-- Destroy existing NVGInterface immediately
 			local playerGui = LocalPlayer:WaitForChild("PlayerGui")
 			for _, guiElement in ipairs(playerGui:GetChildren()) do
 				if guiElement:IsA("ScreenGui") and guiElement.Name == "NVGInterface" then
 					guiElement:Destroy()
 				end
+			end
+			-- Watch for game trying to re-add NVGInterface and destroy on sight
+			_nvgClearWatcher = playerGui.DescendantAdded:Connect(function(obj)
+				if Config.ClearNVGInterface and obj:IsA("ScreenGui") and obj.Name == "NVGInterface" then
+					obj:Destroy()
+				end
+			end)
+		else
+			-- Stop watching — game can re-add NVGInterface now
+			if _nvgClearWatcher then
+				_nvgClearWatcher:Disconnect()
+				_nvgClearWatcher = nil
 			end
 		end
 	end
@@ -4541,6 +4610,35 @@ S_Atmosphere:AddToggle({
 
 -- Settings Tab
 local SettingsTab = Window:DrawTab({ Name = "Settings", Icon = "settings", Type = "Double" })
+
+-- FOV Visual section in Settings — transparency of the FOV circle
+local S_FOVControl = SettingsTab:DrawSection({ Name = "FOV Circle", Position = "left" })
+
+S_FOVControl:AddSlider({
+	Name = "FOV Transparency",
+	Min = 0,
+	Max = 100,
+	Default = 0,
+	Flag = "Settings_FOVTransparency",
+	Tooltip = "0 = đục hoàn toàn, 100 = trong suốt hoàn toàn. Chỉnh độ mờ của vòng tròn FOV.",
+	Callback = function(v)
+		Config.SilentAimFOVTransparency = v / 100
+		if FOVCircle then
+			FOVCircle.Transparency = Config.SilentAimFOVTransparency
+		end
+	end
+})
+
+S_FOVControl:AddToggle({
+	Name = "Lock FOV (Mobile)",
+	Flag = "Settings_SilentAimFOVLock",
+	Default = false,
+	Tooltip = "Khóa FOV tại tâm màn hình — dành cho mobile",
+	Callback = function(v)
+		Config.SilentAimFOVLocked = v
+	end
+})
+
 local MenuGroup = SettingsTab:DrawSection({ Name = "Menu", Position = "left" })
 
 MenuGroup:AddToggle({

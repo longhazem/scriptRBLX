@@ -86,17 +86,20 @@ end
 
 
 -- ═══════════════════════════════════════════════
--- LOCK FOV SILENT AIM (Mobile-optimized)
+-- LOCK FOV SILENT AIM — FIXED VERSION
 -- ═══════════════════════════════════════════════
 local LockFOVSilent = {}
 LockFOVSilent.enabled = false
 LockFOVSilent.fov = 50  -- degrees
 LockFOVSilent.target = nil
+LockFOVSilent.lastUpdate = 0
 
 function LockFOVSilent:getVisibleTargets(fov)
 	local targets = {}
 	local cam = workspace.CurrentCamera
 	local player = game:GetService("Players").LocalPlayer
+	
+	if not player or not cam then return targets end
 	
 	for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
 		if p == player or not p.Character then continue end
@@ -104,13 +107,24 @@ function LockFOVSilent:getVisibleTargets(fov)
 		local hum = char:FindFirstChildOfClass("Humanoid")
 		if not hum or hum.Health <= 0 then continue end
 		
-		local targetPos = (char:FindFirstChild("Head") or char.PrimaryPart).Position
-		local relPos = targetPos - cam.CFrame.Position
-		local angle = math.acos(math.min(1, cam.CFrame.LookVector:Dot(relPos.Unit)))
+		local head = char:FindFirstChild("Head") or char.PrimaryPart
+		if not head then continue end
+		
+		local targetPos = head.Position
+		local camPos = cam.CFrame.Position
+		local relPos = targetPos - camPos
+		
+		if relPos.Magnitude == 0 then continue end
+		
+		local lookVec = cam.CFrame.LookVector
+		local relVecNorm = relPos.Unit
+		
+		local dotProd = math.max(-1, math.min(1, lookVec:Dot(relVecNorm)))
+		local angle = math.acos(dotProd)
 		local angleDeg = math.deg(angle)
 		
 		if angleDeg <= fov / 2 then
-			table.insert(targets, {player = p, angle = angleDeg})
+			table.insert(targets, {player = p, angle = angleDeg, char = char})
 		end
 	end
 	
@@ -118,25 +132,22 @@ function LockFOVSilent:getVisibleTargets(fov)
 	return targets
 end
 
-function LockFOVSilent:update()
+function LockFOV:update()
 	if not self.enabled then return end
-	
-	local targets = self:getVisibleTargets(self.fov)
-	if #targets == 0 then
-		self.target = nil
-		return
-	end
-	
-	self.target = targets[1].player
+	local now = tick()
+	if now - self.lastUpdate < 0.1 then return end
+	self.lastUpdate = now
+	local targets = self:getTargets()
+	self.target = targets[1] and targets[1].player or nil
 end
 
 function LockFOVSilent:toggle()
 	self.enabled = not self.enabled
 	if self.enabled then
-		print("[RBM5] Lock FOV Silent: ENABLED (FOV: " .. self.fov .. "°)")
+		print("[RBM5] ✓ Lock FOV Silent: ENABLED (FOV: " .. self.fov .. "°)")
 	else
 		self.target = nil
-		print("[RBM5] Lock FOV Silent: DISABLED")
+		print("[RBM5] ✗ Lock FOV Silent: DISABLED")
 	end
 end
 
@@ -4858,32 +4869,43 @@ task.spawn(function()
 	VehicleFly.HookVehicles()
 
 -- ═══════════════════════════════════════════════
--- FEATURE KEYBINDS
+-- FEATURE KEYBINDS & INITIALIZATION
 -- ═══════════════════════════════════════════════
 
--- Initialize features
-Fullbright:init()
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+-- Initialize features early
+pcall(function() Fullbright:init() end)
 
 -- F11: Toggle Fullbright
 UserInputService.InputBegan:Connect(function(input, proc)
 	if proc then return end
 	if input.KeyCode == Enum.KeyCode.F11 then
-		Fullbright:toggle()
+		pcall(function() Fullbright:toggle() end)
+		print("[RBM5] F11 pressed - Fullbright toggled")
 	end
 end)
 
--- Ctrl+L: Toggle Lock FOV Silent
+-- Ctrl+L: Toggle Lock FOV Silent Aim
 UserInputService.InputBegan:Connect(function(input, proc)
 	if proc then return end
-	if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) and input.KeyCode == Enum.KeyCode.L then
-		LockFOVSilent:toggle()
+	-- Check for Ctrl+L combination
+	local ctrlPressed = UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+	if ctrlPressed and input.KeyCode == Enum.KeyCode.L then
+		pcall(function() LockFOVSilent:toggle() end)
+		print("[RBM5] Ctrl+L pressed - Lock FOV toggled")
 	end
 end)
 
--- Update Lock FOV in heartbeat
-local hb = RunService.Heartbeat:Connect(function()
-	LockFOVSilent:update()
+-- Continuous Lock FOV update in heartbeat
+RunService.Heartbeat:Connect(function()
+	if LockFOVSilent and LockFOVSilent.enabled then
+		pcall(function() LockFOVSilent:update() end)
+	end
 end)
+
+print("[RBM5] ✓ All keybinds initialized")
 
 	print("[Vehicle Fly] Ready! Press X to toggle")
 end)

@@ -1,21 +1,56 @@
 local Repository = "https://raw.githubusercontent.com/mmr1337/Obsidian/main/"
 
 local function GetLoadstringSource(Url)
-	local Result = game:HttpGet(Url)
-	if typeof(Result) == "Instance" then
-		local Ok, Source = pcall(function()
-			return Result.Source
+	local MAX_RETRIES = 5
+	local RETRY_DELAY = 3 -- seconds, doubles each attempt
+
+	for attempt = 1, MAX_RETRIES do
+		local ok, Result = pcall(function()
+			return game:HttpGet(Url)
 		end)
-		if Ok and typeof(Source) == "string" then
-			Result = Source
-		else
-			error("HttpGet returned an Instance instead of source text for: " .. tostring(Url), 2)
+
+		if not ok then
+			-- HttpGet itself threw (network error, timeout, etc.)
+			if attempt == MAX_RETRIES then
+				error("HttpGet failed after " .. MAX_RETRIES .. " attempts for: " .. tostring(Url) .. " | Error: " .. tostring(Result), 2)
+			end
+			task.wait(RETRY_DELAY * attempt)
+			continue
 		end
+
+		-- Handle Instance return (some executors return Instance instead of string)
+		if typeof(Result) == "Instance" then
+			local instOk, Source = pcall(function() return Result.Source end)
+			if instOk and typeof(Source) == "string" then
+				Result = Source
+			else
+				error("HttpGet returned an Instance instead of source text for: " .. tostring(Url), 2)
+			end
+		end
+
+		if typeof(Result) ~= "string" then
+			error("HttpGet returned " .. typeof(Result) .. " instead of source text for: " .. tostring(Url), 2)
+		end
+
+		-- Check for HTTP error codes embedded in response (some executors return error text)
+		if Result:match("^HTTP %d%d%d") then
+			local code = Result:match("^HTTP (%d%d%d)")
+			if code == "429" then
+				if attempt == MAX_RETRIES then
+					error("GitHub rate limit (429) hit after " .. MAX_RETRIES .. " retries. Chờ vài phút rồi chạy lại.", 2)
+				end
+				-- Exponential backoff: 3s, 6s, 12s, 24s
+				local waitTime = RETRY_DELAY * (2 ^ (attempt - 1))
+				warn("Tokaihub: HTTP 429 rate limit — retry " .. attempt .. "/" .. MAX_RETRIES .. " sau " .. waitTime .. "s")
+				task.wait(waitTime)
+				continue
+			else
+				error("HttpGet returned HTTP " .. code .. " for: " .. tostring(Url), 2)
+			end
+		end
+
+		return Result
 	end
-	if typeof(Result) ~= "string" then
-		error("HttpGet returned " .. typeof(Result) .. " instead of source text for: " .. tostring(Url), 2)
-	end
-	return Result
 end
 
 local function PatchObsidianSource(Source)

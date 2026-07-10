@@ -1,21 +1,36 @@
 local Repository = "https://raw.githubusercontent.com/longhazem/lib-obsidian/main/"
 
+-- EXECUTOR COMPATIBILITY — Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
+local function ExecutorHttpGet(Url)
+	if request then local ok,r=pcall(request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
+	if http_request then local ok,r=pcall(http_request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
+	if syn and syn.request then local ok,r=pcall(syn.request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
+	if fluxus and fluxus.request then local ok,r=pcall(fluxus.request,{Url=Url,Method="GET"}) if ok and r and r.Body and typeof(r.Body)=="string" then return r.Body,r.StatusCode end end
+	local ok,r=pcall(function() return game:HttpGet(Url) end)
+	if ok and typeof(r)=="string" then return r,200 end
+	if ok and typeof(r)=="Instance" then local iok,src=pcall(function() return r.Source end) if iok and typeof(src)=="string" then return src,200 end end
+	return nil,0
+end
+
 local function GetLoadstringSource(Url)
-	local Result = game:HttpGet(Url)
-	if typeof(Result) == "Instance" then
-		local Ok, Source = pcall(function()
-			return Result.Source
-		end)
-		if Ok and typeof(Source) == "string" then
-			Result = Source
-		else
-			error("HttpGet returned an Instance instead of source text for: " .. tostring(Url), 2)
+	local MAX_RETRIES=5; local BASE_DELAY=3
+	for attempt=1,MAX_RETRIES do
+		local body,code=ExecutorHttpGet(Url)
+		if not body then
+			if attempt==MAX_RETRIES then error("[TokaiHub] Không lấy được file sau "..MAX_RETRIES.." lần. URL: "..tostring(Url),2) end
+			warn("[TokaiHub] HTTP failed — retry "..attempt.."/"..MAX_RETRIES) task.wait(BASE_DELAY*attempt) continue
 		end
+		if code==429 or body:match("^429") or body:lower():match("rate limit") then
+			if attempt==MAX_RETRIES then error("[TokaiHub] GitHub rate limit (429). Chờ 5-10 phút.",2) end
+			local w=BASE_DELAY*(2^(attempt-1)) warn("[TokaiHub] Rate limit — chờ "..w.."s") task.wait(w) continue
+		end
+		if code and code~=0 and code~=200 then error("[TokaiHub] HTTP "..tostring(code).." — "..tostring(Url),2) end
+		if body:match("^<!DOCTYPE") or body:match("^<html") then
+			if attempt==MAX_RETRIES then error("[TokaiHub] Server trả về HTML. URL sai.",2) end
+			task.wait(BASE_DELAY*attempt) continue
+		end
+		return body
 	end
-	if typeof(Result) ~= "string" then
-		error("HttpGet returned " .. typeof(Result) .. " instead of source text for: " .. tostring(Url), 2)
-	end
-	return Result
 end
 
 local function PatchObsidianSource(Source)
@@ -1027,25 +1042,22 @@ local function IsTeammate(actor, cachedLocalSquad)
 		return true
 	end
 
-	-- Rule 2: Team Check
-	-- On PVP maps (including 2v2/5v5), Roblox assigns same Team to both sides
-	-- making Team equality unreliable. Detect by map type AND player count.
+	-- Rule 2: Team Check — PVP 2v2/5v5 fix
 	local effectiveMapType = Config.CurrentMapType
-	if effectiveMapType == "Unknown" then
-		-- Small lobby (≤10 players) with team assignment = likely 2v2 or 5v5 PVP
-		local totalPlayers = #Players:GetPlayers()
-		if totalPlayers <= 10 and ownerPlayer.Team and LocalPlayer.Team then
-			effectiveMapType = "PVP"
+	-- Nil guard: ownerPlayer may be nil if actor has no Owner
+	if not isRealPlayer then
+		-- Not a real player, skip team check entirely
+	elseif ownerPlayer and ownerPlayer.Team and LocalPlayer.Team then
+		if effectiveMapType == "Unknown" then
+			-- Unknown map + team assignment + small lobby = PVP 2v2/5v5
+			local totalPlayers = #Players:GetPlayers()
+			if totalPlayers <= 10 then effectiveMapType = "PVP" end
 		end
-	end
-	if isRealPlayer and ownerPlayer.Team and LocalPlayer.Team then
 		if effectiveMapType ~= "PVP" then
-			-- Non-PVP: same team = teammate
 			if ownerPlayer.Team == LocalPlayer.Team then return true end
 		else
-			-- PVP (including 2v2/5v5): different team = confirmed enemy
+			-- PVP: different team = confirmed enemy, same team = fall through to squad
 			if ownerPlayer.Team ~= LocalPlayer.Team then return false end
-			-- Same team on PVP: fall through to squad check
 		end
 	end
 
@@ -1102,8 +1114,9 @@ function ActorManager:Update(dt)
 		self._lastSectorUpdate = 0
 	end
 
-	-- Optimize Map Detection (Every 10s)
-	if not self._lastMapUpdate or (now - self._lastMapUpdate > 10) then
+	-- Map Detection: every 10s normally, every 3s while Unknown (waiting for WorldService)
+	local mapDetectInterval = Config.CurrentMapType == "Unknown" and 3 or 10
+	if not self._lastMapUpdate or (now - self._lastMapUpdate > mapDetectInterval) then
 		Config.CurrentMapType = DetectMapType()
 		self._lastMapUpdate = now
 	end

@@ -1,4 +1,4 @@
-local Repository = "https://raw.githubusercontent.com/mmr1337/Obsidian/main/"
+local Repository = "https://raw.githubusercontent.com/longhazem/lib-obsidian/main/"
 
 local function GetLoadstringSource(Url)
 	local Result = game:HttpGet(Url)

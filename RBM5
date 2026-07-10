@@ -201,7 +201,7 @@ local function WrapTab(Tab)
 end
 
 function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/6zSx7gUeMQ", Icon = nil, Center = true, AutoShow = false, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
+	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/deVVQEVybd", Icon = nil, Center = true, AutoShow = false, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
 	local SettingsTab
 	local Wrapped = {
 		Raw = Window,

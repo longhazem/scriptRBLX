@@ -74,7 +74,7 @@ function MoonUI.newNotify()
 	return {
 		new = function(Data)
 			Library:Notify({
-				Title = (Data and Data.Title) or "Moon",
+				Title = (Data and Data.Title) or "Tokaihub",
 				Description = (Data and (Data.Content or Data.Description)) or "",
 				Icon = (Data and Data.Icon) or "info",
 				Time = (Data and Data.Duration) or 5,
@@ -201,7 +201,7 @@ local function WrapTab(Tab)
 end
 
 function MoonUI.new(Data)
-	local Window = Library:CreateWindow({ Title = "Moon", Footer = "discord.gg/6zSx7gUeMQ", Icon = 124218764552179, Center = true, AutoShow = false, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
+	local Window = Library:CreateWindow({ Title = "Tokaihub", Footer = "discord.gg/6zSx7gUeMQ", Icon = nil, Center = true, AutoShow = false, Resizable = true, NotifySide = "Right", ShowCustomCursor = false })
 	local SettingsTab
 	local Wrapped = {
 		Raw = Window,
@@ -219,8 +219,8 @@ function MoonUI.new(Data)
 			SaveManager:SetLibrary(Library)
 			SaveManager:IgnoreThemeSettings()
 			SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
-			ThemeManager:SetFolder("Moon")
-			SaveManager:SetFolder("Moon/specific-game")
+			ThemeManager:SetFolder("Tokaihub")
+			SaveManager:SetFolder("Tokaihub/specific-game")
 			if SaveManager.SetSubFolder then
 				SaveManager:SetSubFolder("specific-place")
 			end
@@ -414,6 +414,9 @@ local Config = {
 	-- Silent Aim
 	SilentAim = false,
 	SilentAimFOV = 100,
+	SilentAimFOVTransparency = 0,
+	SilentAimFOVLocked = false,
+	DayNight = "Day",
 	SilentAimHitChance = 100,
 	SilentAimTargetPart = "Head",
 
@@ -434,6 +437,7 @@ local Config = {
 	-- Character Movement
 	Character_Fly = false,
 	Character_FlySpeed = 50,
+	AntiFall = false,
 	Character_WalkSpeedEnabled = false,
 	Character_WalkSpeed = 16,
 	Character_SprintSpeedEnabled = false,
@@ -1709,6 +1713,7 @@ FOVCircle.Radius = Config.SilentAimFOV
 FOVCircle.Filled = false
 FOVCircle.Visible = false
 FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Transparency = 0
 
 -- Velocity Cache
 getgenv().VelocityCache = {}
@@ -2236,7 +2241,18 @@ function SetupHooks()
 					end
 				end
 
-				return OldUpdate(self, viewInput, dt, ...)
+				local _af_result = OldUpdate(self, viewInput, dt, ...)
+				if Config.AntiFall then
+					self.VelocityGravity = 0
+					self.HeightState     = 0
+					self.IsGrounded      = true
+					self.FallHeight      = 0
+					if self._localActor then
+						self._localActor.FallHeight = 0
+						self._localActor.Grounded   = true
+					end
+				end
+				return _af_result
 			end
 		end
 	else
@@ -2550,10 +2566,16 @@ local function UpdateCombat(frameId)
 	local mouse = UserInputService:GetMouseLocation()
 
 	if FOVCircle then
+		FOVCircle.Radius = Config.SilentAimFOV
+		FOVCircle.Transparency = Config.SilentAimFOVTransparency or 0
 		FOVCircle.Visible = Config.SilentAim and Config.ShowFOV
 		if FOVCircle.Visible then
-			FOVCircle.Position = mouse
-			FOVCircle.Radius = Config.SilentAimFOV
+			if Config.SilentAimFOVLocked then
+				local vp = Camera.ViewportSize
+				FOVCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
+			else
+				FOVCircle.Position = mouse
+			end
 		end
 	end
 
@@ -3540,17 +3562,17 @@ local Notifier = MoonUI.newNotify();
 
 -- Create Window
 local Window = MoonUI.new({
-	Name = "Moon",
+	Name = "Tokaihub",
 	Keybind = "LeftAlt",
-	Logo = "rbxassetid://124218764552179",
+	Logo = "",
 	Scale = MoonUI.Scale.Window,
 	TextSize = 14,
 });
 
 -- Initialize Config Manager
 local _ConfigManager = MoonUI:ConfigManager({ 
-	Directory = "Moon", 
-	Config = "Moon" 
+	Directory = "Tokaihub", 
+	Config = "Tokaihub" 
 })
 _ConfigManager.EnableNotify = true
 
@@ -3670,6 +3692,29 @@ S_SilentAim:AddSlider({
 	Callback = function(v) 
 		Config.SilentAimFOV = v
 	end 
+})
+
+S_SilentAim:AddSlider({
+	Name = "FOV Transparency",
+	Min = 0,
+	Max = 100,
+	Default = 0,
+	Flag = "Combat_FOVTransparency",
+	Tooltip = "0 = đục hoàn toàn, 100 = trong suốt hoàn toàn",
+	Callback = function(v)
+		Config.SilentAimFOVTransparency = v / 100
+		if FOVCircle then FOVCircle.Transparency = Config.SilentAimFOVTransparency end
+	end
+})
+
+S_SilentAim:AddToggle({
+	Name = "Lock FOV (Mobile)",
+	Flag = "Combat_LockFOV",
+	Default = false,
+	Tooltip = "Khóa vòng tròn FOV tại tâm màn hình — dành cho mobile",
+	Callback = function(v)
+		Config.SilentAimFOVLocked = v
+	end
 })
 
 S_SilentAim:AddSlider({ 
@@ -4067,12 +4112,39 @@ FlyToggle.Link:AddKeybind({
 
 game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
 
-	-- Fly Toggle
-	if FlyKey and FlyKey ~= "None" and (input.KeyCode.Name == FlyKey or input.KeyCode == FlyKey) then
+	local keyName = input.KeyCode.Name
+
+	-- Fly Toggle — dedicated key handler
+	if FlyKey and FlyKey ~= "None" and keyName == FlyKey then
 		FlyToggle:SetValue(not FlyToggle:GetValue())
 	end
-	if Window.Keybind and Window.Keybind ~= "None" and (input.KeyCode.Name == Window.Keybind or input.KeyCode == Window.Keybind) then
+
+	-- UI Toggle keybind
+	if Window.Keybind and Window.Keybind ~= "None" and keyName == Window.Keybind then
+		if Library.SetShown then Library:SetShown(not Library.Shown) end
+	end
+
+	-- Global KeyPicker handler — works even when UI is hidden (AutoShow = false)
+	-- Obsidian's built-in KeyPicker skips input when Library.Shown = false
+	-- This bypasses that check entirely
+	if Options then
+		for flag, option in pairs(Options) do
+			-- Only process KeyPicker options (they have IsPressed or GetKeybind)
+			if option and option.Value and option.Type == "KeyPicker" then
+				local boundKey = option.Value
+				if boundKey and boundKey ~= "None" and keyName == boundKey then
+					-- Find the parent toggle by stripping _Key suffix
+					local parentFlag = flag:gsub("_Key$", "")
+					local parentToggle = Options[parentFlag]
+					if parentToggle and parentToggle.SetValue and parentToggle.Value ~= nil then
+						-- Mode: Toggle — flip the value
+						parentToggle:SetValue(not parentToggle.Value)
+					end
+				end
+			end
+		end
 	end
 end)
 
@@ -4149,6 +4221,16 @@ S_Movement:AddSlider({
 	end 
 })
 
+S_Movement:AddToggle({
+	Name = "Anti Fall",
+	Flag = "Char_AntiFall",
+	Default = false,
+	Tooltip = "Hủy fall damage — tận dụng controller hook, không cần fly bật",
+	Callback = function(v)
+		Config.AntiFall = v
+	end
+})
+
 -- World Section (based on EnvironmentService analysis)
 local S_World = CharacterTab:DrawSection({ Name = "World", Position = "right" })
 
@@ -4213,6 +4295,23 @@ local function ApplyNVGEffect()
 		NVGColorCorrection.Enabled = true
 	end
 end
+
+S_World:AddDropdown({
+	Name = "Time of Day",
+	Flag = "World_DayNight",
+	Values = {"Day", "Night"},
+	Default = "Day",
+	Tooltip = "Day = 12:00 trưa, Night = 0:00 nửa đêm",
+	Callback = function(v)
+		Config.DayNight = v
+		local lighting = game:GetService("Lighting")
+		if v == "Day" then
+			lighting.ClockTime = 12
+		elseif v == "Night" then
+			lighting.ClockTime = 0
+		end
+	end
+})
 
 S_World:AddToggle({ 
 	Name = "Night Vision", 
@@ -4656,8 +4755,8 @@ table.insert(getgenv().Moon_Connections, espLoop)
 
 -- Success notification
 Notifier.new({
-	Title = "tokai",
-	Content = "tokai loaded successfully!",
+	Title = "Tokaihub",
+	Content = "Tokaihub loaded successfully!",
 	Duration = 5,
 	Icon = "rbxassetid://124218764552179"
 });

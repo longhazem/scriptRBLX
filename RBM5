@@ -4779,14 +4779,39 @@ if Config.AutoDetectMap then
 	Config.CurrentMapType = DetectMapType()
 end
 
--- Initialize Services and Hooks Synchronously via initial scan
+-- Initialize Services — retry until ReplicatorService found
+-- Fix: BulkScan cache miss on first load causes ESP/Ragebot/SilentAim to not work
+-- until script is re-executed. Now retries with cache invalidation each attempt.
 task.spawn(function()
-	task.wait(2.5) -- Wait for GUI to initialize and animate first
-	if InitializeServices() then
-		-- RefreshFirearmControllers is now inside InitializeServices
+	task.wait(2.5)
+
+	local MAX_ATTEMPTS = 8
+	local RETRY_DELAY  = 1.5
+	local initialized  = false
+
+	for attempt = 1, MAX_ATTEMPTS do
+		-- Invalidate BulkScan cache so each attempt does a real memory scan
+		gcCache  = nil
+		lastScan = 0
+
+		local ok = InitializeServices()
+
+		if ok and ReplicatorService and ReplicatorService.Actors then
+			initialized = true
+			warn("[TokaiHub] Services ready (attempt " .. attempt .. ")")
+			break
+		end
+
+		if attempt < MAX_ATTEMPTS then
+			warn("[TokaiHub] Not ready — retry " .. attempt .. "/" .. MAX_ATTEMPTS)
+			task.wait(RETRY_DELAY)
+		end
 	end
 
-	-- Initialize Vehicle Fly hooks
+	if not initialized then
+		warn("[TokaiHub] Failed to init after " .. MAX_ATTEMPTS .. " attempts")
+	end
+
 	task.wait(0.5)
 	VehicleFly.HookVehicles()
 	print("[Vehicle Fly] Ready! Press X to toggle")

@@ -3564,7 +3564,7 @@ local Notifier = MoonUI.newNotify();
 local Window = MoonUI.new({
 	Name = "Tokaihub",
 	Keybind = "LeftAlt",
-	Logo = "",
+	Logo = nil,
 	Scale = MoonUI.Scale.Window,
 	TextSize = 14,
 });
@@ -4758,7 +4758,7 @@ Notifier.new({
 	Title = "Tokaihub",
 	Content = "Tokaihub loaded successfully!",
 	Duration = 5,
-	Icon = "rbxassetid://124218764552179"
+	Icon = ""
 });
 
 -- Initial Map Detection

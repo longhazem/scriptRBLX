@@ -628,10 +628,38 @@ local function BulkScan() -- High performance scanning engine
 
 	local startTime = os_clock()
 
-	-- Optimized Scanner: Use filtergc with 'table' filter for 10x faster iteration
+	-- Primary: filtergc/getgc memory scan
 	local success, res = pcall(function() return filtergc("table") end)
 	if not success then success, res = pcall(function() return getgc(true) end) end
-	if not success or type(res) ~= "table" then return end
+
+	-- Fallback: if GC scan failed or returned nothing, try debug.getregistry()
+	-- This covers executors that don't support filtergc/getgc
+	if not success or type(res) ~= "table" or #res == 0 then
+		warn("[TokaiHub] GC scan failed — trying debug.getregistry fallback")
+		local regOk, registry = pcall(debug.getregistry)
+		if regOk and type(registry) == "table" and #registry > 0 then
+			success = true
+			res = registry
+			warn("[TokaiHub] debug.getregistry returned " .. #registry .. " entries")
+		else
+			-- Last resort: wait for GC to populate and retry up to 3x
+			for i = 1, 3 do
+				task.wait(1.5)
+				success, res = pcall(function() return filtergc("table") end)
+				if not success then success, res = pcall(function() return getgc(true) end) end
+				if success and type(res) == "table" and #res > 0 then
+					warn("[TokaiHub] GC retry " .. i .. " succeeded (" .. #res .. " objects)")
+					break
+				end
+				warn("[TokaiHub] GC retry " .. i .. " failed")
+			end
+		end
+	end
+
+	if not success or type(res) ~= "table" then
+		warn("[TokaiHub] All scan methods failed — ESP/Ragebot will not work")
+		return
+	end
 
 	gcCache = res
 	lastScan = now

@@ -1,7 +1,7 @@
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "TokaihHub - Reign Fall",
-   Icon = nil,
+   Icon = 0,
    LoadingTitle = "TokaihHub",
    LoadingSubtitle = "Reign Fall Script",
    ShowText = "TokaihHub",
@@ -455,7 +455,7 @@ RunService.Heartbeat:Connect(function()
     UpdateHitboxExpander()
 end)
 
-local CombatTab = Window:CreateTab("Combat", nil)
+local CombatTab = Window:CreateTab("Combat", 0)
 CombatTab:CreateToggle({
    Name = "Raycast Silent Aim",
    CurrentValue = false,
@@ -496,7 +496,7 @@ CombatTab:CreateSlider({
    end,
 })
 
-local WeaponsTab = Window:CreateTab("Weapons", nil)
+local WeaponsTab = Window:CreateTab("Weapons", 0)
 WeaponsTab:CreateToggle({
    Name = "No Recoil",
    CurrentValue = false,
@@ -531,7 +531,7 @@ WeaponsTab:CreateToggle({
    end,
 })
 
-local VisualsTab = Window:CreateTab("Visuals", nil)
+local VisualsTab = Window:CreateTab("Visuals", 0)
 VisualsTab:CreateToggle({
    Name = "Highlight ESP",
    CurrentValue = false,
@@ -547,12 +547,12 @@ VisualsTab:CreateToggle({
    end,
 })
 
-VisualsTab:CreateLabel("ESP Colors:")
-VisualsTab:CreateLabel("🔴 Red = Zombies")
-VisualsTab:CreateLabel("🟢 Green = Objectives")
-VisualsTab:CreateLabel("🔵 Cyan = Team")
+VisualsTab:CreateLabel({Text = "ESP Colors:"})
+VisualsTab:CreateLabel({Text = "🔴 Red = Zombies"})
+VisualsTab:CreateLabel({Text = "🟢 Green = Objectives"})
+VisualsTab:CreateLabel({Text = "🔵 Cyan = Team"})
 
-local WorldTab = Window:CreateTab("World", nil)
+local WorldTab = Window:CreateTab("World", 0)
 WorldTab:CreateToggle({
    Name = "No Fog",
    CurrentValue = false,
@@ -571,8 +571,8 @@ WorldTab:CreateToggle({
    end,
 })
 
-local SettingsTab = Window:CreateTab("Settings", nil)
-SettingsTab:CreateLabel("TokaihHub - Reign Fall")
+local SettingsTab = Window:CreateTab("Settings", 0)
+SettingsTab:CreateLabel({Text = "TokaihHub - Reign Fall"})
 SettingsTab:CreateButton({
    Name = "Destroy UI",
    Callback = function()

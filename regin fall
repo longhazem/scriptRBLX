@@ -1,6 +1,6 @@
 -- ════════════════════════════════════════════════════════════════════════════
--- TOKAIHUB — REIGN FALL (COMPLETE WITH HITBOX EXPANDER)
--- Rayfield UI + Highlight ESP + Weapons + World Mods + Hitbox Expander
+-- TOKAIHUB — REIGN FALL (COMBAT ONLY)
+-- Rayfield UI + All Features in One Combat Tab
 -- ════════════════════════════════════════════════════════════════════════════
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -88,10 +88,11 @@ local function applyHitboxExpander(part)
             if not expandedHitboxes[part] then
                 part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
                 part.CanCollide = false
-                part.Transparency = 0
+                part.Transparency = 0.7
                 expandedHitboxes[part] = true
             else
                 part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+                part.Transparency = 0.7
             end
         end)
     end
@@ -500,11 +501,12 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
--- UI TABS
+-- UI - SINGLE COMBAT TAB
 -- ═════════════════════════════════════════════════════════════════════════════
 
--- Combat Tab
 local CombatTab = Window:CreateTab("Combat", 0)
+
+-- Aim Section
 CombatTab:CreateToggle({
    Name = "Raycast Silent Aim",
    CurrentValue = false,
@@ -523,6 +525,9 @@ CombatTab:CreateToggle({
    end,
 })
 
+CombatTab:CreateDivider()
+
+-- Hitbox Section
 CombatTab:CreateToggle({
    Name = "Hitbox Expander",
    CurrentValue = false,
@@ -545,9 +550,10 @@ CombatTab:CreateSlider({
    end,
 })
 
--- Weapon Tab
-local WeaponTab = Window:CreateTab("Weapons", 0)
-WeaponTab:CreateToggle({
+CombatTab:CreateDivider()
+
+-- Weapons Section
+CombatTab:CreateToggle({
    Name = "No Recoil",
    CurrentValue = false,
    Flag = "NoRecoilEnabled",
@@ -557,7 +563,7 @@ WeaponTab:CreateToggle({
    end,
 })
 
-WeaponTab:CreateSlider({
+CombatTab:CreateSlider({
    Name = "RPM",
    Min = 0,
    Max = 1200,
@@ -569,7 +575,7 @@ WeaponTab:CreateSlider({
    end,
 })
 
-WeaponTab:CreateToggle({
+CombatTab:CreateToggle({
    Name = "Infinite Ammo",
    CurrentValue = false,
    Flag = "InfiniteAmmoEnabled",
@@ -581,10 +587,11 @@ WeaponTab:CreateToggle({
    end,
 })
 
--- Visuals Tab
-local VisualsTab = Window:CreateTab("Visuals", 0)
-VisualsTab:CreateToggle({
-   Name = "Highlight ESP (Wallhack)",
+CombatTab:CreateDivider()
+
+-- Visuals Section
+CombatTab:CreateToggle({
+   Name = "Highlight ESP",
    CurrentValue = false,
    Flag = "HighlightESPEnabled",
    Callback = function(Value)
@@ -598,14 +605,10 @@ VisualsTab:CreateToggle({
    end,
 })
 
-VisualsTab:CreateLabel("ESP Colors:")
-VisualsTab:CreateLabel("🔴 Red = Zombies")
-VisualsTab:CreateLabel("🟢 Green = Objectives")
-VisualsTab:CreateLabel("🔵 Cyan = Team")
+CombatTab:CreateDivider()
 
--- World Tab
-local WorldTab = Window:CreateTab("World", 0)
-WorldTab:CreateToggle({
+-- World Section
+CombatTab:CreateToggle({
    Name = "No Fog",
    CurrentValue = false,
    Flag = "NoFogEnabled",
@@ -614,7 +617,7 @@ WorldTab:CreateToggle({
    end,
 })
 
-WorldTab:CreateToggle({
+CombatTab:CreateToggle({
    Name = "Fullbright",
    CurrentValue = false,
    Flag = "FullbrightEnabled",
@@ -623,17 +626,7 @@ WorldTab:CreateToggle({
    end,
 })
 
--- Settings Tab
-local SettingsTab = Window:CreateTab("Settings", 0)
-SettingsTab:CreateLabel("TokaihHub - Reign Fall")
-SettingsTab:CreateButton({
-   Name = "Destroy UI",
-   Callback = function()
-      Window:Destroy()
-   end,
-})
-
-print("[TokaihHub] Reign Fall script loaded - Complete Edition")
+print("[TokaihHub] Reign Fall script loaded")
 Rayfield:Notify({
    Title = "TokaihHub",
    Content = "Reign Fall ready!",

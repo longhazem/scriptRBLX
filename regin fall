@@ -14,9 +14,35 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- Infinite Stamina & Movement Bypass Setup
+task.spawn(function()
+    while true do
+        if lp.Character and lp.Character:FindFirstChild("Values") then
+            local stamina = lp.Character.Values:FindFirstChild("Stamina")
+            if stamina and stamina:IsA("NumberValue") and stamina.Value < 100 then
+                stamina.Value = 100
+            end
+        end
+        task.wait(0.1)
+    end
+end)
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+    
+    if method == "FireServer" and self.Name == "SetServerMovementState" then
+        return nil
+    end
+    
+    return oldNamecall(self, ...)
+end))
 
 local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
@@ -216,8 +242,8 @@ RunService.Heartbeat:Connect(function()
    end
 end)
 
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+local oldRayNamecall
+oldRayNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    local method = getnamecallmethod()
    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
       local args = {...}
@@ -233,9 +259,9 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             end
          end
       end
-      return oldNamecall(self, unpack(args))
+      return oldRayNamecall(self, unpack(args))
    end
-   return oldNamecall(self, ...)
+   return oldRayNamecall(self, ...)
 end))
 
 local function findRegisterHitEvent()
@@ -351,8 +377,8 @@ local function ModifyWeaponRecoil(tool)
          local fireRate = weaponData:FindFirstChild("FireRate")
          if fireRate then fireRate.Value = 60 / config.rpm end
       end
-   end)
-end
+   end
+end)
 
 local function ModifyAllWeapons()
    local backpack = lp:FindFirstChild("Backpack")
@@ -403,4 +429,4 @@ VisualsTab:CreateToggle({Name = "Fullbright", Callback = function(v) config.full
 VisualsTab:CreateToggle({Name = "No Fog", Callback = function(v) config.nofog = v end})
 local UtilityTab = Window:CreateTab("Utility", 0)
 UtilityTab:CreateToggle({Name = "Infinite Ammo", Callback = function(v) config.infiniteAmmo = v end})
-UtilityTab:CreateToggle({Name = "No Recoil", Callback = function(v) config.norecoil = v end})
+UtilityTab:CreateToggle({Name = "No Recoil in anpha not work", Callback = function(v) config.norecoil = v end})

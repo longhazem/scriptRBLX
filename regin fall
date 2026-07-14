@@ -1,0 +1,445 @@
+-- ════════════════════════════════════════════════════════════════════════════
+-- TOKAIHUB — REIGN FALL (WITH ZOMBIE ESP)
+-- Rayfield UI + All Features + ESP
+-- ════════════════════════════════════════════════════════════════════════════
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Window = Rayfield:CreateWindow({
+   Name = "TokaihHub - Reign Fall",
+   Icon = 0,
+   LoadingTitle = "TokaihHub",
+   LoadingSubtitle = "Reign Fall Script",
+   ShowText = "TokaihHub",
+   Theme = "Default",
+   ToggleUIKeybind = "K",
+   DisableRayfieldPrompts = false,
+   DisableBuildWarnings = false,
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = "TokaihHub",
+      FileName = "Reign_Fall"
+   },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvitelink",
+      RememberJoins = true
+   },
+   KeySystem = false
+})
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- SERVICES & VARIABLES
+-- ═════════════════════════════════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local lp = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+local config = {
+   raycasting = false,
+   autoHit = false,
+   infiniteAmmo = false,
+   objectiveESP = false,
+   zombieESP = false
+}
+
+local target = {
+   enabled = true,
+   position = nil
+}
+
+local espObjects = {}
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- RAYCAST REDIRECTION (MODEL 1)
+-- ═════════════════════════════════════════════════════════════════════════════
+
+local function getEnemyContainer()
+    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+    if container then
+        return container:FindFirstChild("enemies")
+    end
+    return nil
+end
+
+local function getClosestHead()
+    local container = getEnemyContainer()
+    if not container then return nil end
+    local referencePos
+    if isMobile then
+        local vp = camera.ViewportSize
+        referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
+    else
+        referencePos = UserInputService:GetMouseLocation()
+    end
+    local bestHeadPos = nil
+    local bestDist = math.huge
+    for _, enemy in ipairs(container:GetChildren()) do
+        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+        if head then
+            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
+            if onScreen then
+                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    bestHeadPos = head.Position
+                end
+            end
+        end
+    end
+    return bestHeadPos
+end
+
+RunService.Heartbeat:Connect(function()
+    if config.raycasting and target.enabled then
+        target.position = getClosestHead()
+    end
+end)
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if config.raycasting and target.enabled and method:lower() == "raycast" and self == workspace then
+        local args = {...}
+        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+            local raycastParams = args[3]
+            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
+                if target.position then
+                    local origin = args[1]
+                    local dir = target.position - origin
+                    if dir.Magnitude > 0.001 then
+                        args[2] = dir.Unit * args[2].Magnitude
+                    end
+                end
+            end
+        end
+        return oldNamecall(self, unpack(args))
+    end
+    return oldNamecall(self, ...)
+end))
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- AUTO HIT (MODEL 2)
+-- ═════════════════════════════════════════════════════════════════════════════
+
+local function findRegisterHitEvent()
+    local v3 = lp.Character
+    if not v3 then
+        return nil
+    end
+    for v2, v4 in ipairs(v3:GetChildren()) do
+        local v9 = v4:FindFirstChild("ServerEvents")
+        if v9 then
+            local v8 = v9:FindFirstChild("RegisterHit")
+            if v8 and v8:IsA("RemoteEvent") then
+                return v8
+            end
+        end
+    end
+    return nil
+end
+
+local function getTargets()
+    local v11 = {}
+    for v2, v7 in ipairs(workspace:GetDescendants()) do
+        if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+            local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+            if v12 then
+                table.insert(v11, {model = v7, part = v12})
+            end
+        end
+    end
+    if #v11 == 0 and typeof(getnilinstances) == "function" then
+        for v2, v7 in ipairs(getnilinstances()) do
+            if v7:IsA("Model") then
+                local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+                if v12 then
+                    table.insert(v11, {model = v7, part = v12})
+                end
+            end
+        end
+    end
+    return v11
+end
+
+task.spawn(function()
+    while task.wait(0.2) do
+        if config.autoHit then
+            local v5 = findRegisterHitEvent()
+            if v5 then
+                local v11 = getTargets()
+                if #v11 > 0 then
+                    local v6 = {}
+                    for v2, v10 in ipairs(v11) do
+                        table.insert(v6, {
+                            amount = 1,
+                            target = v10.model,
+                            is_friendly = false,
+                            part = v10.part
+                        })
+                    end
+                    if #v6 > 0 then
+                        v5:FireServer(v6, {})
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- INFINITE AMMO
+-- ═════════════════════════════════════════════════════════════════════════════
+
+local function SetInfiniteAmmo(tool)
+    if not tool then return end
+    pcall(function()
+        local weaponData = tool:FindFirstChild("WeaponData")
+        if not weaponData then return end
+        local essentials = weaponData:FindFirstChild("Essentials")
+        if not essentials then return end
+        local ammo = essentials:FindFirstChild("Ammo")
+        if ammo and ammo:IsA("NumberValue") then
+            ammo.Value = 99999
+        end
+    end)
+end
+
+local function UpdateAllAmmo()
+    local backpack = lp:FindFirstChild("Backpack")
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                SetInfiniteAmmo(tool)
+            end
+        end
+    end
+    local character = lp.Character
+    if character then
+        for _, tool in ipairs(character:GetChildren()) do
+            if tool:IsA("Tool") then
+                SetInfiniteAmmo(tool)
+            end
+        end
+    end
+end
+
+lp.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    if config.infiniteAmmo then
+        UpdateAllAmmo()
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if config.infiniteAmmo then
+        UpdateAllAmmo()
+    end
+end)
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- OBJECTIVE ESP
+-- ═════════════════════════════════════════════════════════════════════════════
+
+local function CreateESPBox(object, name, color)
+    local bbox = Instance.new("BillboardGui")
+    bbox.Name = "ESP_" .. name
+    bbox.Size = UDim2.new(4, 0, 4, 0)
+    bbox.MaxDistance = 500
+    bbox.Adornee = object
+    
+    local frame = Instance.new("Frame", bbox)
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundTransparency = 1
+    frame.BorderSizePixel = 0
+    
+    local outline = Instance.new("UIStroke", frame)
+    outline.Thickness = 2
+    outline.Color = color
+    
+    local label = Instance.new("TextLabel", frame)
+    label.Size = UDim2.new(1, 0, 0, 20)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = color
+    label.TextScaled = true
+    label.Font = Enum.Font.GothamBold
+    label.Text = name
+    
+    bbox.Parent = object
+    return bbox
+end
+
+local function UpdateObjectiveESP()
+    if not config.objectiveESP then return end
+    
+    local game_workspace = workspace:FindFirstChild("Game")
+    if not game_workspace then return end
+    
+    local current = game_workspace:FindFirstChild("Current")
+    if not current then return end
+    
+    local spawned = current:FindFirstChild("Spawned")
+    if not spawned then return end
+    
+    local gameObjects = spawned:FindFirstChild("GameObjects")
+    if not gameObjects then return end
+    
+    for _, obj in ipairs(gameObjects:GetChildren()) do
+        if obj:IsA("Model") and obj.Name:sub(1, 8) == "mission_" then
+            if not espObjects[obj] then
+                espObjects[obj] = CreateESPBox(obj, obj.Name, Color3.fromRGB(0, 255, 0))
+            end
+        end
+    end
+    
+    for obj, esp in pairs(espObjects) do
+        if not obj.Parent then
+            esp:Destroy()
+            espObjects[obj] = nil
+        end
+    end
+end
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- ZOMBIE ESP
+-- ═════════════════════════════════════════════════════════════════════════════
+
+local zombieESPObjects = {}
+
+local function UpdateZombieESP()
+    if not config.zombieESP then return end
+    
+    -- Scan for zombies/enemies
+    local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+    if npcContainer then
+        local enemiesFolder = npcContainer:FindFirstChild("enemies")
+        if enemiesFolder then
+            for _, zombie in ipairs(enemiesFolder:GetChildren()) do
+                if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+                    if not zombieESPObjects[zombie] then
+                        -- Red color for enemies
+                        zombieESPObjects[zombie] = CreateESPBox(zombie, zombie.Name, Color3.fromRGB(255, 0, 0))
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Check for team allies (green)
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= lp and player.Character then
+            local char = player.Character
+            if char:FindFirstChild("Humanoid") then
+                if not zombieESPObjects[char] then
+                    -- Green color for team/allies
+                    zombieESPObjects[char] = CreateESPBox(char, player.Name, Color3.fromRGB(0, 255, 0))
+                end
+            end
+        end
+    end
+    
+    -- Remove ESP for deleted objects
+    for obj, esp in pairs(zombieESPObjects) do
+        if not obj.Parent then
+            esp:Destroy()
+            zombieESPObjects[obj] = nil
+        end
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    UpdateObjectiveESP()
+    UpdateZombieESP()
+end)
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- UI TABS
+-- ═════════════════════════════════════════════════════════════════════════════
+
+-- Combat Tab
+local CombatTab = Window:CreateTab("Combat", 0)
+CombatTab:CreateToggle({
+   Name = "Silent Aim",
+   CurrentValue = false,
+   Flag = "RaycastEnabled",
+   Callback = function(Value)
+      config.raycasting = Value
+   end,
+})
+
+CombatTab:CreateToggle({
+   Name = "aura kill",
+   CurrentValue = false,
+   Flag = "AutoHitEnabled",
+   Callback = function(Value)
+      config.autoHit = Value
+   end,
+})
+
+-- Visuals Tab
+local VisualsTab = Window:CreateTab("Visuals", 0)
+VisualsTab:CreateToggle({
+   Name = "Objective ESP",
+   CurrentValue = false,
+   Flag = "ObjectiveESPEnabled",
+   Callback = function(Value)
+      config.objectiveESP = Value
+      if not Value then
+         for obj, esp in pairs(espObjects) do
+            esp:Destroy()
+         end
+         espObjects = {}
+      end
+   end,
+})
+
+VisualsTab:CreateToggle({
+   Name = "Zombie ESP (Red=Enemy, Green=Team)",
+   CurrentValue = false,
+   Flag = "ZombieESPEnabled",
+   Callback = function(Value)
+      config.zombieESP = Value
+      if not Value then
+         for obj, esp in pairs(zombieESPObjects) do
+            esp:Destroy()
+         end
+         zombieESPObjects = {}
+      end
+   end,
+})
+
+-- Utilities Tab
+local UtilitiesTab = Window:CreateTab("Utilities", 0)
+UtilitiesTab:CreateToggle({
+   Name = "Infinite Ammo",
+   CurrentValue = false,
+   Flag = "InfiniteAmmoEnabled",
+   Callback = function(Value)
+      config.infiniteAmmo = Value
+      if Value then
+         UpdateAllAmmo()
+      end
+   end,
+})
+
+-- Settings Tab
+local SettingsTab = Window:CreateTab("Settings", 0)
+SettingsTab:CreateLabel("TokaihHub - Reign Fall")
+SettingsTab:CreateLabel("Zombie ESP: Red=Enemies | Green=Team")
+SettingsTab:CreateButton({
+   Name = "Destroy UI",
+   Callback = function()
+      Window:Destroy()
+   end,
+})
+
+print("[TokaihHub] Reign Fall script loaded")
+Rayfield:Notify({
+   Title = "TokaihHub",
+   Content = "Reign Fall script loaded!",
+   Duration = 5,
+   Image = 4483362458,
+})

@@ -1,6 +1,6 @@
 -- ════════════════════════════════════════════════════════════════════════════
--- TOKAIHUB — REIGN FALL (COMBAT ONLY)
--- Rayfield UI + All Features in One Combat Tab
+-- TOKAIHUB — REIGN FALL (ALL TABS)
+-- Rayfield UI + All Features + All Tabs
 -- ════════════════════════════════════════════════════════════════════════════
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -501,12 +501,11 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
--- UI - SINGLE COMBAT TAB
+-- UI TABS
 -- ═════════════════════════════════════════════════════════════════════════════
 
+-- Combat Tab
 local CombatTab = Window:CreateTab("Combat", 0)
-
--- Aim Section
 CombatTab:CreateToggle({
    Name = "Raycast Silent Aim",
    CurrentValue = false,
@@ -525,9 +524,6 @@ CombatTab:CreateToggle({
    end,
 })
 
-CombatTab:CreateDivider()
-
--- Hitbox Section
 CombatTab:CreateToggle({
    Name = "Hitbox Expander",
    CurrentValue = false,
@@ -550,10 +546,9 @@ CombatTab:CreateSlider({
    end,
 })
 
-CombatTab:CreateDivider()
-
--- Weapons Section
-CombatTab:CreateToggle({
+-- Weapons Tab
+local WeaponsTab = Window:CreateTab("Weapons", 0)
+WeaponsTab:CreateToggle({
    Name = "No Recoil",
    CurrentValue = false,
    Flag = "NoRecoilEnabled",
@@ -563,7 +558,7 @@ CombatTab:CreateToggle({
    end,
 })
 
-CombatTab:CreateSlider({
+WeaponsTab:CreateSlider({
    Name = "RPM",
    Min = 0,
    Max = 1200,
@@ -575,7 +570,7 @@ CombatTab:CreateSlider({
    end,
 })
 
-CombatTab:CreateToggle({
+WeaponsTab:CreateToggle({
    Name = "Infinite Ammo",
    CurrentValue = false,
    Flag = "InfiniteAmmoEnabled",
@@ -587,10 +582,9 @@ CombatTab:CreateToggle({
    end,
 })
 
-CombatTab:CreateDivider()
-
--- Visuals Section
-CombatTab:CreateToggle({
+-- Visuals Tab
+local VisualsTab = Window:CreateTab("Visuals", 0)
+VisualsTab:CreateToggle({
    Name = "Highlight ESP",
    CurrentValue = false,
    Flag = "HighlightESPEnabled",
@@ -605,10 +599,14 @@ CombatTab:CreateToggle({
    end,
 })
 
-CombatTab:CreateDivider()
+VisualsTab:CreateLabel("ESP Colors:")
+VisualsTab:CreateLabel("🔴 Red = Zombies")
+VisualsTab:CreateLabel("🟢 Green = Objectives")
+VisualsTab:CreateLabel("🔵 Cyan = Team")
 
--- World Section
-CombatTab:CreateToggle({
+-- World Tab
+local WorldTab = Window:CreateTab("World", 0)
+WorldTab:CreateToggle({
    Name = "No Fog",
    CurrentValue = false,
    Flag = "NoFogEnabled",
@@ -617,12 +615,22 @@ CombatTab:CreateToggle({
    end,
 })
 
-CombatTab:CreateToggle({
+WorldTab:CreateToggle({
    Name = "Fullbright",
    CurrentValue = false,
    Flag = "FullbrightEnabled",
    Callback = function(Value)
       config.fullbright = Value
+   end,
+})
+
+-- Settings Tab
+local SettingsTab = Window:CreateTab("Settings", 0)
+SettingsTab:CreateLabel("TokaihHub - Reign Fall")
+SettingsTab:CreateButton({
+   Name = "Destroy UI",
+   Callback = function()
+      Window:Destroy()
    end,
 })
 

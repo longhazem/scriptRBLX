@@ -1,8 +1,3 @@
--- ════════════════════════════════════════════════════════════════════════════
--- TOKAIHUB — REIGN FALL (FULL TABS + HIGHLIGHT ESP)
--- Rayfield UI + All Features (Combat, Weapons, Visuals, World, Settings)
--- ════════════════════════════════════════════════════════════════════════════
-
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "TokaihHub - Reign Fall",
@@ -11,25 +6,8 @@ local Window = Rayfield:CreateWindow({
    LoadingSubtitle = "Reign Fall Script",
    ShowText = "TokaihHub",
    Theme = "Default",
-   ToggleUIKeybind = "K",
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false,
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = "TokaihHub",
-      FileName = "Reign_Fall"
-   },
-   Discord = {
-      Enabled = false,
-      Invite = "noinvitelink",
-      RememberJoins = true
-   },
-   KeySystem = false
+   ToggleUIKeybind = "K"
 })
-
--- ═════════════════════════════════════════════════════════════════════════════
--- SERVICES & VARIABLES
--- ═════════════════════════════════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -40,32 +18,26 @@ local lp = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
+local originalFogEnd = Lighting.FogEnd
+local originalBrightness = Lighting.Brightness
+
 local config = {
    raycasting = false,
    autoHit = false,
    infiniteAmmo = false,
    objectiveESP = false,
    playerESP = false,
-   norecoil = false,
-   rpm = 600,
-   nofog = false,
-   fullbright = false,
    hitboxExpander = false,
-   hitboxSize = 5
+   hitboxSize = 6,
+   norecoil = false,
+   rpm = 0,
+   nofog = false,
+   fullbright = false
 }
 
-local target = {
-   enabled = true,
-   position = nil
-}
-
+local target = {enabled = true, position = nil}
 local highlightObjects = {}
-local originalFogEnd = Lighting.FogEnd
-local originalBrightness = Lighting.Brightness
-
--- ═════════════════════════════════════════════════════════════════════════════
--- HIGHLIGHT ESP (FULL)
--- ═════════════════════════════════════════════════════════════════════════════
+local expandedHitboxes = {}
 
 local function AddHighlight(obj, color, transparency)
    if not obj or not obj.Parent then return end
@@ -152,12 +124,6 @@ local function UpdatePlayerESP()
    end
 end
 
--- ═════════════════════════════════════════════════════════════════════════════
--- HITBOX EXPANDER
--- ═════════════════════════════════════════════════════════════════════════════
-
-local expandedHitboxes = {}
-
 local function isPlayerCharacter(model)
    if not model or not model:IsA("Model") then return false end
    return Players:GetPlayerFromCharacter(model) ~= nil
@@ -207,10 +173,6 @@ Workspace.DescendantAdded:Connect(function(desc)
       applyHitboxExpander(desc)
    end
 end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- RAYCAST REDIRECTION (SILENT AIM)
--- ═════════════════════════════════════════════════════════════════════════════
 
 local function getEnemyContainer()
    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
@@ -276,10 +238,6 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    return oldNamecall(self, ...)
 end))
 
--- ═════════════════════════════════════════════════════════════════════════════
--- AUTO HIT
--- ═════════════════════════════════════════════════════════════════════════════
-
 local function findRegisterHitEvent()
    local v3 = lp.Character
    if not v3 then return nil end
@@ -338,10 +296,6 @@ task.spawn(function()
    end
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- INFINITE AMMO
--- ═════════════════════════════════════════════════════════════════════════════
-
 local function SetInfiniteAmmo(tool)
    if not tool then return end
    pcall(function()
@@ -362,37 +316,25 @@ local function UpdateAllAmmo()
    local backpack = lp:FindFirstChild("Backpack")
    if backpack then
       for _, tool in ipairs(backpack:GetChildren()) do
-         if tool:IsA("Tool") then
-            SetInfiniteAmmo(tool)
-         end
+         if tool:IsA("Tool") then SetInfiniteAmmo(tool) end
       end
    end
    local character = lp.Character
    if character then
       for _, tool in ipairs(character:GetChildren()) do
-         if tool:IsA("Tool") then
-            SetInfiniteAmmo(tool)
-         end
+         if tool:IsA("Tool") then SetInfiniteAmmo(tool) end
       end
    end
 end
 
 lp.CharacterAdded:Connect(function()
    task.wait(0.5)
-   if config.infiniteAmmo then
-      UpdateAllAmmo()
-   end
+   if config.infiniteAmmo then UpdateAllAmmo() end
 end)
 
 RunService.Heartbeat:Connect(function()
-   if config.infiniteAmmo then
-      UpdateAllAmmo()
-   end
+   if config.infiniteAmmo then UpdateAllAmmo() end
 end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- WEAPON MODIFICATIONS (No Recoil + RPM)
--- ═════════════════════════════════════════════════════════════════════════════
 
 local function ModifyWeaponRecoil(tool)
    if not tool then return end
@@ -429,27 +371,15 @@ end
 
 lp.CharacterAdded:Connect(function()
    task.wait(0.5)
-   if config.norecoil or config.rpm > 0 then
-      ModifyAllWeapons()
-   end
+   if config.norecoil or config.rpm > 0 then ModifyAllWeapons() end
 end)
 
 RunService.Heartbeat:Connect(function()
-   if config.norecoil or config.rpm > 0 then
-      ModifyAllWeapons()
-   end
+   if config.norecoil or config.rpm > 0 then ModifyAllWeapons() end
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- WORLD MODIFICATIONS (No Fog + Fullbright)
--- ═════════════════════════════════════════════════════════════════════════════
-
-local function UpdateWorldMods()
-   if config.nofog then
-      Lighting.FogEnd = 100000
-   else
-      Lighting.FogEnd = originalFogEnd
-   end
+RunService.Heartbeat:Connect(function()
+   if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
    if config.fullbright then
       Lighting.Brightness = 3
       Lighting.GlobalShadows = false
@@ -457,128 +387,20 @@ local function UpdateWorldMods()
       Lighting.Brightness = originalBrightness
       Lighting.GlobalShadows = true
    end
-end
-
-RunService.Heartbeat:Connect(function()
-   UpdateWorldMods()
    UpdateHitboxExpander()
    UpdateObjectiveESP()
    UpdatePlayerESP()
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- UI TABS (Combat, Weapons, Visuals, World, Settings)
--- ═════════════════════════════════════════════════════════════════════════════
-
--- COMBAT TAB
 local CombatTab = Window:CreateTab("Combat", 0)
-CombatTab:CreateToggle({
-   Name = "Raycast Silent Aim",
-   CurrentValue = false,
-   Flag = "RaycastEnabled",
-   Callback = function(Value) config.raycasting = Value end
-})
-CombatTab:CreateToggle({
-   Name = "Auto Hit",
-   CurrentValue = false,
-   Flag = "AutoHitEnabled",
-   Callback = function(Value) config.autoHit = Value end
-})
-CombatTab:CreateToggle({
-   Name = "Hitbox Expander",
-   CurrentValue = false,
-   Flag = "HitboxExp",
-   Callback = function(Value) config.hitboxExpander = Value; UpdateHitboxExpander() end
-})
-CombatTab:CreateSlider({
-   Name = "Hitbox Size",
-   Min = 0,
-   Max = 20,
-   Default = 5,
-   CurrentValue = 5,
-   Flag = "HitboxSize",
-   Callback = function(Value) config.hitboxSize = Value end
-})
-
--- WEAPONS TAB
-local WeaponsTab = Window:CreateTab("Weapons", 0)
-WeaponsTab:CreateToggle({
-   Name = "No Recoil",
-   CurrentValue = false,
-   Flag = "NoRecoil",
-   Callback = function(Value) config.norecoil = Value; ModifyAllWeapons() end
-})
-WeaponsTab:CreateSlider({
-   Name = "RPM",
-   Min = 0,
-   Max = 1200,
-   Default = 600,
-   CurrentValue = 600,
-   Flag = "RPM",
-   Callback = function(Value) config.rpm = Value end
-})
-WeaponsTab:CreateToggle({
-   Name = "Infinite Ammo",
-   CurrentValue = false,
-   Flag = "InfAmmo",
-   Callback = function(Value) config.infiniteAmmo = Value; if Value then UpdateAllAmmo() end end
-})
-
--- VISUALS TAB (ESP)
+CombatTab:CreateToggle({Name = "Silent Aim", Callback = function(v) config.raycasting = v end})
+CombatTab:CreateToggle({Name = "Auto Hit", Callback = function(v) config.autoHit = v end})
+CombatTab:CreateToggle({Name = "Hitbox Expander", Callback = function(v) config.hitboxExpander = v end})
 local VisualsTab = Window:CreateTab("Visuals", 0)
-VisualsTab:CreateToggle({
-   Name = "Objective ESP (Highlight)",
-   CurrentValue = false,
-   Flag = "ObjESP",
-   Callback = function(Value)
-      config.objectiveESP = Value
-      if not Value then
-         for obj, _ in pairs(highlightObjects) do RemoveHighlight(obj) end
-         highlightObjects = {}
-      end
-   end
-})
-VisualsTab:CreateToggle({
-   Name = "Player ESP (Red=Enemy, Cyan=Team)",
-   CurrentValue = false,
-   Flag = "PlayerESP",
-   Callback = function(Value)
-      config.playerESP = Value
-      if not Value then
-         for obj, _ in pairs(highlightObjects) do RemoveHighlight(obj) end
-         highlightObjects = {}
-      end
-   end
-})
-
--- WORLD TAB
-local WorldTab = Window:CreateTab("World", 0)
-WorldTab:CreateToggle({
-   Name = "No Fog",
-   CurrentValue = false,
-   Flag = "NoFog",
-   Callback = function(Value) config.nofog = Value end
-})
-WorldTab:CreateToggle({
-   Name = "Fullbright",
-   CurrentValue = false,
-   Flag = "FB",
-   Callback = function(Value) config.fullbright = Value end
-})
-
--- SETTINGS TAB
-local SettingsTab = Window:CreateTab("Settings", 0)
-SettingsTab:CreateLabel("TokaihHub - Reign Fall")
-SettingsTab:CreateLabel("Highlight ESP: Red=Enemy | Cyan=Team | Green=Objective")
-SettingsTab:CreateButton({
-   Name = "Destroy UI",
-   Callback = function() Window:Destroy() end
-})
-
-print("[TokaihHub] Reign Fall - Full Script Loaded")
-Rayfield:Notify({
-   Title = "TokaihHub",
-   Content = "Reign Fall - All Tabs & Features Loaded",
-   Duration = 5,
-   Image = 0
-})
+VisualsTab:CreateToggle({Name = "Objective ESP", Callback = function(v) config.objectiveESP = v end})
+VisualsTab:CreateToggle({Name = "Player ESP", Callback = function(v) config.playerESP = v end})
+VisualsTab:CreateToggle({Name = "Fullbright", Callback = function(v) config.fullbright = v end})
+VisualsTab:CreateToggle({Name = "No Fog", Callback = function(v) config.nofog = v end})
+local UtilityTab = Window:CreateTab("Utility", 0)
+UtilityTab:CreateToggle({Name = "Infinite Ammo", Callback = function(v) config.infiniteAmmo = v end})
+UtilityTab:CreateToggle({Name = "No Recoil", Callback = function(v) config.norecoil = v end})

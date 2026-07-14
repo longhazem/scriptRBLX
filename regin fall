@@ -3,10 +3,8 @@ local Window = Rayfield:CreateWindow({
    Name = "TokaihHub - Reign Fall",
    Icon = 0,
    LoadingTitle = "TokaihHub",
-   LoadingSubtitle = "Reign Fall Script",
-   ShowText = "TokaihHub",
+   LoadingSubtitle = "by LONGTOKAI",
    Theme = "Default",
-   ToggleUIKeybind = "K",
    DisableRayfieldPrompts = false,
    DisableBuildWarnings = false,
    ConfigurationSaving = {
@@ -474,7 +472,7 @@ RunService.Heartbeat:Connect(function()
     UpdateWorldMods()
 end)
 
-local CombatTab = Window:CreateTab("Combat", 0)
+local CombatTab = Window:CreateTab("⚔️ Combat", nil)
 CombatTab:CreateToggle({
    Name = "Raycast Silent Aim",
    CurrentValue = false,
@@ -506,7 +504,7 @@ CombatTab:CreateSlider({
    Callback = function(Value) config.hitboxSize = Value end,
 })
 
-local WeaponsTab = Window:CreateTab("Weapons", 0)
+local WeaponsTab = Window:CreateTab("🔫 Weapons", nil)
 WeaponsTab:CreateToggle({
    Name = "No Recoil",
    CurrentValue = false,
@@ -535,7 +533,7 @@ WeaponsTab:CreateToggle({
    end,
 })
 
-local VisualsTab = Window:CreateTab("Visuals", 0)
+local VisualsTab = Window:CreateTab("👁️ Visuals", nil)
 VisualsTab:CreateToggle({
    Name = "Objective ESP (Billboard)",
    CurrentValue = false,
@@ -573,7 +571,7 @@ VisualsTab:CreateToggle({
    end,
 })
 
-local WorldTab = Window:CreateTab("World", 0)
+local WorldTab = Window:CreateTab("🌍 World", nil)
 WorldTab:CreateToggle({
    Name = "No Fog",
    CurrentValue = false,
@@ -587,7 +585,7 @@ WorldTab:CreateToggle({
    Callback = function(Value) config.fullbright = Value end,
 })
 
-local SettingsTab = Window:CreateTab("Settings", 0)
+local SettingsTab = Window:CreateTab("⚙️ Settings", nil)
 SettingsTab:CreateLabel("TokaihHub - Reign Fall")
 SettingsTab:CreateButton({
    Name = "Destroy UI",
@@ -599,5 +597,5 @@ Rayfield:Notify({
    Title = "TokaihHub",
    Content = "Reign Fall script + All Features loaded!",
    Duration = 5,
-   Image = 0,
+   Image = nil,
 })

@@ -1,12 +1,7 @@
--- ════════════════════════════════════════════════════════════════════════════
--- TOKAIHUB — REIGN FALL (ALL TABS)
--- Rayfield UI + All Features + All Tabs
--- ════════════════════════════════════════════════════════════════════════════
-
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "TokaihHub - Reign Fall",
-   Icon = 0,
+   Icon = nil,
    LoadingTitle = "TokaihHub",
    LoadingSubtitle = "Reign Fall Script",
    ShowText = "TokaihHub",
@@ -26,10 +21,6 @@ local Window = Rayfield:CreateWindow({
    },
    KeySystem = false
 })
-
--- ═════════════════════════════════════════════════════════════════════════════
--- SERVICES & VARIABLES
--- ═════════════════════════════════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -62,10 +53,6 @@ local highlightedObjects = {}
 local expandedHitboxes = {}
 local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
-
--- ═════════════════════════════════════════════════════════════════════════════
--- HITBOX EXPANDER
--- ═════════════════════════════════════════════════════════════════════════════
 
 local function isPlayerCharacter(model)
     if not model or not model:IsA("Model") then return false end
@@ -125,10 +112,6 @@ Workspace.DescendantAdded:Connect(function(desc)
     end
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- HIGHLIGHT ESP (WALLHACK)
--- ═════════════════════════════════════════════════════════════════════════════
-
 local function AddHighlight(obj, color)
     if not obj or not obj.Parent then return end
     
@@ -160,7 +143,6 @@ end
 local function UpdateHighlightESP()
     if not config.highlightESP then return end
     
-    -- Highlight zombies (red)
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") then
             local hum = obj:FindFirstChildOfClass("Humanoid")
@@ -176,7 +158,6 @@ local function UpdateHighlightESP()
         end
     end
     
-    -- Highlight objectives (green)
     local game_workspace = Workspace:FindFirstChild("Game")
     if game_workspace then
         local current = game_workspace:FindFirstChild("Current")
@@ -198,7 +179,6 @@ local function UpdateHighlightESP()
         end
     end
     
-    -- Highlight team (cyan)
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= lp and player.Character then
             if not highlightedObjects[player.Character] then
@@ -208,7 +188,6 @@ local function UpdateHighlightESP()
         end
     end
     
-    -- Remove highlight for deleted objects
     for obj, _ in pairs(highlightedObjects) do
         if not obj.Parent then
             RemoveHighlight(obj)
@@ -216,10 +195,6 @@ local function UpdateHighlightESP()
         end
     end
 end
-
--- ═════════════════════════════════════════════════════════════════════════════
--- RAYCAST REDIRECTION (MODEL 1)
--- ═════════════════════════════════════════════════════════════════════════════
 
 local function getEnemyContainer()
     local container = Workspace.Game and Workspace.Game.Current and Workspace.Game.Current.Spawned and Workspace.Game.Current.Spawned.NPCs
@@ -284,10 +259,6 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     end
     return oldNamecall(self, ...)
 end))
-
--- ═════════════════════════════════════════════════════════════════════════════
--- AUTO HIT (MODEL 2)
--- ═════════════════════════════════════════════════════════════════════════════
 
 local function findRegisterHitEvent()
     local v3 = lp.Character
@@ -354,10 +325,6 @@ task.spawn(function()
     end
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- INFINITE AMMO
--- ═════════════════════════════════════════════════════════════════════════════
-
 local function SetInfiniteAmmo(tool)
     if not tool then return end
     pcall(function()
@@ -403,10 +370,6 @@ RunService.Heartbeat:Connect(function()
         UpdateAllAmmo()
     end
 end)
-
--- ═════════════════════════════════════════════════════════════════════════════
--- WEAPON MODIFICATIONS (NORECOIL + RPM)
--- ═════════════════════════════════════════════════════════════════════════════
 
 local function ModifyWeaponRecoil(tool)
     if not tool then return end
@@ -467,10 +430,6 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- WORLD MODIFICATIONS (NOFOG + FULLBRIGHT)
--- ═════════════════════════════════════════════════════════════════════════════
-
 local function UpdateWorldMods()
     if config.nofog then
         Lighting.FogEnd = 100000
@@ -491,21 +450,12 @@ RunService.Heartbeat:Connect(function()
     UpdateWorldMods()
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- MAIN UPDATE LOOP
--- ═════════════════════════════════════════════════════════════════════════════
-
 RunService.Heartbeat:Connect(function()
     UpdateHighlightESP()
     UpdateHitboxExpander()
 end)
 
--- ═════════════════════════════════════════════════════════════════════════════
--- UI TABS
--- ═════════════════════════════════════════════════════════════════════════════
-
--- Combat Tab
-local CombatTab = Window:CreateTab("Combat", 0)
+local CombatTab = Window:CreateTab("Combat", nil)
 CombatTab:CreateToggle({
    Name = "Raycast Silent Aim",
    CurrentValue = false,
@@ -546,8 +496,7 @@ CombatTab:CreateSlider({
    end,
 })
 
--- Weapons Tab
-local WeaponsTab = Window:CreateTab("Weapons", 0)
+local WeaponsTab = Window:CreateTab("Weapons", nil)
 WeaponsTab:CreateToggle({
    Name = "No Recoil",
    CurrentValue = false,
@@ -582,8 +531,7 @@ WeaponsTab:CreateToggle({
    end,
 })
 
--- Visuals Tab
-local VisualsTab = Window:CreateTab("Visuals", 0)
+local VisualsTab = Window:CreateTab("Visuals", nil)
 VisualsTab:CreateToggle({
    Name = "Highlight ESP",
    CurrentValue = false,
@@ -604,8 +552,7 @@ VisualsTab:CreateLabel("🔴 Red = Zombies")
 VisualsTab:CreateLabel("🟢 Green = Objectives")
 VisualsTab:CreateLabel("🔵 Cyan = Team")
 
--- World Tab
-local WorldTab = Window:CreateTab("World", 0)
+local WorldTab = Window:CreateTab("World", nil)
 WorldTab:CreateToggle({
    Name = "No Fog",
    CurrentValue = false,
@@ -624,8 +571,7 @@ WorldTab:CreateToggle({
    end,
 })
 
--- Settings Tab
-local SettingsTab = Window:CreateTab("Settings", 0)
+local SettingsTab = Window:CreateTab("Settings", nil)
 SettingsTab:CreateLabel("TokaihHub - Reign Fall")
 SettingsTab:CreateButton({
    Name = "Destroy UI",

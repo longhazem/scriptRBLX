@@ -1,6 +1,6 @@
 -- ════════════════════════════════════════════════════════════════════════════
--- TOKAIHUB — REIGN FALL (FULL FEATURES + HIGHLIGHT ESP)
--- Rayfield UI + All Features + Highlight ESP (Objective + Player)
+-- TOKAIHUB — REIGN FALL (FULL TABS + HIGHLIGHT ESP)
+-- Rayfield UI + All Features (Combat, Weapons, Visuals, World, Settings)
 -- ════════════════════════════════════════════════════════════════════════════
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -68,94 +68,88 @@ local originalBrightness = Lighting.Brightness
 -- ═════════════════════════════════════════════════════════════════════════════
 
 local function AddHighlight(obj, color, transparency)
-    if not obj or not obj.Parent then return end
-    pcall(function()
-        if obj:FindFirstChild("TokaiHighlight") then
-            obj:FindFirstChild("TokaiHighlight"):Destroy()
-        end
-        local highlight = Instance.new("Highlight")
-        highlight.Name = "TokaiHighlight"
-        highlight.FillColor = color
-        highlight.OutlineColor = color
-        highlight.FillTransparency = transparency or 0.3
-        highlight.OutlineTransparency = 0
-        highlight.Parent = obj
-        highlightObjects[obj] = true
-    end)
+   if not obj or not obj.Parent then return end
+   pcall(function()
+      if obj:FindFirstChild("TokaiHighlight") then
+         obj:FindFirstChild("TokaiHighlight"):Destroy()
+      end
+      local highlight = Instance.new("Highlight")
+      highlight.Name = "TokaiHighlight"
+      highlight.FillColor = color
+      highlight.OutlineColor = color
+      highlight.FillTransparency = transparency or 0.3
+      highlight.OutlineTransparency = 0
+      highlight.Parent = obj
+      highlightObjects[obj] = true
+   end)
 end
 
 local function RemoveHighlight(obj)
-    pcall(function()
-        local highlight = obj:FindFirstChild("TokaiHighlight")
-        if highlight then
-            highlight:Destroy()
-            highlightObjects[obj] = nil
-        end
-    end)
+   pcall(function()
+      local highlight = obj:FindFirstChild("TokaiHighlight")
+      if highlight then
+         highlight:Destroy()
+         highlightObjects[obj] = nil
+      end
+   end)
 end
 
 local function UpdateObjectiveESP()
-    if not config.objectiveESP then
-        for obj, _ in pairs(highlightObjects) do
-            RemoveHighlight(obj)
-        end
-        highlightObjects = {}
-        return
-    end
-    
-    local game_workspace = workspace:FindFirstChild("Game")
-    if not game_workspace then return end
-    local current = game_workspace:FindFirstChild("Current")
-    if not current then return end
-    local spawned = current:FindFirstChild("Spawned")
-    if not spawned then return end
-    local gameObjects = spawned:FindFirstChild("GameObjects")
-    if not gameObjects then return end
-    
-    for _, obj in ipairs(gameObjects:GetChildren()) do
-        if obj:IsA("Model") and obj.Name:sub(1, 8) == "mission_" then
-            if not obj:FindFirstChild("TokaiHighlight") then
-                AddHighlight(obj, Color3.fromRGB(0, 255, 0), 0.3)
-            end
-        end
-    end
+   if not config.objectiveESP then
+      for obj, _ in pairs(highlightObjects) do
+         RemoveHighlight(obj)
+      end
+      highlightObjects = {}
+      return
+   end
+   local game_workspace = workspace:FindFirstChild("Game")
+   if not game_workspace then return end
+   local current = game_workspace:FindFirstChild("Current")
+   if not current then return end
+   local spawned = current:FindFirstChild("Spawned")
+   if not spawned then return end
+   local gameObjects = spawned:FindFirstChild("GameObjects")
+   if not gameObjects then return end
+   for _, obj in ipairs(gameObjects:GetChildren()) do
+      if obj:IsA("Model") and obj.Name:sub(1, 8) == "mission_" then
+         if not obj:FindFirstChild("TokaiHighlight") then
+            AddHighlight(obj, Color3.fromRGB(0, 255, 0), 0.3)
+         end
+      end
+   end
 end
 
 local function UpdatePlayerESP()
-    if not config.playerESP then
-        for obj, _ in pairs(highlightObjects) do
-            RemoveHighlight(obj)
-        end
-        highlightObjects = {}
-        return
-    end
-    
-    -- Enemies (Red)
-    local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-    if npcContainer then
-        local enemiesFolder = npcContainer:FindFirstChild("enemies")
-        if enemiesFolder then
-            for _, zombie in ipairs(enemiesFolder:GetChildren()) do
-                if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
-                    if not zombie:FindFirstChild("TokaiHighlight") then
-                        AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
-                    end
-                end
+   if not config.playerESP then
+      for obj, _ in pairs(highlightObjects) do
+         RemoveHighlight(obj)
+      end
+      highlightObjects = {}
+      return
+   end
+   local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+   if npcContainer then
+      local enemiesFolder = npcContainer:FindFirstChild("enemies")
+      if enemiesFolder then
+         for _, zombie in ipairs(enemiesFolder:GetChildren()) do
+            if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+               if not zombie:FindFirstChild("TokaiHighlight") then
+                  AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
+               end
             end
-        end
-    end
-    
-    -- Team/Allies (Cyan)
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= lp and player.Character then
-            local char = player.Character
-            if char and char:FindFirstChild("Humanoid") then
-                if not char:FindFirstChild("TokaiHighlight") then
-                    AddHighlight(char, Color3.fromRGB(0, 255, 255), 0.3)
-                end
+         end
+      end
+   end
+   for _, player in ipairs(Players:GetPlayers()) do
+      if player ~= lp and player.Character then
+         local char = player.Character
+         if char and char:FindFirstChild("Humanoid") then
+            if not char:FindFirstChild("TokaiHighlight") then
+               AddHighlight(char, Color3.fromRGB(0, 255, 255), 0.3)
             end
-        end
-    end
+         end
+      end
+   end
 end
 
 -- ═════════════════════════════════════════════════════════════════════════════
@@ -165,54 +159,53 @@ end
 local expandedHitboxes = {}
 
 local function isPlayerCharacter(model)
-    if not model or not model:IsA("Model") then return false end
-    return Players:GetPlayerFromCharacter(model) ~= nil
+   if not model or not model:IsA("Model") then return false end
+   return Players:GetPlayerFromCharacter(model) ~= nil
 end
 
 local function isHumanoidModel(model)
-    if not model or not model:IsA("Model") then return false end
-    return model:FindFirstChildWhichIsA("Humanoid") ~= nil
+   if not model or not model:IsA("Model") then return false end
+   return model:FindFirstChildWhichIsA("Humanoid") ~= nil
 end
 
 local function applyHitboxExpander(part)
-    if not part or not part:IsA("BasePart") then return end
-    if not config.hitboxExpander then return end
-    if part.Name ~= "Head" then return end
-    
-    local model = part.Parent
-    if isHumanoidModel(model) and not isPlayerCharacter(model) then
-        pcall(function()
-            if not expandedHitboxes[part] then
-                part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                part.CanCollide = false
-                part.Transparency = 0.7
-                expandedHitboxes[part] = true
-            else
-                part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                part.Transparency = 0.7
-            end
-        end)
-    end
+   if not part or not part:IsA("BasePart") then return end
+   if not config.hitboxExpander then return end
+   if part.Name ~= "Head" then return end
+   local model = part.Parent
+   if isHumanoidModel(model) and not isPlayerCharacter(model) then
+      pcall(function()
+         if not expandedHitboxes[part] then
+            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            part.CanCollide = false
+            part.Transparency = 0.7
+            expandedHitboxes[part] = true
+         else
+            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            part.Transparency = 0.7
+         end
+      end)
+   end
 end
 
 local function UpdateHitboxExpander()
-    if config.hitboxExpander then
-        for _, desc in ipairs(Workspace:GetDescendants()) do
-            applyHitboxExpander(desc)
-        end
-    else
-        for part, _ in pairs(expandedHitboxes) do
-            expandedHitboxes[part] = nil
-        end
-        expandedHitboxes = {}
-    end
+   if config.hitboxExpander then
+      for _, desc in ipairs(Workspace:GetDescendants()) do
+         applyHitboxExpander(desc)
+      end
+   else
+      for part, _ in pairs(expandedHitboxes) do
+         expandedHitboxes[part] = nil
+      end
+      expandedHitboxes = {}
+   end
 end
 
 Workspace.DescendantAdded:Connect(function(desc)
-    if config.hitboxExpander and desc:IsA("BasePart") then
-        task.wait(0.05)
-        applyHitboxExpander(desc)
-    end
+   if config.hitboxExpander and desc:IsA("BasePart") then
+      task.wait(0.05)
+      applyHitboxExpander(desc)
+   end
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
@@ -220,67 +213,67 @@ end)
 -- ═════════════════════════════════════════════════════════════════════════════
 
 local function getEnemyContainer()
-    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-    if container then
-        return container:FindFirstChild("enemies")
-    end
-    return nil
+   local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+   if container then
+      return container:FindFirstChild("enemies")
+   end
+   return nil
 end
 
 local function getClosestHead()
-    local container = getEnemyContainer()
-    if not container then return nil end
-    local referencePos
-    if isMobile then
-        local vp = camera.ViewportSize
-        referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
-    else
-        referencePos = UserInputService:GetMouseLocation()
-    end
-    local bestHeadPos = nil
-    local bestDist = math.huge
-    for _, enemy in ipairs(container:GetChildren()) do
-        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-        if head then
-            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-                if dist < bestDist then
-                    bestDist = dist
-                    bestHeadPos = head.Position
-                end
+   local container = getEnemyContainer()
+   if not container then return nil end
+   local referencePos
+   if isMobile then
+      local vp = camera.ViewportSize
+      referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
+   else
+      referencePos = UserInputService:GetMouseLocation()
+   end
+   local bestHeadPos = nil
+   local bestDist = math.huge
+   for _, enemy in ipairs(container:GetChildren()) do
+      local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+      if head then
+         local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
+         if onScreen then
+            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+            if dist < bestDist then
+               bestDist = dist
+               bestHeadPos = head.Position
             end
-        end
-    end
-    return bestHeadPos
+         end
+      end
+   end
+   return bestHeadPos
 end
 
 RunService.Heartbeat:Connect(function()
-    if config.raycasting and target.enabled then
-        target.position = getClosestHead()
-    end
+   if config.raycasting and target.enabled then
+      target.position = getClosestHead()
+   end
 end)
 
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
-        local args = {...}
-        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
-            local raycastParams = args[3]
-            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
-                if target.position then
-                    local origin = args[1]
-                    local dir = target.position - origin
-                    if dir.Magnitude > 0.001 then
-                        args[2] = dir.Unit * args[2].Magnitude
-                    end
-                end
+   local method = getnamecallmethod()
+   if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
+      local args = {...}
+      if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+         local raycastParams = args[3]
+         if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
+            if target.position then
+               local origin = args[1]
+               local dir = target.position - origin
+               if dir.Magnitude > 0.001 then
+                  args[2] = dir.Unit * args[2].Magnitude
+               end
             end
-        end
-        return oldNamecall(self, unpack(args))
-    end
-    return oldNamecall(self, ...)
+         end
+      end
+      return oldNamecall(self, unpack(args))
+   end
+   return oldNamecall(self, ...)
 end))
 
 -- ═════════════════════════════════════════════════════════════════════════════
@@ -288,61 +281,61 @@ end))
 -- ═════════════════════════════════════════════════════════════════════════════
 
 local function findRegisterHitEvent()
-    local v3 = lp.Character
-    if not v3 then return nil end
-    for v2, v4 in ipairs(v3:GetChildren()) do
-        local v9 = v4:FindFirstChild("ServerEvents")
-        if v9 then
-            local v8 = v9:FindFirstChild("RegisterHit")
-            if v8 and v8:IsA("RemoteEvent") then
-                return v8
-            end
-        end
-    end
-    return nil
+   local v3 = lp.Character
+   if not v3 then return nil end
+   for v2, v4 in ipairs(v3:GetChildren()) do
+      local v9 = v4:FindFirstChild("ServerEvents")
+      if v9 then
+         local v8 = v9:FindFirstChild("RegisterHit")
+         if v8 and v8:IsA("RemoteEvent") then
+            return v8
+         end
+      end
+   end
+   return nil
 end
 
 local function getTargets()
-    local v11 = {}
-    for v2, v7 in ipairs(Workspace:GetDescendants()) do
-        if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+   local v11 = {}
+   for v2, v7 in ipairs(Workspace:GetDescendants()) do
+      if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
+         local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+         if v12 then
+            table.insert(v11, {model = v7, part = v12})
+         end
+      end
+   end
+   if #v11 == 0 and typeof(getnilinstances) == "function" then
+      for v2, v7 in ipairs(getnilinstances()) do
+         if v7:IsA("Model") then
             local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
             if v12 then
-                table.insert(v11, {model = v7, part = v12})
+               table.insert(v11, {model = v7, part = v12})
             end
-        end
-    end
-    if #v11 == 0 and typeof(getnilinstances) == "function" then
-        for v2, v7 in ipairs(getnilinstances()) do
-            if v7:IsA("Model") then
-                local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
-                if v12 then
-                    table.insert(v11, {model = v7, part = v12})
-                end
-            end
-        end
-    end
-    return v11
+         end
+      end
+   end
+   return v11
 end
 
 task.spawn(function()
-    while task.wait(0.2) do
-        if config.autoHit then
-            local v5 = findRegisterHitEvent()
-            if v5 then
-                local v11 = getTargets()
-                if #v11 > 0 then
-                    local v6 = {}
-                    for v2, v10 in ipairs(v11) do
-                        table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
-                    end
-                    if #v6 > 0 then
-                        v5:FireServer(v6, {})
-                    end
-                end
+   while task.wait(0.2) do
+      if config.autoHit then
+         local v5 = findRegisterHitEvent()
+         if v5 then
+            local v11 = getTargets()
+            if #v11 > 0 then
+               local v6 = {}
+               for v2, v10 in ipairs(v11) do
+                  table.insert(v6, {amount = 1, target = v10.model, is_friendly = false, part = v10.part})
+               end
+               if #v6 > 0 then
+                  v5:FireServer(v6, {})
+               end
             end
-        end
-    end
+         end
+      end
+   end
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
@@ -350,51 +343,51 @@ end)
 -- ═════════════════════════════════════════════════════════════════════════════
 
 local function SetInfiniteAmmo(tool)
-    if not tool then return end
-    pcall(function()
-        local weaponData = tool:FindFirstChild("WeaponData")
-        if weaponData then
-            local essentials = weaponData:FindFirstChild("Essentials")
-            if essentials then
-                local ammo = essentials:FindFirstChild("Ammo")
-                if ammo and ammo:IsA("NumberValue") then
-                    ammo.Value = 99999
-                end
+   if not tool then return end
+   pcall(function()
+      local weaponData = tool:FindFirstChild("WeaponData")
+      if weaponData then
+         local essentials = weaponData:FindFirstChild("Essentials")
+         if essentials then
+            local ammo = essentials:FindFirstChild("Ammo")
+            if ammo and ammo:IsA("NumberValue") then
+               ammo.Value = 99999
             end
-        end
-    end)
+         end
+      end
+   end)
 end
 
 local function UpdateAllAmmo()
-    local backpack = lp:FindFirstChild("Backpack")
-    if backpack then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") then
-                SetInfiniteAmmo(tool)
-            end
-        end
-    end
-    local character = lp.Character
-    if character then
-        for _, tool in ipairs(character:GetChildren()) do
-            if tool:IsA("Tool") then
-                SetInfiniteAmmo(tool)
-            end
-        end
-    end
+   local backpack = lp:FindFirstChild("Backpack")
+   if backpack then
+      for _, tool in ipairs(backpack:GetChildren()) do
+         if tool:IsA("Tool") then
+            SetInfiniteAmmo(tool)
+         end
+      end
+   end
+   local character = lp.Character
+   if character then
+      for _, tool in ipairs(character:GetChildren()) do
+         if tool:IsA("Tool") then
+            SetInfiniteAmmo(tool)
+         end
+      end
+   end
 end
 
 lp.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    if config.infiniteAmmo then
-        UpdateAllAmmo()
-    end
+   task.wait(0.5)
+   if config.infiniteAmmo then
+      UpdateAllAmmo()
+   end
 end)
 
 RunService.Heartbeat:Connect(function()
-    if config.infiniteAmmo then
-        UpdateAllAmmo()
-    end
+   if config.infiniteAmmo then
+      UpdateAllAmmo()
+   end
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
@@ -402,51 +395,49 @@ end)
 -- ═════════════════════════════════════════════════════════════════════════════
 
 local function ModifyWeaponRecoil(tool)
-    if not tool then return end
-    pcall(function()
-        local weaponData = tool:FindFirstChild("WeaponData")
-        if not weaponData then return end
-        
-        if config.norecoil then
-            local recoil = weaponData:FindFirstChild("Recoil")
-            if recoil then recoil.Value = 0 end
-            local cameraKick = weaponData:FindFirstChild("CameraKick")
-            if cameraKick then cameraKick.Value = 0 end
-        end
-        
-        if config.rpm > 0 then
-            local fireRate = weaponData:FindFirstChild("FireRate")
-            if fireRate then fireRate.Value = 60 / config.rpm end
-        end
-    end)
+   if not tool then return end
+   pcall(function()
+      local weaponData = tool:FindFirstChild("WeaponData")
+      if not weaponData then return end
+      if config.norecoil then
+         local recoil = weaponData:FindFirstChild("Recoil")
+         if recoil then recoil.Value = 0 end
+         local cameraKick = weaponData:FindFirstChild("CameraKick")
+         if cameraKick then cameraKick.Value = 0 end
+      end
+      if config.rpm > 0 then
+         local fireRate = weaponData:FindFirstChild("FireRate")
+         if fireRate then fireRate.Value = 60 / config.rpm end
+      end
+   end)
 end
 
 local function ModifyAllWeapons()
-    local backpack = lp:FindFirstChild("Backpack")
-    if backpack then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
-        end
-    end
-    local character = lp.Character
-    if character then
-        for _, tool in ipairs(character:GetChildren()) do
-            if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
-        end
-    end
+   local backpack = lp:FindFirstChild("Backpack")
+   if backpack then
+      for _, tool in ipairs(backpack:GetChildren()) do
+         if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
+      end
+   end
+   local character = lp.Character
+   if character then
+      for _, tool in ipairs(character:GetChildren()) do
+         if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
+      end
+   end
 end
 
 lp.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    if config.norecoil or config.rpm > 0 then
-        ModifyAllWeapons()
-    end
+   task.wait(0.5)
+   if config.norecoil or config.rpm > 0 then
+      ModifyAllWeapons()
+   end
 end)
 
 RunService.Heartbeat:Connect(function()
-    if config.norecoil or config.rpm > 0 then
-        ModifyAllWeapons()
-    end
+   if config.norecoil or config.rpm > 0 then
+      ModifyAllWeapons()
+   end
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
@@ -454,33 +445,32 @@ end)
 -- ═════════════════════════════════════════════════════════════════════════════
 
 local function UpdateWorldMods()
-    if config.nofog then
-        Lighting.FogEnd = 100000
-    else
-        Lighting.FogEnd = originalFogEnd
-    end
-    
-    if config.fullbright then
-        Lighting.Brightness = 3
-        Lighting.GlobalShadows = false
-    else
-        Lighting.Brightness = originalBrightness
-        Lighting.GlobalShadows = true
-    end
+   if config.nofog then
+      Lighting.FogEnd = 100000
+   else
+      Lighting.FogEnd = originalFogEnd
+   end
+   if config.fullbright then
+      Lighting.Brightness = 3
+      Lighting.GlobalShadows = false
+   else
+      Lighting.Brightness = originalBrightness
+      Lighting.GlobalShadows = true
+   end
 end
 
 RunService.Heartbeat:Connect(function()
-    UpdateWorldMods()
-    UpdateHitboxExpander()
-    UpdateObjectiveESP()
-    UpdatePlayerESP()
+   UpdateWorldMods()
+   UpdateHitboxExpander()
+   UpdateObjectiveESP()
+   UpdatePlayerESP()
 end)
 
 -- ═════════════════════════════════════════════════════════════════════════════
--- UI TABS
+-- UI TABS (Combat, Weapons, Visuals, World, Settings)
 -- ═════════════════════════════════════════════════════════════════════════════
 
--- Combat Tab
+-- COMBAT TAB
 local CombatTab = Window:CreateTab("Combat", 0)
 CombatTab:CreateToggle({
    Name = "Raycast Silent Aim",
@@ -488,21 +478,18 @@ CombatTab:CreateToggle({
    Flag = "RaycastEnabled",
    Callback = function(Value) config.raycasting = Value end
 })
-
 CombatTab:CreateToggle({
    Name = "Auto Hit",
    CurrentValue = false,
    Flag = "AutoHitEnabled",
    Callback = function(Value) config.autoHit = Value end
 })
-
 CombatTab:CreateToggle({
    Name = "Hitbox Expander",
    CurrentValue = false,
    Flag = "HitboxExp",
    Callback = function(Value) config.hitboxExpander = Value; UpdateHitboxExpander() end
 })
-
 CombatTab:CreateSlider({
    Name = "Hitbox Size",
    Min = 0,
@@ -513,7 +500,7 @@ CombatTab:CreateSlider({
    Callback = function(Value) config.hitboxSize = Value end
 })
 
--- Weapons Tab
+-- WEAPONS TAB
 local WeaponsTab = Window:CreateTab("Weapons", 0)
 WeaponsTab:CreateToggle({
    Name = "No Recoil",
@@ -521,7 +508,6 @@ WeaponsTab:CreateToggle({
    Flag = "NoRecoil",
    Callback = function(Value) config.norecoil = Value; ModifyAllWeapons() end
 })
-
 WeaponsTab:CreateSlider({
    Name = "RPM",
    Min = 0,
@@ -531,7 +517,6 @@ WeaponsTab:CreateSlider({
    Flag = "RPM",
    Callback = function(Value) config.rpm = Value end
 })
-
 WeaponsTab:CreateToggle({
    Name = "Infinite Ammo",
    CurrentValue = false,
@@ -539,7 +524,7 @@ WeaponsTab:CreateToggle({
    Callback = function(Value) config.infiniteAmmo = Value; if Value then UpdateAllAmmo() end end
 })
 
--- Visuals Tab (ESP - Chỉ dùng Highlight)
+-- VISUALS TAB (ESP)
 local VisualsTab = Window:CreateTab("Visuals", 0)
 VisualsTab:CreateToggle({
    Name = "Objective ESP (Highlight)",
@@ -553,7 +538,6 @@ VisualsTab:CreateToggle({
       end
    end
 })
-
 VisualsTab:CreateToggle({
    Name = "Player ESP (Red=Enemy, Cyan=Team)",
    CurrentValue = false,
@@ -567,7 +551,7 @@ VisualsTab:CreateToggle({
    end
 })
 
--- World Tab
+-- WORLD TAB
 local WorldTab = Window:CreateTab("World", 0)
 WorldTab:CreateToggle({
    Name = "No Fog",
@@ -575,7 +559,6 @@ WorldTab:CreateToggle({
    Flag = "NoFog",
    Callback = function(Value) config.nofog = Value end
 })
-
 WorldTab:CreateToggle({
    Name = "Fullbright",
    CurrentValue = false,
@@ -583,7 +566,7 @@ WorldTab:CreateToggle({
    Callback = function(Value) config.fullbright = Value end
 })
 
--- Settings Tab
+-- SETTINGS TAB
 local SettingsTab = Window:CreateTab("Settings", 0)
 SettingsTab:CreateLabel("TokaihHub - Reign Fall")
 SettingsTab:CreateLabel("Highlight ESP: Red=Enemy | Cyan=Team | Green=Objective")
@@ -592,10 +575,10 @@ SettingsTab:CreateButton({
    Callback = function() Window:Destroy() end
 })
 
-print("[TokaihHub] Reign Fall - Full Features + Highlight ESP Loaded")
+print("[TokaihHub] Reign Fall - Full Script Loaded")
 Rayfield:Notify({
    Title = "TokaihHub",
-   Content = "Reign Fall (No Recoil, RPM, FB, NoFog, ESP)",
+   Content = "Reign Fall - All Tabs & Features Loaded",
    Duration = 5,
    Image = 0
 })

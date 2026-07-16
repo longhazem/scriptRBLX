@@ -1,19 +1,8 @@
--- Tắt vật trang trí (Grass/Decoration)
-if not game:IsLoaded() then
-    repeat task.wait() until game:IsLoaded()
-end
-
+-- Tắt vật trang trí
+if not game:IsLoaded() then repeat task.wait() until game:IsLoaded() end
 coroutine.wrap(pcall)(function()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
-    if not terrain then
-        repeat task.wait() until workspace:FindFirstChildOfClass("Terrain")
-        terrain = workspace:FindFirstChildOfClass("Terrain")
-    end
-    if sethiddenproperty then
-        sethiddenproperty(terrain, "Decoration", false)
-    else
-        warn("Your exploit does not support sethiddenproperty")
-    end
+    if terrain then sethiddenproperty(terrain, "Decoration", false) end
 end)
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -22,51 +11,53 @@ local Window = Rayfield:CreateWindow({
    Icon = 0,
    LoadingTitle = "TokaihHub",
    LoadingSubtitle = "Reign Fall Script",
-   ShowText = "TokaihHub",
    Theme = "Default",
    ToggleUIKeybind = "K"
 })
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 local lp = Players.LocalPlayer
-local camera = workspace.CurrentCamera
-local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 local config = {
-   raycasting = false, autoHit = false, infiniteAmmo = false,
+   infiniteAmmo = false,
    objectiveESP = false, ammoESP = false, armorESP = false, medkitESP = false, playerESP = false,
-   hitboxExpander = false, hitboxSize = 6, nofog = false, fullbright = false
+   hitboxExpander = false, hitboxSize = 6
 }
 
-local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
 
--- Functions ESP & Hitbox
-local function AddHighlight(obj, color, transparency)
-   if not obj or not obj.Parent or obj:FindFirstChild("TokaiHighlight") then return end
-   local highlight = Instance.new("Highlight")
-   highlight.Name = "TokaiHighlight"
-   highlight.FillColor = color
-   highlight.OutlineColor = color
-   highlight.FillTransparency = transparency or 0.3
-   highlight.OutlineTransparency = 0
-   highlight.Parent = obj
+local function AddHighlight(obj, color)
+   if not obj or obj:FindFirstChild("TokaiHighlight") then return end
+   local h = Instance.new("Highlight")
+   h.Name = "TokaiHighlight"
+   h.FillColor = color
+   h.OutlineColor = color
+   h.FillTransparency = 0.3
+   h.Parent = obj
    highlightObjects[obj] = true
 end
 
 local function RemoveHighlight(obj)
-   local highlight = obj and obj:FindFirstChild("TokaiHighlight")
-   if highlight then highlight:Destroy(); highlightObjects[obj] = nil end
+   if obj and obj:FindFirstChild("TokaiHighlight") then
+      obj.TokaiHighlight:Destroy()
+      highlightObjects[obj] = nil
+   end
 end
 
-local function UpdateESP()
-   -- Objective & Items
+RunService.Heartbeat:Connect(function()
+   -- Infinite Ammo
+   if config.infiniteAmmo then
+      if lp.Backpack then for _, t in ipairs(lp.Backpack:GetChildren()) do if t:IsA("Tool") then pcall(function() t.WeaponData.Essentials.Ammo.Value = 99999 end) end end
+      if lp.Character then for _, t in ipairs(lp.Character:GetChildren()) do if t:IsA("Tool") then pcall(function() t.WeaponData.Essentials.Ammo.Value = 99999 end) end end end
+   end
+
+   -- ESP Logic
    local gameObjects = workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Current") and workspace.Game.Current:FindFirstChild("Spawned") and workspace.Game.Current.Spawned:FindFirstChild("GameObjects")
+   
+   -- Quét và gỡ bỏ hoặc thêm ESP
    if gameObjects then
       for _, obj in ipairs(gameObjects:GetChildren()) do
          local name = obj.Name
@@ -75,52 +66,39 @@ local function UpdateESP()
          elseif config.ammoESP and name == "pickup_ammo" then color = Color3.fromRGB(255, 255, 0)
          elseif config.armorESP and name == "pickup_armor" then color = Color3.fromRGB(0, 0, 255)
          elseif config.medkitESP and name == "pickup_medkit" then color = Color3.fromRGB(255, 0, 0) end
-         if color then AddHighlight(obj, color, 0.3) end
+         
+         if color then AddHighlight(obj, color) else RemoveHighlight(obj) end
       end
    end
-   -- Player ESP
-   if config.playerESP then
-      local npcs = workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Current") and workspace.Game.Current:FindFirstChild("Spawned") and workspace.Game.Current.Spawned:FindFirstChild("NPCs")
-      if npcs then
-         for _, enemy in ipairs(npcs:FindFirstChild("enemies"):GetChildren()) do if enemy:FindFirstChild("Humanoid") then AddHighlight(enemy, Color3.fromRGB(255, 0, 0), 0.3) end end
+
+   -- Hitbox Expander
+   if config.hitboxExpander then
+      for _, d in ipairs(Workspace:GetDescendants()) do
+         if d.Name == "Head" and d.Parent:FindFirstChild("Humanoid") and not Players:GetPlayerFromCharacter(d.Parent) then
+            d.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            d.CanCollide = false
+            d.Transparency = 0.7
+            expandedHitboxes[d] = true
+         end
       end
-      for _, p in ipairs(Players:GetPlayers()) do if p ~= lp and p.Character and p.Character:FindFirstChild("Humanoid") then AddHighlight(p.Character, Color3.fromRGB(0, 255, 255), 0.3) end end
+   else
+      for p, _ in pairs(expandedHitboxes) do
+         p.Size = Vector3.new(1, 1, 1)
+         p.Transparency = 0
+         expandedHitboxes[p] = nil
+      end
    end
-end
-
-local function applyHitbox(part)
-   if config.hitboxExpander and part.Name == "Head" and part.Parent:FindFirstChild("Humanoid") and Players:GetPlayerFromCharacter(part.Parent) == nil then
-      part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-      part.CanCollide = false
-      part.Transparency = 0.7
-      expandedHitboxes[part] = true
-   end
-end
-
--- Core Loops
-RunService.Heartbeat:Connect(function()
-   -- Ammo
-   if config.infiniteAmmo then
-      for _, t in ipairs(lp.Backpack:GetChildren()) do if t:IsA("Tool") then pcall(function() t.WeaponData.Essentials.Ammo.Value = 99999 end) end end
-      if lp.Character then for _, t in ipairs(lp.Character:GetChildren()) do if t:IsA("Tool") then pcall(function() t.WeaponData.Essentials.Ammo.Value = 99999 end) end end end
-   end
-   -- ESP & Hitbox
-   if not config.objectiveESP and not config.ammoESP and not config.armorESP and not config.medkitESP and not config.playerESP then
-      for obj, _ in pairs(highlightObjects) do RemoveHighlight(obj) end
-   else UpdateESP() end
-   if config.hitboxExpander then for _, d in ipairs(Workspace:GetDescendants()) do applyHitbox(d) end else for p, _ in pairs(expandedHitboxes) do p.Size = Vector3.new(1, 1, 1); p.Transparency = 0; expandedHitboxes[p] = nil end end
 end)
 
--- UI
+-- UI Setup
 local CombatTab = Window:CreateTab("Combat", 0)
-CombatTab:CreateToggle({Name = "Silent Aim", Callback = function(v) config.raycasting = v end})
-CombatTab:CreateToggle({Name = "Auto Hit", Callback = function(v) config.autoHit = v end})
 CombatTab:CreateToggle({Name = "Hitbox Expander", Callback = function(v) config.hitboxExpander = v end})
+
 local VisualsTab = Window:CreateTab("Visuals", 0)
 VisualsTab:CreateToggle({Name = "Mission ESP", Callback = function(v) config.objectiveESP = v end})
 VisualsTab:CreateToggle({Name = "Ammo ESP", Callback = function(v) config.ammoESP = v end})
 VisualsTab:CreateToggle({Name = "Armor ESP", Callback = function(v) config.armorESP = v end})
 VisualsTab:CreateToggle({Name = "Medkit ESP", Callback = function(v) config.medkitESP = v end})
-VisualsTab:CreateToggle({Name = "Player ESP", Callback = function(v) config.playerESP = v end})
+
 local UtilityTab = Window:CreateTab("Utility", 0)
 UtilityTab:CreateToggle({Name = "Infinite Ammo", Callback = function(v) config.infiniteAmmo = v end})

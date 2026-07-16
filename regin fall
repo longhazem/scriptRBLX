@@ -93,9 +93,17 @@ local function UpdateObjectiveESP()
    local gameObjects = spawned:FindFirstChild("GameObjects")
    if not gameObjects then return end
    
+   local targetNames = {
+      ["pickup_ammo"] = Color3.fromRGB(255, 255, 0),
+      ["pickup_armor"] = Color3.fromRGB(0, 0, 255),
+      ["pickup_medkit"] = Color3.fromRGB(255, 0, 0),
+      ["scenery_phone_ringing"] = Color3.fromRGB(255, 255, 255)
+   }
+
    for _, obj in ipairs(gameObjects:GetChildren()) do
-      if obj:IsA("Model") and obj.Name:sub(1, 8) == "mission_" then
-         AddHighlight(obj, Color3.fromRGB(0, 255, 0), 0.3)
+      local color = targetNames[obj.Name]
+      if color or obj.Name:sub(1, 8) == "mission_" then
+         AddHighlight(obj, color or Color3.fromRGB(0, 255, 0), 0.3)
       end
    end
 end
@@ -286,7 +294,7 @@ CombatTab:CreateToggle({Name = "Auto Hit", Callback = function(v) config.autoHit
 CombatTab:CreateToggle({Name = "Hitbox Expander", Callback = function(v) config.hitboxExpander = v end})
 local VisualsTab = Window:CreateTab("Visuals", 0)
 VisualsTab:CreateToggle({Name = "Objective ESP", Callback = function(v) config.objectiveESP = v end})
-VisualsTab:CreateToggle({Name = "Player ESP", Callback = function(v) config.playerESP = v end})
+VisualsTab:CreateToggle({Name = "Player/zombie ESP", Callback = function(v) config.playerESP = v end})
 VisualsTab:CreateToggle({Name = "Fullbright", Callback = function(v) config.fullbright = v end})
 VisualsTab:CreateToggle({Name = "No Fog", Callback = function(v) config.nofog = v end})
 local UtilityTab = Window:CreateTab("Utility", 0)

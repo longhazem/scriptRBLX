@@ -1,13 +1,7 @@
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-local Window = Rayfield:CreateWindow({
-   Name = "TokaihHub - Reign Fall",
-   Icon = 0,
-   LoadingTitle = "TokaihHub",
-   LoadingSubtitle = "Reign Fall Script",
-   ShowText = "TokaihHub",
-   Theme = "Default",
-   ToggleUIKeybind = "K"
-})
+local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
+local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -25,6 +19,7 @@ local config = {
    raycasting = false,
    autoHit = false,
    infiniteAmmo = false,
+   infiniteStamina = false,
    objectiveESP = false,
    ammoESP = false,
    armorESP = false,
@@ -32,8 +27,6 @@ local config = {
    playerESP = false,
    hitboxExpander = false,
    hitboxSize = 6,
-   norecoil = false,
-   rpm = 0,
    nofog = false,
    fullbright = false
 }
@@ -41,6 +34,26 @@ local config = {
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
+
+local Window = Library:CreateWindow({
+    Title = 'TokaihHub - Reign Fall',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+local Tabs = {
+    Combat = Window:AddTab('Combat'),
+    Visuals = Window:AddTab('Visuals'),
+    Utility = Window:AddTab('Utility'),
+    ['UI Settings'] = Window:AddTab('UI Settings'),
+}
+
+local CombatLeft = Tabs.Combat:AddLeftGroupbox('Combat Features')
+local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
+local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
+local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 
 local function AddHighlight(obj, color, transparency)
    if not obj or not obj.Parent then return end
@@ -343,86 +356,54 @@ task.spawn(function()
    end
 end)
 
-local function SetInfiniteAmmo(tool)
-   if not tool then return end
-   pcall(function()
-      local weaponData = tool:FindFirstChild("WeaponData")
-      if weaponData then
-         local essentials = weaponData:FindFirstChild("Essentials")
-         if essentials then
-            local ammo = essentials:FindFirstChild("Ammo")
-            if ammo and ammo:IsA("NumberValue") then
-               ammo.Value = 99999
+task.spawn(function()
+   while task.wait(0.1) do
+      local Character = lp.Character
+      if Character then
+         if config.infiniteStamina then
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            if Humanoid then
+               local Values = Humanoid:FindFirstChild("Values")
+               if Values then
+                  local Stamina = Values:FindFirstChild("Stamina")
+                  if Stamina and Stamina:IsA("NumberValue") then
+                     Stamina.Value = math.huge
+                  end
+               end
+            end
+         end
+         
+         if config.infiniteAmmo then
+            local Backpack = lp:FindFirstChild("Backpack")
+            local items = {}
+            
+            for _, v in ipairs(Character:GetChildren()) do
+               table.insert(items, v)
+            end
+            
+            if Backpack then
+               for _, v in ipairs(Backpack:GetChildren()) do
+                  table.insert(items, v)
+               end
+            end
+            
+            for _, item in ipairs(items) do
+               if item:IsA("Tool") then
+                  local WeaponData = item:FindFirstChild("WeaponData")
+                  if WeaponData then
+                     local Essentials = WeaponData:FindFirstChild("Essentials")
+                     if Essentials then
+                        local Ammo = Essentials:FindFirstChild("Ammo")
+                        if Ammo and Ammo:IsA("NumberValue") then
+                           Ammo.Value = math.huge
+                        end
+                     end
+                  end
+               end
             end
          end
       end
-   end)
-end
-
-local function UpdateAllAmmo()
-   local backpack = lp:FindFirstChild("Backpack")
-   if backpack then
-      for _, tool in ipairs(backpack:GetChildren()) do
-         if tool:IsA("Tool") then SetInfiniteAmmo(tool) end
-      end
    end
-   local character = lp.Character
-   if character then
-      for _, tool in ipairs(character:GetChildren()) do
-         if tool:IsA("Tool") then SetInfiniteAmmo(tool) end
-      end
-   end
-end
-
-lp.CharacterAdded:Connect(function()
-   task.wait(0.5)
-   if config.infiniteAmmo then UpdateAllAmmo() end
-end)
-
-RunService.Heartbeat:Connect(function()
-   if config.infiniteAmmo then UpdateAllAmmo() end
-end)
-
-local function ModifyWeaponRecoil(tool)
-   if not tool then return end
-   pcall(function()
-      local weaponData = tool:FindFirstChild("WeaponData")
-      if not weaponData then return end
-      if config.norecoil then
-         local recoil = weaponData:FindFirstChild("Recoil")
-         if recoil then recoil.Value = 0 end
-         local cameraKick = weaponData:FindFirstChild("CameraKick")
-         if cameraKick then cameraKick.Value = 0 end
-      end
-      if config.rpm > 0 then
-         local fireRate = weaponData:FindFirstChild("FireRate")
-         if fireRate then fireRate.Value = 60 / config.rpm end
-      end
-   end)
-end
-
-local function ModifyAllWeapons()
-   local backpack = lp:FindFirstChild("Backpack")
-   if backpack then
-      for _, tool in ipairs(backpack:GetChildren()) do
-         if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
-      end
-   end
-   local character = lp.Character
-   if character then
-      for _, tool in ipairs(character:GetChildren()) do
-         if tool:IsA("Tool") then ModifyWeaponRecoil(tool) end
-      end
-   end
-end
-
-lp.CharacterAdded:Connect(function()
-   task.wait(0.5)
-   if config.norecoil or config.rpm > 0 then ModifyAllWeapons() end
-end)
-
-RunService.Heartbeat:Connect(function()
-   if config.norecoil or config.rpm > 0 then ModifyAllWeapons() end
 end)
 
 RunService.Heartbeat:Connect(function()
@@ -439,20 +420,103 @@ RunService.Heartbeat:Connect(function()
    UpdatePlayerESP()
 end)
 
-local CombatTab = Window:CreateTab("Combat", 0)
-CombatTab:CreateToggle({Name = "Silent Aim", Callback = function(v) config.raycasting = v end})
-CombatTab:CreateToggle({Name = "Auto Hit", Callback = function(v) config.autoHit = v end})
-CombatTab:CreateToggle({Name = "Hitbox Expander", Callback = function(v) config.hitboxExpander = v end})
+CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
+Toggles.SilentAim:OnChanged(function()
+    config.raycasting = Toggles.SilentAim.Value
+end)
 
-local VisualsTab = Window:CreateTab("Visuals", 0)
-VisualsTab:CreateToggle({Name = "Objective ESP", Callback = function(v) config.objectiveESP = v end})
-VisualsTab:CreateToggle({Name = "Ammo ESP", Callback = function(v) config.ammoESP = v end})
-VisualsTab:CreateToggle({Name = "Armor ESP", Callback = function(v) config.armorESP = v end})
-VisualsTab:CreateToggle({Name = "Medkit ESP", Callback = function(v) config.medkitESP = v end})
-VisualsTab:CreateToggle({Name = "Player ESP", Callback = function(v) config.playerESP = v end})
-VisualsTab:CreateToggle({Name = "Fullbright", Callback = function(v) config.fullbright = v end})
-VisualsTab:CreateToggle({Name = "No Fog", Callback = function(v) config.nofog = v end})
+CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit', Default = false })
+Toggles.AutoHit:OnChanged(function()
+    config.autoHit = Toggles.AutoHit.Value
+end)
 
-local UtilityTab = Window:CreateTab("Utility", 0)
-UtilityTab:CreateToggle({Name = "Infinite Ammo", Callback = function(v) config.infiniteAmmo = v end})
-UtilityTab:CreateToggle({Name = "No Recoil", Callback = function(v) config.norecoil = v end})
+CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
+Toggles.HitboxExpander:OnChanged(function()
+    config.hitboxExpander = Toggles.HitboxExpander.Value
+end)
+
+VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
+Toggles.ObjectiveESP:OnChanged(function()
+    config.objectiveESP = Toggles.ObjectiveESP.Value
+end)
+
+VisualsLeft:AddToggle('AmmoESP', { Text = 'Ammo ESP', Default = false })
+Toggles.AmmoESP:OnChanged(function()
+    config.ammoESP = Toggles.AmmoESP.Value
+end)
+
+VisualsLeft:AddToggle('ArmorESP', { Text = 'Armor ESP', Default = false })
+Toggles.ArmorESP:OnChanged(function()
+    config.armorESP = Toggles.ArmorESP.Value
+end)
+
+VisualsLeft:AddToggle('MedkitESP', { Text = 'Medkit ESP', Default = false })
+Toggles.MedkitESP:OnChanged(function()
+    config.medkitESP = Toggles.MedkitESP.Value
+end)
+
+VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
+Toggles.PlayerESP:OnChanged(function()
+    config.playerESP = Toggles.PlayerESP.Value
+end)
+
+VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
+Toggles.Fullbright:OnChanged(function()
+    config.fullbright = Toggles.Fullbright.Value
+end)
+
+VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
+Toggles.NoFog:OnChanged(function()
+    config.nofog = Toggles.NoFog.Value
+end)
+
+UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
+Toggles.InfiniteAmmo:OnChanged(function()
+    config.infiniteAmmo = Toggles.InfiniteAmmo.Value
+end)
+
+UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
+Toggles.InfiniteStamina:OnChanged(function()
+    config.infiniteStamina = Toggles.InfiniteStamina.Value
+end)
+
+Library:SetWatermarkVisibility(true)
+local FrameTimer = tick()
+local FrameCounter = 0
+local FPS = 60
+
+local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(function()
+    FrameCounter = FrameCounter + 1
+    if (tick() - FrameTimer) >= 1 then
+        FPS = FrameCounter
+        FrameTimer = tick()
+        FrameCounter = 0
+    end
+    Library:SetWatermark(('TokaihHub | %s fps | %s ms'):format(
+        math.floor(FPS),
+        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
+    ))
+end)
+
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
+MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+ThemeManager:SetFolder('TokaihHub')
+SaveManager:SetFolder('TokaihHub/reign-fall')
+SaveManager:BuildConfigSection(Tabs['UI Settings'])
+ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:LoadAutoloadConfig()
+
+Library.KeybindFrame.Visible = true
+
+Library:OnUnload(function()
+    if WatermarkConnection then WatermarkConnection:Disconnect() end
+    Library.Unloaded = true
+end)

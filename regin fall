@@ -16,6 +16,8 @@ local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
 local config = {
+   aimbot = false,
+   wallcheck = false,
    raycasting = false,
    autoHit = false,
    infiniteAmmo = false,
@@ -28,16 +30,14 @@ local config = {
    hitboxExpander = false,
    hitboxSize = 6,
    nofog = false,
-   fullbright = false,
-   rainbowGun = false,
-   aimbot = false,
-   aimbotFov = 100,
-   wallCheck = false
+   fullbright = false
 }
 
 local target = {enabled = true, position = nil}
 local highlightObjects = {}
 local expandedHitboxes = {}
+local originalAmmoValues = {}
+local originalStaminaValue = nil
 
 local Window = Library:CreateWindow({
     Title = 'Tokai HUB - Reign Fall',
@@ -58,7 +58,6 @@ local CombatLeft = Tabs.Combat:AddLeftGroupbox('Combat Features')
 local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
 local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
-local UtilityRight = Tabs.Utility:AddRightGroupbox('Gun Mods')
 
 local function AddHighlight(obj, color, transparency)
    if not obj or not obj.Parent then return end
@@ -185,66 +184,59 @@ local function UpdatePlayerESP()
    end
 end
 
-local function UpdateHitboxExpander()
-   local currentHeads = {}
-   
-   if config.hitboxExpander then
-      local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-      if npcContainer then
-         local enemiesFolder = npcContainer:FindFirstChild("enemies")
-         if enemiesFolder then
-            for _, zombie in ipairs(enemiesFolder:GetChildren()) do
-               if zombie:IsA("Model") then
-                  local hum = zombie:FindFirstChild("Humanoid")
-                  local head = zombie:FindFirstChild("Head")
-                  if hum and hum.Health > 0 and head then
-                     currentHeads[head] = true
-                     if not expandedHitboxes[head] then
-                        expandedHitboxes[head] = head.Size
-                        head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                        head.CanCollide = false
-                        head.Transparency = 0.7
-                     else
-                        head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                     end
-                  end
-               end
-            end
+local function isPlayerCharacter(model)
+   if not model or not model:IsA("Model") then return false end
+   return Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function isHumanoidModel(model)
+   if not model or not model:IsA("Model") then return false end
+   return model:FindFirstChildWhichIsA("Humanoid") ~= nil
+end
+
+local function applyHitboxExpander(part)
+   if not part or not part:IsA("BasePart") then return end
+   if not config.hitboxExpander then return end
+   if part.Name ~= "Head" then return end
+   local model = part.Parent
+   if isHumanoidModel(model) and not isPlayerCharacter(model) then
+      pcall(function()
+         if not expandedHitboxes[part] then
+            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            part.CanCollide = false
+            part.Transparency = 0.7
+            expandedHitboxes[part] = true
+         else
+            part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
+            part.Transparency = 0.7
          end
-      end
-      
-      for _, player in ipairs(Players:GetPlayers()) do
-         if player ~= lp and player.Character then
-            local char = player.Character
-            local hum = char:FindFirstChild("Humanoid")
-            local head = char:FindFirstChild("Head")
-            if hum and hum.Health > 0 and head then
-               currentHeads[head] = true
-               if not expandedHitboxes[head] then
-                  expandedHitboxes[head] = head.Size
-                  head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-                  head.CanCollide = false
-                  head.Transparency = 0.7
-               else
-                  head.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-               end
-            end
-         end
-      end
+      end)
    end
-   
-   for part, origSize in pairs(expandedHitboxes) do
-      if not currentHeads[part] then
+end
+
+local function UpdateHitboxExpander()
+   if config.hitboxExpander then
+      for _, desc in ipairs(Workspace:GetDescendants()) do
+         applyHitboxExpander(desc)
+      end
+   else
+      for part, _ in pairs(expandedHitboxes) do
          if part and part.Parent then
-            pcall(function()
-               part.Size = origSize or Vector3.new(1, 1, 1)
-               part.Transparency = 0
-            end)
+            part.Size = Vector3.new(1, 1, 1)
+            part.Transparency = 0
          end
          expandedHitboxes[part] = nil
       end
+      expandedHitboxes = {}
    end
 end
+
+Workspace.DescendantAdded:Connect(function(desc)
+   if config.hitboxExpander and desc:IsA("BasePart") then
+      task.wait(0.05)
+      applyHitboxExpander(desc)
+   end
+end)
 
 local function getEnemyContainer()
    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
@@ -254,17 +246,18 @@ local function getEnemyContainer()
    return nil
 end
 
-local function isVisible(targetPart)
+local function isVisible(targetPos)
+   if not config.wallcheck then return true end
    local origin = camera.CFrame.Position
-   local direction = targetPart.Position - origin
-   local rayParams = RaycastParams.new()
-   rayParams.FilterDescendantsInstances = {lp.Character, camera}
-   rayParams.FilterType = Enum.RaycastFilterType.Exclude
-   rayParams.IgnoreWater = true
+   local dir = targetPos - origin
+   local raycastParams = RaycastParams.new()
+   raycastParams.FilterDescendantsInstances = {lp.Character, camera}
+   raycastParams.FilterType = Enum.RaycastFilterType.Exclude
    
-   local result = Workspace:Raycast(origin, direction, rayParams)
+   local result = Workspace:Raycast(origin, dir, raycastParams)
    if result then
-      if result.Instance:IsDescendantOf(targetPart.Parent) then
+      local hitInstance = result.Instance
+      if hitInstance:IsDescendantOf(workspace.Game.Current.Spawned.NPCs) then
          return true
       end
       return false
@@ -283,16 +276,15 @@ local function getClosestHead()
       referencePos = UserInputService:GetMouseLocation()
    end
    local bestHeadPos = nil
-   local bestDist = config.aimbotFov
+   local bestDist = math.huge
    for _, enemy in ipairs(container:GetChildren()) do
       local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-      local hum = enemy:FindFirstChild("Humanoid")
-      if head and hum and hum.Health > 0 then
+      if head then
          local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
          if onScreen then
-            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-            if dist < bestDist then
-               if not config.wallCheck or isVisible(head) then
+            if isVisible(head.Position) then
+               local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+               if dist < bestDist then
                   bestDist = dist
                   bestHeadPos = head.Position
                end
@@ -307,33 +299,19 @@ RunService.Heartbeat:Connect(function()
    if (config.raycasting or config.aimbot) and target.enabled then
       target.position = getClosestHead()
    end
-   
+end)
+
+RunService.RenderStepped:Connect(function()
    if config.aimbot and target.position then
       camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
-   end
-   
-   if config.rainbowGun then
-      local c = tick() % 5 / 5
-      local d = Color3.fromHSV(c, 1, 1)
-      local viewmodel = camera:FindFirstChild("Viewmodel") or camera:FindFirstChild("ViewModel")
-      if viewmodel then
-         for _, f in pairs(viewmodel:GetDescendants()) do
-            if f:IsA("BasePart") or f:IsA("MeshPart") then
-               f.Material = Enum.Material.ForceField
-               f.Color = d
-               f.Transparency = 0.3
-            end
-         end
-      end
    end
 end)
 
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    local method = getnamecallmethod()
-   local args = {...}
-   
    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
+      local args = {...}
       if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
          local raycastParams = args[3]
          if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
@@ -348,7 +326,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
       end
       return oldNamecall(self, unpack(args))
    end
-   return oldNamecall(self, unpack(args))
+   return oldNamecall(self, ...)
 end))
 
 local function findRegisterHitEvent()
@@ -366,14 +344,23 @@ local function findRegisterHitEvent()
    return nil
 end
 
-local function getAutoHitTargets()
+local function getTargets()
    local v11 = {}
    for v2, v7 in ipairs(Workspace:GetDescendants()) do
       if v7:IsA("Model") and v7:FindFirstChild("Humanoid") and v7 ~= lp.Character then
-         local hum = v7:FindFirstChild("Humanoid")
          local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
-         if v12 and hum and hum.Health > 0 then
+         if v12 then
             table.insert(v11, {model = v7, part = v12})
+         end
+      end
+   end
+   if #v11 == 0 and typeof(getnilinstances) == "function" then
+      for v2, v7 in ipairs(getnilinstances()) do
+         if v7:IsA("Model") then
+            local v12 = v7:FindFirstChild("Torso") or v7:FindFirstChild("HumanoidRootPart")
+            if v12 then
+               table.insert(v11, {model = v7, part = v12})
+            end
          end
       end
    end
@@ -385,7 +372,7 @@ task.spawn(function()
       if config.autoHit then
          local v5 = findRegisterHitEvent()
          if v5 then
-            local v11 = getAutoHitTargets()
+            local v11 = getTargets()
             if #v11 > 0 then
                local v6 = {}
                for v2, v10 in ipairs(v11) do
@@ -404,42 +391,60 @@ task.spawn(function()
    while task.wait(0.1) do
       local Character = lp.Character
       if Character then
-         if config.infiniteStamina then
-            local Humanoid = Character:FindFirstChild("Humanoid")
-            if Humanoid then
-               local Values = Humanoid:FindFirstChild("Values")
-               if Values then
-                  local Stamina = Values:FindFirstChild("Stamina")
-                  if Stamina and Stamina:IsA("NumberValue") then
-                     Stamina.Value = math.huge
+         local Humanoid = Character:FindFirstChild("Humanoid")
+         if Humanoid then
+            local Values = Humanoid:FindFirstChild("Values")
+            if Values then
+               local Stamina = Values:FindFirstChild("Stamina")
+               if Stamina and Stamina:IsA("NumberValue") then
+                  if config.infiniteStamina then
+                     if not originalStaminaValue then
+                        originalStaminaValue = Stamina.Value
+                     end
+                     Stamina.Value = 99999
+                  else
+                     if originalStaminaValue and Stamina.Value == 99999 then
+                        Stamina.Value = originalStaminaValue
+                        originalStaminaValue = nil
+                     end
                   end
                end
             end
          end
          
-         if config.infiniteAmmo then
-            local Backpack = lp:FindFirstChild("Backpack")
-            local items = {}
-            
-            for _, v in ipairs(Character:GetChildren()) do
+         local Backpack = lp:FindFirstChild("Backpack")
+         local items = {}
+         
+         for _, v in ipairs(Character:GetChildren()) do
+            table.insert(items, v)
+         end
+         
+         if Backpack then
+            for _, v in ipairs(Backpack:GetChildren()) do
                table.insert(items, v)
             end
-            
-            if Backpack then
-               for _, v in ipairs(Backpack:GetChildren()) do
-                  table.insert(items, v)
-               end
-            end
-            
-            for _, item in ipairs(items) do
-               if item:IsA("Tool") then
-                  local WeaponData = item:FindFirstChild("WeaponData")
-                  if WeaponData then
-                     local Essentials = WeaponData:FindFirstChild("Essentials")
-                     if Essentials then
-                        local Ammo = Essentials:FindFirstChild("Ammo")
-                        if Ammo and Ammo:IsA("NumberValue") then
-                           Ammo.Value = math.huge
+         end
+         
+         for _, item in ipairs(items) do
+            if item:IsA("Tool") then
+               local WeaponData = item:FindFirstChild("WeaponData")
+               if WeaponData then
+                  local Essentials = WeaponData:FindFirstChild("Essentials")
+                  if Essentials then
+                     local Ammo = Essentials:FindFirstChild("Ammo")
+                     if Ammo and Ammo:IsA("NumberValue") then
+                        if config.infiniteAmmo then
+                           if originalAmmoValues[item] == nil then
+                              originalAmmoValues[item] = Ammo.Value
+                           end
+                           Ammo.Value = 9999
+                        else
+                           if originalAmmoValues[item] ~= nil then
+                              if Ammo.Value == 9999 then
+                                 Ammo.Value = originalAmmoValues[item]
+                              end
+                              originalAmmoValues[item] = nil
+                           end
                         end
                      end
                   end
@@ -450,89 +455,101 @@ task.spawn(function()
    end
 end)
 
-task.spawn(function()
-   while task.wait(0.1) do
-      UpdateHitboxExpander()
-      UpdateObjectiveESP()
-      UpdatePlayerESP()
-      
-      if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
-      if config.fullbright then
-         Lighting.Brightness = 3
-         Lighting.GlobalShadows = false
-      else
-         Lighting.Brightness = originalBrightness
-         Lighting.GlobalShadows = true
-      end
+RunService.Heartbeat:Connect(function()
+   if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+   if config.fullbright then
+      Lighting.Brightness = 3
+      Lighting.GlobalShadows = false
+   else
+      Lighting.Brightness = originalBrightness
+      Lighting.GlobalShadows = true
    end
+
+   UpdateHitboxExpander()
+   UpdateObjectiveESP()
+   UpdatePlayerESP()
 end)
 
-CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot NPC', Default = false }):OnChanged(function()
+CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot', Default = false })
+Toggles.Aimbot:OnChanged(function()
     config.aimbot = Toggles.Aimbot.Value
 end)
 
-CombatLeft:AddToggle('WallCheck', { Text = 'Wall Check', Default = false }):OnChanged(function()
-    config.wallCheck = Toggles.WallCheck.Value
+CombatLeft:AddToggle('Wallcheck', { Text = 'Wallcheck', Default = false })
+Toggles.Wallcheck:OnChanged(function()
+    config.wallcheck = Toggles.Wallcheck.Value
 end)
 
-CombatLeft:AddSlider('AimbotFov', { Text = 'Aimbot Radius', Default = 100, Min = 10, Max = 500, Rounding = 1 }):OnChanged(function(Value)
-    config.aimbotFov = Value
-end)
-
-CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false }):OnChanged(function()
+CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
+Toggles.SilentAim:OnChanged(function()
     config.raycasting = Toggles.SilentAim.Value
 end)
 
-CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit', Default = false }):OnChanged(function()
+CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit', Default = false })
+Toggles.AutoHit:OnChanged(function()
     config.autoHit = Toggles.AutoHit.Value
 end)
 
-CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false }):OnChanged(function()
+CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
+Toggles.HitboxExpander:OnChanged(function()
     config.hitboxExpander = Toggles.HitboxExpander.Value
 end)
 
-CombatLeft:AddSlider('HitboxSize', { Text = 'Hitbox Size', Default = 6, Min = 1, Max = 20, Rounding = 1 }):OnChanged(function(Value)
-    config.hitboxSize = Value
-end)
+CombatLeft:AddSlider('HitboxSize', {
+    Text = 'Hitbox Size',
+    Default = 6,
+    Min = 0,
+    Max = 20,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        config.hitboxSize = Value
+    end
+})
 
-VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false }):OnChanged(function()
+VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
+Toggles.ObjectiveESP:OnChanged(function()
     config.objectiveESP = Toggles.ObjectiveESP.Value
 end)
 
-VisualsLeft:AddToggle('AmmoESP', { Text = 'Ammo ESP', Default = false }):OnChanged(function()
+VisualsLeft:AddToggle('AmmoESP', { Text = 'Ammo ESP', Default = false })
+Toggles.AmmoESP:OnChanged(function()
     config.ammoESP = Toggles.AmmoESP.Value
 end)
 
-VisualsLeft:AddToggle('ArmorESP', { Text = 'Armor ESP', Default = false }):OnChanged(function()
+VisualsLeft:AddToggle('ArmorESP', { Text = 'Armor ESP', Default = false })
+Toggles.ArmorESP:OnChanged(function()
     config.armorESP = Toggles.ArmorESP.Value
 end)
 
-VisualsLeft:AddToggle('MedkitESP', { Text = 'Medkit ESP', Default = false }):OnChanged(function()
+VisualsLeft:AddToggle('MedkitESP', { Text = 'Medkit ESP', Default = false })
+Toggles.MedkitESP:OnChanged(function()
     config.medkitESP = Toggles.MedkitESP.Value
 end)
 
-VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false }):OnChanged(function()
+VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
+Toggles.PlayerESP:OnChanged(function()
     config.playerESP = Toggles.PlayerESP.Value
 end)
 
-VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false }):OnChanged(function()
+VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
+Toggles.Fullbright:OnChanged(function()
     config.fullbright = Toggles.Fullbright.Value
 end)
 
-VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false }):OnChanged(function()
+VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
+Toggles.NoFog:OnChanged(function()
     config.nofog = Toggles.NoFog.Value
 end)
 
-UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false }):OnChanged(function()
+UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
+Toggles.InfiniteAmmo:OnChanged(function()
     config.infiniteAmmo = Toggles.InfiniteAmmo.Value
 end)
 
-UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false }):OnChanged(function()
+UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
+Toggles.InfiniteStamina:OnChanged(function()
     config.infiniteStamina = Toggles.InfiniteStamina.Value
-end)
-
-UtilityRight:AddToggle('RainbowGun', { Text = 'Súng 7 màu', Default = false }):OnChanged(function()
-    config.rainbowGun = Toggles.RainbowGun.Value
 end)
 
 Library:SetWatermarkVisibility(true)
@@ -554,9 +571,7 @@ local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(
 end)
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
-MenuGroup:AddButton({ Text = 'Unload', Func = function()
-    Library:Unload() 
-end })
+MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
 MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
 
 Library.ToggleKeybind = Options.MenuKeybind

@@ -17,6 +17,7 @@ local originalBrightness = Lighting.Brightness
 
 local config = {
    aimbot = false,
+   aimbotRange = 1000,
    wallcheck = false,
    raycasting = false,
    autoHit = false,
@@ -26,6 +27,7 @@ local config = {
    ammoESP = false,
    armorESP = false,
    medkitESP = false,
+   zombieESP = false,
    playerESP = false,
    hitboxExpander = false,
    hitboxSize = 6,
@@ -150,34 +152,36 @@ local function UpdateObjectiveESP()
    end
 end
 
-local function UpdatePlayerESP()
-   if not config.playerESP then
-      for obj, _ in pairs(highlightObjects) do
-         if obj and obj.Parent and obj:FindFirstChild("Humanoid") then
+local function UpdateESP()
+   for obj, _ in pairs(highlightObjects) do
+      if obj and obj.Parent and obj:FindFirstChild("Humanoid") then
+         local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
+         if isPlayer and not config.playerESP then
+            RemoveHighlight(obj)
+         elseif not isPlayer and not config.zombieESP then
             RemoveHighlight(obj)
          end
       end
-      return
    end
-   local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
-   if npcContainer then
-      local enemiesFolder = npcContainer:FindFirstChild("enemies")
-      if enemiesFolder then
-         for _, zombie in ipairs(enemiesFolder:GetChildren()) do
-            if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
-               if not zombie:FindFirstChild("TokaiHighlight") then
-                  AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
-               end
+   
+   if config.playerESP then
+      for _, player in ipairs(Players:GetPlayers()) do
+         if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
+            if not player.Character:FindFirstChild("TokaiHighlight") then
+               AddHighlight(player.Character, Color3.fromRGB(0, 255, 255), 0.3)
             end
          end
       end
    end
-   for _, player in ipairs(Players:GetPlayers()) do
-      if player ~= lp and player.Character then
-         local char = player.Character
-         if char and char:FindFirstChild("Humanoid") then
-            if not char:FindFirstChild("TokaiHighlight") then
-               AddHighlight(char, Color3.fromRGB(0, 255, 255), 0.3)
+
+   if config.zombieESP then
+      local npcContainer = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
+      if npcContainer and npcContainer:FindFirstChild("enemies") then
+         for _, zombie in ipairs(npcContainer.enemies:GetChildren()) do
+            if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+               if not zombie:FindFirstChild("TokaiHighlight") then
+                  AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
+               end
             end
          end
       end
@@ -284,7 +288,7 @@ local function getClosestHead()
          if onScreen then
             if isVisible(head.Position) then
                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-               if dist < bestDist then
+               if dist < bestDist and dist <= config.aimbotRange then
                   bestDist = dist
                   bestHeadPos = head.Position
                end
@@ -467,13 +471,25 @@ RunService.Heartbeat:Connect(function()
 
    UpdateHitboxExpander()
    UpdateObjectiveESP()
-   UpdatePlayerESP()
+   UpdateESP()
 end)
 
 CombatLeft:AddToggle('Aimbot', { Text = 'Aimbot', Default = false })
 Toggles.Aimbot:OnChanged(function()
     config.aimbot = Toggles.Aimbot.Value
 end)
+
+CombatLeft:AddSlider('AimbotRange', {
+    Text = 'Aimbot Range',
+    Default = 1000,
+    Min = 0,
+    Max = 1000,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        config.aimbotRange = Value
+    end
+})
 
 CombatLeft:AddToggle('Wallcheck', { Text = 'Wallcheck', Default = false })
 Toggles.Wallcheck:OnChanged(function()
@@ -527,6 +543,11 @@ Toggles.MedkitESP:OnChanged(function()
     config.medkitESP = Toggles.MedkitESP.Value
 end)
 
+VisualsLeft:AddToggle('ZombieESP', { Text = 'Zombie ESP', Default = false })
+Toggles.ZombieESP:OnChanged(function()
+    config.zombieESP = Toggles.ZombieESP.Value
+end)
+
 VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
 Toggles.PlayerESP:OnChanged(function()
     config.playerESP = Toggles.PlayerESP.Value
@@ -552,43 +573,18 @@ Toggles.InfiniteStamina:OnChanged(function()
     config.infiniteStamina = Toggles.InfiniteStamina.Value
 end)
 
-Library:SetWatermarkVisibility(true)
-local FrameTimer = tick()
-local FrameCounter = 0
-local FPS = 60
-
-local WatermarkConnection = game:GetService('RunService').RenderStepped:Connect(function()
-    FrameCounter = FrameCounter + 1
-    if (tick() - FrameTimer) >= 1 then
-        FPS = FrameCounter
-        FrameTimer = tick()
-        FrameCounter = 0
-    end
-    Library:SetWatermark(('Tokai HUB | %s fps | %s ms'):format(
-        math.floor(FPS),
-        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
-    ))
-end)
-
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
-MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
-
-Library.ToggleKeybind = Options.MenuKeybind
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
 ThemeManager:SetFolder('TokaihHub')
 SaveManager:SetFolder('TokaihHub/reign-fall')
 SaveManager:BuildConfigSection(Tabs['UI Settings'])
 ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
 
-Library.KeybindFrame.Visible = true
-
 Library:OnUnload(function()
-    if WatermarkConnection then WatermarkConnection:Disconnect() end
     Library.Unloaded = true
 end)

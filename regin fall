@@ -1,4 +1,4 @@
--- FULL CODE ĐÃSỬA LỖI + CRASH FIX
+-- FULL CODE ĐÃSỬA LỖI + CRASH FIX V2
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
 
 -- Safe library loading
@@ -395,21 +395,25 @@ local function isVisible(targetPos)
     if not config.wallcheck then return true end
     local origin = camera.CFrame.Position
     local dir = targetPos - origin
+    if dir.Magnitude == 0 then return true end
+    
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {lp.Character, camera}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    local result = pcall(function()
+    
+    -- FIX: Properly handle pcall result
+    local success, result = pcall(function()
         return Workspace:Raycast(origin, dir, raycastParams)
     end)
     
-    if result then
-        local hitInstance = result.Instance
-        if hitInstance and hitInstance:IsDescendantOf(workspace:FindFirstChild("Game")) then
-            return true
-        end
-        return false
+    if not success then return true end  -- If error, return true (visible)
+    if not result then return true end   -- If no hit, return true (visible)
+    
+    local hitInstance = result.Instance
+    if hitInstance and hitInstance:IsDescendantOf(workspace:FindFirstChild("Game")) then
+        return true
     end
-    return true
+    return false
 end
 
 local function getClosestHead()

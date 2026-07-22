@@ -1,4 +1,3 @@
--- Script đã loại bỏ hoàn toàn Wallcheck (luôn coi mục tiêu là nhìn thấy)
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
 local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
@@ -17,8 +16,7 @@ local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
 local config = {
-   -- Không có wallcheck
-   raycasting = false,   -- Silent Aim
+   raycasting = false,
    autoHit = false,
    infiniteAmmo = false,
    infiniteStamina = false,
@@ -55,7 +53,7 @@ local Tabs = {
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
-local CombatLeft = Tabs.Combat:AddLeftGroupbox('Combat Features (Không Wallcheck)')
+local CombatLeft = Tabs.Combat:AddLeftGroupbox('Combat Features')
 local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
 local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
@@ -241,7 +239,6 @@ Workspace.DescendantAdded:Connect(function(desc)
    end
 end)
 
--- ======== SILENT AIM (KHÔNG WALLCHECK) ========
 local function getEnemyContainer()
    local container = workspace.Game and workspace.Game.Current and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.NPCs
    if container then
@@ -250,7 +247,6 @@ local function getEnemyContainer()
    return nil
 end
 
--- Hàm isVisible luôn trả về true (bỏ qua mọi chướng ngại)
 local function isVisible(targetPos)
    return true
 end
@@ -272,11 +268,12 @@ local function getClosestHead()
       if head then
          local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
          if onScreen then
-            -- Luôn visible
-            local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-            if dist < bestDist then
-               bestDist = dist
-               bestHeadPos = head.Position
+            if isVisible(head.Position) then
+               local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
+               if dist < bestDist then
+                  bestDist = dist
+                  bestHeadPos = head.Position
+               end
             end
          end
       end
@@ -292,7 +289,6 @@ RunService.Heartbeat:Connect(function()
    end
 end)
 
--- Hook raycast cho Silent Aim (vẫn giữ nhưng không cần wallcheck)
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    local method = getnamecallmethod()
@@ -313,7 +309,6 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
    return oldNamecall(self, ...)
 end))
 
--- ======== AUTO HIT ========
 local function findRegisterHitEvent()
    local v3 = lp.Character
    if not v3 then return nil end
@@ -372,7 +367,6 @@ task.spawn(function()
    end
 end)
 
--- ======== INFINITE AMMO & STAMINA ========
 task.spawn(function()
    while task.wait(0.1) do
       local Character = lp.Character
@@ -435,7 +429,6 @@ task.spawn(function()
    end
 end)
 
--- ======== MÔI TRƯỜNG ========
 RunService.Heartbeat:Connect(function()
    if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
    if config.fullbright then
@@ -451,50 +444,82 @@ RunService.Heartbeat:Connect(function()
    UpdateESP()
 end)
 
-CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim (nil)', Default = false })
-Toggles.SilentAim:OnChanged(function() config.raycasting = Toggles.SilentAim.Value end)
+CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
+Toggles.SilentAim:OnChanged(function()
+    config.raycasting = Toggles.SilentAim.Value
+end)
 
-CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit (nil)', Default = false })
-Toggles.AutoHit:OnChanged(function() config.autoHit = Toggles.AutoHit.Value end)
+CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit', Default = false })
+Toggles.AutoHit:OnChanged(function()
+    config.autoHit = Toggles.AutoHit.Value
+end)
 
 CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
-Toggles.HitboxExpander:OnChanged(function() config.hitboxExpander = Toggles.HitboxExpander.Value end)
+Toggles.HitboxExpander:OnChanged(function()
+    config.hitboxExpander = Toggles.HitboxExpander.Value
+end)
 
 CombatLeft:AddSlider('HitboxSize', {
     Text = 'Hitbox Size',
-    Default = 6, Min = 0, Max = 20, Rounding = 1,
-    Callback = function(v) config.hitboxSize = v end
+    Default = 6,
+    Min = 0,
+    Max = 20,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(Value)
+        config.hitboxSize = Value
+    end
 })
 
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
-Toggles.ObjectiveESP:OnChanged(function() config.objectiveESP = Toggles.ObjectiveESP.Value end)
+Toggles.ObjectiveESP:OnChanged(function()
+    config.objectiveESP = Toggles.ObjectiveESP.Value
+end)
 
 VisualsLeft:AddToggle('AmmoESP', { Text = 'Ammo ESP', Default = false })
-Toggles.AmmoESP:OnChanged(function() config.ammoESP = Toggles.AmmoESP.Value end)
+Toggles.AmmoESP:OnChanged(function()
+    config.ammoESP = Toggles.AmmoESP.Value
+end)
 
 VisualsLeft:AddToggle('ArmorESP', { Text = 'Armor ESP', Default = false })
-Toggles.ArmorESP:OnChanged(function() config.armorESP = Toggles.ArmorESP.Value end)
+Toggles.ArmorESP:OnChanged(function()
+    config.armorESP = Toggles.ArmorESP.Value
+end)
 
 VisualsLeft:AddToggle('MedkitESP', { Text = 'Medkit ESP', Default = false })
-Toggles.MedkitESP:OnChanged(function() config.medkitESP = Toggles.MedkitESP.Value end)
+Toggles.MedkitESP:OnChanged(function()
+    config.medkitESP = Toggles.MedkitESP.Value
+end)
 
 VisualsLeft:AddToggle('ZombieESP', { Text = 'Zombie ESP', Default = false })
-Toggles.ZombieESP:OnChanged(function() config.zombieESP = Toggles.ZombieESP.Value end)
+Toggles.ZombieESP:OnChanged(function()
+    config.zombieESP = Toggles.ZombieESP.Value
+end)
 
 VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
-Toggles.PlayerESP:OnChanged(function() config.playerESP = Toggles.PlayerESP.Value end)
+Toggles.PlayerESP:OnChanged(function()
+    config.playerESP = Toggles.PlayerESP.Value
+end)
 
 VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
-Toggles.Fullbright:OnChanged(function() config.fullbright = Toggles.Fullbright.Value end)
+Toggles.Fullbright:OnChanged(function()
+    config.fullbright = Toggles.Fullbright.Value
+end)
 
 VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
-Toggles.NoFog:OnChanged(function() config.nofog = Toggles.NoFog.Value end)
+Toggles.NoFog:OnChanged(function()
+    config.nofog = Toggles.NoFog.Value
+end)
 
 UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
-Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
+Toggles.InfiniteAmmo:OnChanged(function()
+    config.infiniteAmmo = Toggles.InfiniteAmmo.Value
+end)
 
 UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
-Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
+Toggles.InfiniteStamina:OnChanged(function()
+    config.infiniteStamina = Toggles.InfiniteStamina.Value
+end)
 
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
@@ -508,4 +533,6 @@ SaveManager:BuildConfigSection(Tabs['UI Settings'])
 ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
 
-Library:OnUnload(function() Library.Unloaded = true end)
+Library:OnUnload(function()
+    Library.Unloaded = true
+end)

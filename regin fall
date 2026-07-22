@@ -1,7 +1,46 @@
+-- Palofsc: Đã sửa script để tương thích với nhiều executor. Dùng hàm GetLoadstringSource thay cho game:HttpGet.
+
+-- Executor compat: Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
+local function GetLoadstringSource(Url)
+	local function tryRequest(fn, args)
+		if not fn then return nil end
+		local ok, r = pcall(fn, args)
+		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
+	end
+
+	local body = tryRequest(request, {Url=Url,Method="GET"})
+		or tryRequest(http_request, {Url=Url,Method="GET"})
+		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
+		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
+
+	if not body then
+		local ok, r = pcall(function() return game:HttpGet(Url) end)
+		if ok and typeof(r) == "string" then body = r
+		elseif ok and typeof(r) == "Instance" then
+			local iok, src = pcall(function() return r.Source end)
+			if iok and typeof(src) == "string" then body = src end
+		end
+	end
+
+	if not body then error("[TokaiHub] HTTP failed: " .. tostring(Url), 2) end
+
+	if body:match("^429") or body:lower():match("rate limit") then
+		warn("[TokaiHub] Rate limit — chờ 10s rồi thử lại")
+		task.wait(10)
+		return GetLoadstringSource(Url)
+	end
+
+	if body:match("^<!DOCTYPE") or body:match("^<html") then
+		error("[TokaiHub] Server trả về HTML — URL sai hoặc repo lỗi", 2)
+	end
+
+	return body
+end
+
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
-local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+local Library = loadstring(GetLoadstringSource(repo .. 'source.lua'))()
+local ThemeManager = loadstring(GetLoadstringSource(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(GetLoadstringSource(repo .. 'addons/SaveManager.lua'))()
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -240,7 +279,6 @@ local function isVisible(targetPos)
     return true
 end
 
--- ================== HÀM getClosestHead TỐI ƯU TỐC ĐỘ ==================
 local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
@@ -256,22 +294,18 @@ local function getClosestHead()
     local bestZombie = nil
     local bestDist = math.huge
 
-    -- Chỉ kiểm tra 3 phần chính để tiết kiệm thời gian
     local criticalParts = {"Head", "HumanoidRootPart", "Torso"}
 
     for _, enemy in ipairs(container:GetChildren()) do
         if not enemy:IsA("Model") then continue end
         if not enemy:FindFirstChild("Humanoid") then continue end
 
-        -- Lấy head để dùng làm vị trí aim
         local headPart = enemy:FindFirstChild("Head")
         if not headPart then
-            -- fallback lấy root hoặc torso
             headPart = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Torso")
         end
         if not headPart then continue end
 
-        -- Kiểm tra từng phần quan trọng
         local found = false
         local minDist = math.huge
         for _, partName in ipairs(criticalParts) do
@@ -283,14 +317,12 @@ local function getClosestHead()
                     if dist <= config.fovSize and dist <= config.aimbotRange then
                         if dist < minDist then minDist = dist end
                         found = true
-                        -- không break để lấy khoảng cách nhỏ nhất
                     end
                 end
             end
         end
 
         if found and minDist < bestDist then
-            -- Kiểm tra wallcheck (nếu bật)
             if config.wallcheck and not isVisible(headPart.Position) then
                 continue
             end
@@ -310,9 +342,7 @@ local function getClosestHead()
     end
     return nil
 end
--- ============================================================
 
--- Dùng RenderStepped thay vì Heartbeat để cập nhật liên tục, giảm độ trễ
 RunService.RenderStepped:Connect(function()
     if (config.raycasting or config.aimbot) and target.enabled then
         target.position = getClosestHead()

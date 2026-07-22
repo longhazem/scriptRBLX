@@ -41,7 +41,7 @@ local originalAmmoValues = {}
 local originalStaminaValue = nil
 
 local Window = Library:CreateWindow({
-    Title = 'Tokai HUB - Reign Fall (Silent Aim + Auto Hit, No Wallcheck)',
+    Title = 'Tokai HUB - Reign Fall',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -451,7 +451,6 @@ RunService.Heartbeat:Connect(function()
    UpdateESP()
 end)
 
--- ======== GIAO DIỆN (Không có toggle Wallcheck) ========
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim (nil)', Default = false })
 Toggles.SilentAim:OnChanged(function() config.raycasting = Toggles.SilentAim.Value end)
 

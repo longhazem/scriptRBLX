@@ -1,4 +1,4 @@
--- FULL CODE ĐÃSỬA LỖI + CRASH FIX V2
+-- FULL CODE ĐÃSỬA LỖI + CRASH FIX - WORKING VERSION
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
 
 -- Safe library loading
@@ -133,8 +133,10 @@ local function UpdateVisuals(obj, shouldShow, color, nameText)
                     textLabel.TextSize = 13
                     label.Parent = obj
                 else
-                    label.TextLabel.Text = nameText
-                    label.TextLabel.TextColor3 = color
+                    if label:FindFirstChild("TextLabel") then
+                        label.TextLabel.Text = nameText
+                        label.TextLabel.TextColor3 = color
+                    end
                 end
             else
                 if label then label:Destroy() end
@@ -393,24 +395,26 @@ end)
 -- =================== AIMBOT & SILENT =====================
 local function isVisible(targetPos)
     if not config.wallcheck then return true end
+    
     local origin = camera.CFrame.Position
     local dir = targetPos - origin
+    
     if dir.Magnitude == 0 then return true end
     
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {lp.Character, camera}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
     
-    -- FIX: Properly handle pcall result
     local success, result = pcall(function()
         return Workspace:Raycast(origin, dir, raycastParams)
     end)
     
-    if not success then return true end  -- If error, return true (visible)
-    if not result then return true end   -- If no hit, return true (visible)
+    if not success or not result then 
+        return true
+    end
     
     local hitInstance = result.Instance
-    if hitInstance and hitInstance:IsDescendantOf(workspace:FindFirstChild("Game")) then
+    if hitInstance and hitInstance:IsDescendantOf(workspace:FindFirstChild("Game") or Instance.new("Folder")) then
         return true
     end
     return false
@@ -485,7 +489,9 @@ end)
 
 RunService.RenderStepped:Connect(function()
     if config.aimbot and target.position then
-        camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
+        pcall(function()
+            camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
+        end)
     end
     if config.fovEnabled then
         FOVCircle.Visible = true
@@ -877,3 +883,5 @@ if Library then
         Library.Unloaded = true
     end)
 end
+
+print("✅ Tokai HUB - Reign Fall loaded!")

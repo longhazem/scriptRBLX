@@ -1,46 +1,68 @@
--- Palofsc: Đã sửa script để tương thích với nhiều executor. Dùng hàm GetLoadstringSource thay cho game:HttpGet.
+-- Palofsc: Phiên bản tương thích tối đa, bắt lỗi và in ra console để debug. 
+-- Dùng cho các executor không hiển thị lỗi.
 
--- Executor compat: Volt, Potassium, Synapse Z, Wave, Delta, Codex, OpiumWare, Xenk, Solara
-local function GetLoadstringSource(Url)
-	local function tryRequest(fn, args)
-		if not fn then return nil end
-		local ok, r = pcall(fn, args)
-		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
-	end
-
-	local body = tryRequest(request, {Url=Url,Method="GET"})
-		or tryRequest(http_request, {Url=Url,Method="GET"})
-		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
-		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
-
-	if not body then
-		local ok, r = pcall(function() return game:HttpGet(Url) end)
-		if ok and typeof(r) == "string" then body = r
-		elseif ok and typeof(r) == "Instance" then
-			local iok, src = pcall(function() return r.Source end)
-			if iok and typeof(src) == "string" then body = src end
-		end
-	end
-
-	if not body then error("[TokaiHub] HTTP failed: " .. tostring(Url), 2) end
-
-	if body:match("^429") or body:lower():match("rate limit") then
-		warn("[TokaiHub] Rate limit — chờ 10s rồi thử lại")
-		task.wait(10)
-		return GetLoadstringSource(Url)
-	end
-
-	if body:match("^<!DOCTYPE") or body:match("^<html") then
-		error("[TokaiHub] Server trả về HTML — URL sai hoặc repo lỗi", 2)
-	end
-
-	return body
+-- Kiểm tra môi trường
+local function safePcall(func, ...)
+    local ok, err = pcall(func, ...)
+    if not ok then
+        warn("[TokaiHub] Lỗi: " .. tostring(err))
+        -- In ra console nếu có thể
+        if syn and syn.crash then syn.crash(tostring(err)) end
+        if game:GetService("LogService") then
+            game:GetService("LogService"):Message(tostring(err))
+        end
+    end
+    return ok, err
 end
 
+-- Hàm GetLoadstringSource với fallback
+local function GetLoadstringSource(Url)
+    local body = nil
+    local function tryRequest(fn, args)
+        if not fn then return nil end
+        local ok, r = pcall(fn, args)
+        if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
+        return nil
+    end
+
+    body = tryRequest(request, {Url=Url,Method="GET"})
+        or tryRequest(http_request, {Url=Url,Method="GET"})
+        or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
+        or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
+
+    if not body then
+        local ok, r = pcall(function() return game:HttpGet(Url) end)
+        if ok and typeof(r) == "string" then body = r
+        elseif ok and typeof(r) == "Instance" then
+            local iok, src = pcall(function() return r.Source end)
+            if iok and typeof(src) == "string" then body = src end
+        end
+    end
+
+    if not body then
+        warn("[TokaiHub] HTTP thất bại cho URL: " .. tostring(Url))
+        return ""
+    end
+    return body
+end
+
+print("[TokaiHub] Đang tải script...")
+
+-- Tải các module với xử lý lỗi
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
-local Library = loadstring(GetLoadstringSource(repo .. 'source.lua'))()
-local ThemeManager = loadstring(GetLoadstringSource(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(GetLoadstringSource(repo .. 'addons/SaveManager.lua'))()
+local sourceLib = GetLoadstringSource(repo .. 'source.lua')
+local sourceTheme = GetLoadstringSource(repo .. 'addons/ThemeManager.lua')
+local sourceSave = GetLoadstringSource(repo .. 'addons/SaveManager.lua')
+
+if sourceLib == "" or sourceTheme == "" or sourceSave == "" then
+    error("[TokaiHub] Không thể tải module. Kiểm tra kết nối hoặc URL.")
+end
+
+local Library = loadstring(sourceLib)()
+local ThemeManager = loadstring(sourceTheme)()
+local SaveManager = loadstring(sourceSave)()
+
+if not Library then error("[TokaiHub] Library nil") end
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -54,12 +76,19 @@ local isMobile = UserInputService.TouchEnabled and not UserInputService.Keyboard
 local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
-local FOVCircle = Drawing.new("Circle")
-FOVCircle.Thickness = 1.5
-FOVCircle.NumSides = 100
-FOVCircle.Filled = false
-FOVCircle.Visible = false
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+-- Kiểm tra Drawing có sẵn không
+local Drawing = Drawing or nil
+local FOVCircle = nil
+if Drawing then
+    FOVCircle = Drawing.new("Circle")
+    FOVCircle.Thickness = 1.5
+    FOVCircle.NumSides = 100
+    FOVCircle.Filled = false
+    FOVCircle.Visible = false
+    FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+else
+    warn("[TokaiHub] Drawing không hỗ trợ, FOV Circle sẽ bị vô hiệu")
+end
 
 local config = {
     aimbot = false,
@@ -110,9 +139,10 @@ local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
 local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 
+-- Hàm cập nhật ESP (giữ nguyên)
 local function UpdateVisuals(obj, shouldShow, color, nameText)
     if not obj or not obj.Parent then return end
-    pcall(function()
+    safePcall(function()
         if shouldShow then
             if not obj:FindFirstChild("TokaiHighlight") then
                 local highlight = Instance.new("Highlight")
@@ -215,7 +245,7 @@ local function applyHitboxExpander(part)
     if part.Name ~= "Head" then return end
     local model = part.Parent
     if isHumanoidModel(model) and not isPlayerCharacter(model) then
-        pcall(function()
+        safePcall(function()
             if not expandedHitboxes[part] then
                 part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
                 part.CanCollide = false
@@ -248,7 +278,7 @@ end
 
 Workspace.DescendantAdded:Connect(function(desc)
     if config.hitboxExpander and desc:IsA("BasePart") then
-        task.wait(0.05)
+        wait(0.05) -- thay task.wait
         applyHitboxExpander(desc)
     end
 end)
@@ -343,51 +373,60 @@ local function getClosestHead()
     return nil
 end
 
-RunService.RenderStepped:Connect(function()
-    if (config.raycasting or config.aimbot) and target.enabled then
-        target.position = getClosestHead()
-    end
-end)
-
-RunService.RenderStepped:Connect(function()
-    if config.aimbot and target.position then
-        camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
-    end
-    if config.fovEnabled then
-        FOVCircle.Visible = true
-        FOVCircle.Radius = config.fovSize
-        if isMobile then
-            FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
-        else
-            FOVCircle.Position = UserInputService:GetMouseLocation()
+-- Render loop dùng wait để tương thích
+local function renderLoop()
+    while true do
+        wait(0.03) -- thay cho RenderStepped nếu không có
+        if (config.raycasting or config.aimbot) and target.enabled then
+            target.position = getClosestHead()
         end
-    else
-        FOVCircle.Visible = false
+        if config.aimbot and target.position then
+            camera.CFrame = CFrame.new(camera.CFrame.Position, target.position)
+        end
+        if config.fovEnabled and FOVCircle then
+            FOVCircle.Visible = true
+            FOVCircle.Radius = config.fovSize
+            if isMobile then
+                FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+            else
+                FOVCircle.Position = UserInputService:GetMouseLocation()
+            end
+        elseif FOVCircle then
+            FOVCircle.Visible = false
+        end
+        UpdateESP()
     end
-    UpdateESP()
-end)
+end
 
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
-        local args = {...}
-        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
-            local raycastParams = args[3]
-            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
-                if target.position then
-                    local origin = args[1]
-                    local dir = target.position - origin
-                    if dir.Magnitude > 0.001 then
-                        args[2] = dir.Unit * args[2].Magnitude
+-- Chạy loop trong một coroutine
+coroutine.wrap(renderLoop)()
+
+-- Hook raycast cho silent aim (nếu hỗ trợ hookmetamethod)
+local oldNamecall = nil
+if hookmetamethod and getnamecallmethod and newcclosure then
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if config.raycasting and target.enabled and method:lower() == "raycast" and self == Workspace then
+            local args = {...}
+            if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
+                local raycastParams = args[3]
+                if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
+                    if target.position then
+                        local origin = args[1]
+                        local dir = target.position - origin
+                        if dir.Magnitude > 0.001 then
+                            args[2] = dir.Unit * args[2].Magnitude
+                        end
                     end
                 end
             end
+            return oldNamecall(self, unpack(args))
         end
-        return oldNamecall(self, unpack(args))
-    end
-    return oldNamecall(self, ...)
-end))
+        return oldNamecall(self, ...)
+    end))
+else
+    warn("[TokaiHub] hookmetamethod không hỗ trợ, silent aim sẽ không hoạt động")
+end
 
 local function findRegisterHitEvent()
     local v3 = lp.Character
@@ -427,8 +466,9 @@ local function getTargets()
     return v11
 end
 
-task.spawn(function()
-    while task.wait(0.2) do
+coroutine.wrap(function()
+    while true do
+        wait(0.2)
         if config.autoHit then
             local v5 = findRegisterHitEvent()
             if v5 then
@@ -445,10 +485,11 @@ task.spawn(function()
             end
         end
     end
-end)
+end)()
 
-task.spawn(function()
-    while task.wait(0.1) do
+coroutine.wrap(function()
+    while true do
+        wait(0.1)
         local Character = lp.Character
         if Character then
             local Humanoid = Character:FindFirstChild("Humanoid")
@@ -509,24 +550,29 @@ task.spawn(function()
             end
         end
     end
-end)
+end)()
 
-RunService.Heartbeat:Connect(function()
-    if config.nofog then
-        Lighting.FogEnd = 100000
-    else
-        Lighting.FogEnd = originalFogEnd
+-- Loop cho fog và fullbright
+coroutine.wrap(function()
+    while true do
+        wait(0.1)
+        if config.nofog then
+            Lighting.FogEnd = 100000
+        else
+            Lighting.FogEnd = originalFogEnd
+        end
+        if config.fullbright then
+            Lighting.Brightness = 3
+            Lighting.GlobalShadows = false
+        else
+            Lighting.Brightness = originalBrightness
+            Lighting.GlobalShadows = true
+        end
+        UpdateHitboxExpander()
     end
-    if config.fullbright then
-        Lighting.Brightness = 3
-        Lighting.GlobalShadows = false
-    else
-        Lighting.Brightness = originalBrightness
-        Lighting.GlobalShadows = true
-    end
-    UpdateHitboxExpander()
-end)
+end)()
 
+-- Tạo UI
 CombatLeft:AddToggle('Aimbot', {
     Text = 'Aimbot',
     Default = false
@@ -686,7 +732,7 @@ local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({
     Text = 'Unload',
     Func = function()
-        FOVCircle:Remove()
+        if FOVCircle then FOVCircle:Remove() end
         for obj, _ in pairs(highlightObjects) do
             if obj then
                 local highlight = obj:FindFirstChild("TokaiHighlight")
@@ -711,3 +757,5 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function()
     Library.Unloaded = true
 end)
+
+print("[TokaiHub] Script đã được tải thành công!")

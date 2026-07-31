@@ -1048,9 +1048,214 @@ S_Safety:AddToggle({ Name = "Anti-Explosion", Flag = "AntiExp", Default = false,
 	else if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end; Library:Notify("Anti-Explosion OFF", 3) end
 end })
 
+-- ============================================
+-- DAY/NIGHT CONTROLLER
+-- ============================================
+
+local Lighting = game:GetService("Lighting")
+local dayNightActive = false
+local dayNightConn   = nil
+local dayNightMode   = "Day"  -- "Day" | "Night" | "Cycle"
+local cycleSpeed     = 60     -- in-game minutes per real second
+
+local DAY_TIME   = 14  -- 2pm
+local NIGHT_TIME = 0   -- midnight
+
+local function applyTimeOfDay(clockTime)
+	pcall(function() Lighting.ClockTime = clockTime end)
+end
+
+local function setDayNight(mode)
+	dayNightMode = mode
+	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
+
+	if mode == "Day" then
+		applyTimeOfDay(DAY_TIME)
+	elseif mode == "Night" then
+		applyTimeOfDay(NIGHT_TIME)
+	elseif mode == "Cycle" then
+		dayNightConn = RunService.Heartbeat:Connect(function(dt)
+			if not dayNightActive then return end
+			local current = Lighting.ClockTime
+			local next = (current + dt * cycleSpeed / 60) % 24
+			applyTimeOfDay(next)
+		end)
+	end
+end
+
+-- ============================================
+-- AUTO TELEPORTER
+-- ============================================
+
+local autoTpActive  = false
+local autoTpDelay   = 0.3   -- seconds between each teleport
+local autoTpConn    = nil
+
+local function teleportToSafeTiles()
+	if autoTpConn then autoTpConn:Disconnect(); autoTpConn = nil end
+	if not autoTpActive then return end
+
+	autoTpConn = task.spawn(function()
+		while autoTpActive do
+			task.wait(autoTpDelay)
+
+			if not checkGridValid() then
+				initGrid(); task.wait(0.2); continue
+			end
+
+			local char = player.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart")
+			if not root then continue end
+
+			-- Collect tất cả ô an toàn chưa mở
+			local safeList = {}
+			for col = 1, W do
+				for row = 1, H do
+					local cell = grid[col][row]
+					if cell.part
+					and not cell.isOpened
+					and not cell.isFlagged
+					and not cell.isBlocked
+					and not deducedBombs[cell.part]
+					then
+						table.insert(safeList, cell)
+					end
+				end
+			end
+
+			if #safeList == 0 then
+				-- Không còn ô safe — thử chạy solver một lần
+				local _, safeTiles = updateDeductions()
+				if safeTiles then
+					for _, cell in pairs(safeTiles) do
+						table.insert(safeList, cell)
+					end
+				end
+			end
+
+			if #safeList == 0 then
+				Library:Notify("Auto TP: Không có ô an toàn.", 3)
+				autoTpActive = false
+				break
+			end
+
+			-- Teleport đến ô gần nhất trong safeList
+			local nearest, minDist = nil, math.huge
+			for _, cell in ipairs(safeList) do
+				local dist = (cell.part.Position - root.Position).Magnitude
+				if dist < minDist then minDist = dist; nearest = cell end
+			end
+
+			if nearest and nearest.part and nearest.part.Parent then
+				local pos = nearest.part.Position
+				root.CFrame = CFrame.new(pos.X, pos.Y + 3, pos.Z)
+				-- Đánh dấu đã đi để tránh loop lại ô cũ
+				nearest.isBlocked = true
+			end
+		end
+	end)
+end
+
 -- ==================== TAB: MISC ====================
 local MiscTab = Window:DrawTab({ Name = "Misc", Icon = "droplets", Type = "Double" })
 
+-- Day/Night Section
+local S_DayNight = MiscTab:DrawSection({ Name = "Day / Night", Position = "left" })
+
+S_DayNight:AddToggle({ Name = "Bật Điều Chỉnh Thời Gian", Flag = "DayNight_Active", Default = false,
+	Callback = function(v)
+		dayNightActive = v
+		if v then
+			setDayNight(dayNightMode)
+			Library:Notify("Time Control ON — " .. dayNightMode, 3)
+		else
+			if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
+			Library:Notify("Time Control OFF", 3)
+		end
+	end
+})
+
+S_DayNight:AddDropdown({ Name = "Chế Độ", Flag = "DayNight_Mode",
+	Values = { "Day", "Night", "Cycle" }, Default = "Day",
+	Callback = function(v)
+		dayNightMode = v
+		if dayNightActive then
+			setDayNight(v)
+			Library:Notify("Chế độ: " .. v, 3)
+		end
+	end
+})
+
+S_DayNight:AddSlider({ Name = "Giờ Tuỳ Chỉnh (0-23)", Flag = "DayNight_Hour",
+	Min = 0, Max = 23, Default = 14,
+	Callback = function(v)
+		if dayNightActive and dayNightMode ~= "Cycle" then
+			applyTimeOfDay(v)
+		end
+		if dayNightMode == "Day" then DAY_TIME = v
+		elseif dayNightMode == "Night" then NIGHT_TIME = v end
+	end
+})
+
+S_DayNight:AddSlider({ Name = "Tốc Độ Cycle (phút/giây)", Flag = "DayNight_CycleSpeed",
+	Min = 1, Max = 300, Default = 60,
+	Callback = function(v)
+		cycleSpeed = v
+		-- Restart cycle nếu đang chạy
+		if dayNightActive and dayNightMode == "Cycle" then setDayNight("Cycle") end
+	end
+})
+
+-- Auto Teleporter Section
+local S_AutoTp = MiscTab:DrawSection({ Name = "Auto Teleporter", Position = "right" })
+
+local AutoTpToggle = S_AutoTp:AddToggle({ Name = "Auto TP Ô An Toàn", Flag = "AutoTp_Active", Default = false,
+	Callback = function(v)
+		autoTpActive = v
+		if v then
+			initGrid()
+			teleportToSafeTiles()
+			Library:Notify("Auto TP ON", 3)
+		else
+			if autoTpConn then task.cancel(autoTpConn); autoTpConn = nil end
+			Library:Notify("Auto TP OFF", 3)
+		end
+	end
+})
+AutoTpToggle.Link:AddKeybind({ Name = "Auto TP Key", Flag = "AutoTp_Key", Default = "T" })
+
+S_AutoTp:AddSlider({ Name = "TP Delay (giây)", Flag = "AutoTp_Delay",
+	Min = 1, Max = 50, Default = 3, Suffix = "x0.1s",
+	Callback = function(v) autoTpDelay = v * 0.1 end
+})
+
+S_AutoTp:AddButton({ Name = "TP 1 Lần Đến Ô Gần Nhất", Callback = function()
+	if not checkGridValid() then initGrid() end
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then Library:Notify("Không tìm thấy character.", 3); return end
+
+	local nearest, minDist = nil, math.huge
+	for col = 1, W do
+		for row = 1, H do
+			local cell = grid[col][row]
+			if cell.part and not cell.isOpened and not cell.isFlagged and not cell.isBlocked and not deducedBombs[cell.part] then
+				local dist = (cell.part.Position - root.Position).Magnitude
+				if dist < minDist then minDist = dist; nearest = cell end
+			end
+		end
+	end
+
+	if nearest then
+		local pos = nearest.part.Position
+		root.CFrame = CFrame.new(pos.X, pos.Y + 3, pos.Z)
+		Library:Notify("Teleported đến ô an toàn gần nhất.", 3)
+	else
+		Library:Notify("Không tìm được ô an toàn.", 3)
+	end
+end })
+
+-- Utilities Section
 local S_Util = MiscTab:DrawSection({ Name = "Utilities", Position = "left" })
 S_Util:AddButton({ Name = "Re-init Grid", Callback = function()
 	initGrid(); Library:Notify("Grid re-initialized.", 3)
@@ -1061,7 +1266,10 @@ end })
 S_Util:AddButton({ Name = "Reset All", Callback = function()
 	autoWalkActive = false; autoFlagActive = false; espActive = false
 	flying = false; infiniteJump = false; antiExplosionActive = false
+	autoTpActive = false; dayNightActive = false
 	if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end
+	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
+	if autoTpConn then task.cancel(autoTpConn); autoTpConn = nil end
 	stopFlying(); clearESP()
 	local char = player.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then hum.WalkSpeed = 16; hum.JumpPower = 50; hum.UseJumpPower = false; hum.PlatformStand = false end

@@ -1,818 +1,1074 @@
--- I could not obfuscate the code because it would lead to freezing the calculations so free code I guess.
-print("test")
-local identifierName = "Tokaihub"
-if gethui():FindFirstChild(identifierName) then
-	warn("perplexity: already executed")
-elseif game.PlaceId == 7871169780 then
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
-	local HttpService = game:GetService("HttpService")
-	local Players = game:GetService("Players")
-	local UserInputService = game:GetService("UserInputService")
+-- ============================================
+-- Minesweeper Bot & ESP — libba UI Edition
+-- Ported from Rayfield → libba (RBM5 style)
+-- ============================================
 
-	local executionTracker = Instance.new("BoolValue")
-	executionTracker.Name = identifierName
-	executionTracker.Value = true
-	executionTracker.Parent = gethui()
+local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
 
-	local flag = workspace:WaitForChild("Flag")
-	local partsFolder = flag:WaitForChild("Parts")
-	local infoFolder = ReplicatedStorage:WaitForChild("Info")
-	local gameRunning = infoFolder:WaitForChild("GameRunning")
-	local totalMinesValue = infoFolder:FindFirstChild("Mines")
-	local flagsFolder = ReplicatedStorage:WaitForChild("Flags")
-
-	local mainFolder = Instance.new("Folder")
-	mainFolder.Name = HttpService:GenerateGUID(false)
-	mainFolder.Parent = workspace
-
-	local activeTiles = {}
-	local colorConnections = {}
-	local descConnections = {}
-	local textConnections = {}
-	local flagConnections = {}
-	local neighborsCache = {}
-	local tileGrid = {}
-	local tileGridSize = nil
-	local tileStates = {}
-	local tileProbabilities = {}
-	local partitionBestGuesses = {}
-	local solvePending = false
-	local SOLVE_COOLDOWN = 0.1
-	local lastSolveTime = 0
-	local highlightsEnabled = true
-	local topLevelConnections = {}
-
-	local COLOR_SAFE    = Color3.fromRGB(0, 255, 0)
-	local COLOR_MINE    = Color3.fromRGB(255, 0, 0)
-	local COLOR_BEST    = Color3.fromRGB(170, 0, 255)
-	local COLOR_UNKNOWN = Color3.fromRGB(255, 255, 0)
-
-	local flagNames = {}
-	for _, subfolder in ipairs(flagsFolder:GetChildren()) do
-		if subfolder:IsA("Folder") then
-			for _, flagModel in ipairs(subfolder:GetChildren()) do
-				flagNames[flagModel.Name] = true
-			end
+local function GetLoadstringSource(Url)
+	local function tryRequest(fn, args)
+		if not fn then return nil end
+		local ok, r = pcall(fn, args)
+		if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
+	end
+	local body = tryRequest(request, {Url=Url,Method="GET"})
+		or tryRequest(http_request, {Url=Url,Method="GET"})
+		or tryRequest(syn and syn.request, {Url=Url,Method="GET"})
+		or tryRequest(fluxus and fluxus.request, {Url=Url,Method="GET"})
+	if not body then
+		local ok, r = pcall(function() return game:HttpGet(Url) end)
+		if ok and typeof(r) == "string" then body = r
+		elseif ok and typeof(r) == "Instance" then
+			local iok, src = pcall(function() return r.Source end)
+			if iok and typeof(src) == "string" then body = src end
 		end
 	end
-
-	local function tileHasFlag(tile)
-		for _, child in ipairs(tile:GetChildren()) do
-			if child:IsA("Model") and flagNames[child.Name] then
-				return true
-			end
-		end
-		return false
+	if not body then error("[MineBot] HTTP failed: " .. tostring(Url), 2) end
+	if body:match("^429") or body:lower():match("rate limit") then
+		warn("[MineBot] Rate limit — chờ 10s")
+		task.wait(10)
+		return GetLoadstringSource(Url)
 	end
-
-	local function isGreen(tile)
-		local r = math.round(tile.Color.R * 255)
-		local g = math.round(tile.Color.G * 255)
-		local b = math.round(tile.Color.B * 255)
-		return (r == 117 and g == 205 and b == 100) or (r == 103 and g == 180 and b == 88)
+	if body:match("^<!DOCTYPE") or body:match("^<html") then
+		error("[MineBot] Server trả về HTML — URL sai", 2)
 	end
-
-	local function isBeige(tile)
-		local r = math.round(tile.Color.R * 255)
-		local g = math.round(tile.Color.G * 255)
-		local b = math.round(tile.Color.B * 255)
-		return (r == 255 and g == 255 and b == 125) or (r == 230 and g == 230 and b == 113)
-	end
-
-	local function isGreenColor(c)
-		local r = math.round(c.R * 255)
-		local g = math.round(c.G * 255)
-		local b = math.round(c.B * 255)
-		return (r == 117 and g == 205 and b == 100) or (r == 103 and g == 180 and b == 88)
-	end
-
-	local function isBeigeColor(c)
-		local r = math.round(c.R * 255)
-		local g = math.round(c.G * 255)
-		local b = math.round(c.B * 255)
-		return (r == 255 and g == 255 and b == 125) or (r == 230 and g == 230 and b == 113)
-	end
-
-	local function getTileNumber(tile)
-		local gui = tile:FindFirstChild("NumberGui")
-		if gui then
-			local label = gui:FindFirstChild("TextLabel")
-			if label then
-				return tonumber(label.Text) or 0
-			end
-		end
-		return 0
-	end
-
-	local partPool = {}
-
-	local function acquireVisualPart(tile, color)
-		local visualPart
-		if #partPool > 0 then
-			visualPart = table.remove(partPool)
-		else
-			visualPart = Instance.new("Part")
-			visualPart.Name = "PooledVisual"
-			visualPart.CastShadow = false
-			visualPart.Material = Enum.Material.Neon
-			visualPart.CanCollide = false
-			visualPart.CanQuery = false
-			visualPart.Anchored = true
-			local surfaceGui = Instance.new("SurfaceGui")
-			surfaceGui.Name = "SurfaceGui"
-			surfaceGui.Face = Enum.NormalId.Top
-			surfaceGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-			surfaceGui.PixelsPerStud = 25
-			surfaceGui.Parent = visualPart
-			local textLabel = Instance.new("TextLabel")
-			textLabel.Name = "Label"
-			textLabel.BackgroundTransparency = 1
-			textLabel.BorderSizePixel = 0
-			textLabel.Size = UDim2.new(1, 0, 1, 0)
-			textLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-			textLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
-			textLabel.FontFace = Font.new("rbxasset://fonts/families/PressStart2P.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal)
-			textLabel.TextColor3 = Color3.new(0, 0, 0)
-			textLabel.TextSize = 100
-			textLabel.TextStrokeTransparency = 1
-			textLabel.TextXAlignment = Enum.TextXAlignment.Center
-			textLabel.TextYAlignment = Enum.TextYAlignment.Center
-			textLabel.Parent = surfaceGui
-		end
-		visualPart.Color = color
-		visualPart.Transparency = 0.3
-		visualPart.Size = tile.Size * 0.8
-		visualPart.Position = tile.Position + Vector3.new(0, 1.5, 0)
-		visualPart.Parent = mainFolder
-		local gui = visualPart:FindFirstChild("SurfaceGui")
-		local lbl = gui and gui:FindFirstChild("Label")
-		if lbl then lbl.Text = ""; lbl.TextTransparency = 1 end
-		return visualPart
-	end
-
-	local function releaseVisualPart(visualPart)
-		if not visualPart then return end
-		visualPart.Parent = nil
-		table.insert(partPool, visualPart)
-	end
-
-	local function clearTiles()
-		for _, visual in pairs(activeTiles) do
-			releaseVisualPart(visual)
-		end
-		for _, conn in pairs(colorConnections) do conn:Disconnect() end
-		for _, conn in pairs(descConnections) do conn:Disconnect() end
-		for _, conn in pairs(textConnections) do conn:Disconnect() end
-		for _, conns in pairs(flagConnections) do
-			for _, conn in ipairs(conns) do conn:Disconnect() end
-		end
-		table.clear(activeTiles)
-		table.clear(colorConnections)
-		table.clear(descConnections)
-		table.clear(textConnections)
-		table.clear(flagConnections)
-		table.clear(neighborsCache)
-		table.clear(tileGrid)
-		table.clear(tileStates)
-		table.clear(tileProbabilities)
-		table.clear(partitionBestGuesses)
-	end
-
-	local function updateFlagVisibility(tile)
-		local visualPart = activeTiles[tile]
-		if not visualPart then return end
-		local hasFlag = tileHasFlag(tile)
-		visualPart.Transparency = hasFlag and 1 or 0.3
-		local gui = visualPart:FindFirstChildOfClass("SurfaceGui")
-		if gui then
-			local lbl = gui:FindFirstChild("Label")
-			if lbl then lbl.TextTransparency = hasFlag and 1 or 0 end
-		end
-	end
-
-	local function hookFlagEvents(tile)
-		if flagConnections[tile] then return end
-		local added = tile.ChildAdded:Connect(function(child)
-			if child:IsA("Model") and flagNames[child.Name] then
-				updateFlagVisibility(tile)
-			end
-		end)
-		local removed = tile.ChildRemoved:Connect(function(child)
-			if child:IsA("Model") and flagNames[child.Name] then
-				updateFlagVisibility(tile)
-			end
-		end)
-		flagConnections[tile] = { added, removed }
-	end
-
-	local function solveBoard()
-		if not gameRunning.Value then
-			clearTiles()
-			return
-		end
-
-		local hasGlobalMines = totalMinesValue ~= nil
-		local totalMines = hasGlobalMines and totalMinesValue.Value or math.huge
-
-		local colorSnapshot = {}
-		local numberSnapshot = {}
-		local positionSnapshot = {}
-		for tile in pairs(neighborsCache) do
-			colorSnapshot[tile] = tile.Color
-			numberSnapshot[tile] = getTileNumber(tile)
-			positionSnapshot[tile] = tile.Position
-		end
-
-		table.clear(tileProbabilities)
-		table.clear(partitionBestGuesses)
-
-		for tile in pairs(neighborsCache) do
-			if not isGreenColor(colorSnapshot[tile]) then
-				tileStates[tile] = 0
-			end
-		end
-
-		local changed = true
-		local iterations = 0
-		while changed and iterations < 128 do
-			iterations = iterations + 1
-			changed = false
-
-			if not gameRunning.Value then clearTiles() return end
-
-			for tile, neighbors in pairs(neighborsCache) do
-				if isBeigeColor(colorSnapshot[tile]) then
-					local number = numberSnapshot[tile]
-					if number > 0 then
-						local unknownNeighbors = {}
-						local mineCount = 0
-						for _, neighbor in ipairs(neighbors) do
-							if isGreenColor(colorSnapshot[neighbor]) then
-								local state = tileStates[neighbor] or 0
-								if state == 2 then
-									mineCount = mineCount + 1
-								elseif state == 0 then
-									table.insert(unknownNeighbors, neighbor)
-								end
-							end
-						end
-						local uCount = #unknownNeighbors
-						if uCount > 0 then
-							if number == mineCount + uCount then
-								for _, n in ipairs(unknownNeighbors) do
-									if tileStates[n] ~= 2 then
-										tileStates[n] = 2
-										changed = true
-									end
-								end
-							elseif number == mineCount then
-								for _, n in ipairs(unknownNeighbors) do
-									if tileStates[n] ~= 1 then
-										tileStates[n] = 1
-										changed = true
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-
-			local knownMines = 0
-			local totalUnknownGreen = 0
-			local unknownGreenList = {}
-			for t in pairs(neighborsCache) do
-				if isGreenColor(colorSnapshot[t]) then
-					if tileStates[t] == 2 then
-						knownMines = knownMines + 1
-					elseif tileStates[t] == 0 then
-						totalUnknownGreen = totalUnknownGreen + 1
-						table.insert(unknownGreenList, t)
-					end
-				end
-			end
-
-			local globalRemainingMines = totalMines - knownMines
-			if hasGlobalMines and totalUnknownGreen > 0 then
-				if globalRemainingMines == 0 then
-					for _, t in ipairs(unknownGreenList) do
-						if tileStates[t] ~= 1 then tileStates[t] = 1; changed = true end
-					end
-				elseif globalRemainingMines == totalUnknownGreen then
-					for _, t in ipairs(unknownGreenList) do
-						if tileStates[t] ~= 2 then tileStates[t] = 2; changed = true end
-					end
-				end
-			end
-
-			if not changed then
-				local frontierTiles = {}
-				local tileToConstraints = {}
-				local frontierUnknownSet = {}
-
-				for tile, neighbors in pairs(neighborsCache) do
-					if isBeigeColor(colorSnapshot[tile]) then
-						local number = numberSnapshot[tile]
-						if number > 0 then
-							local unknowns = {}
-							local mineCount = 0
-							for _, neighbor in ipairs(neighbors) do
-								if isGreenColor(colorSnapshot[neighbor]) then
-									local state = tileStates[neighbor] or 0
-									if state == 2 then
-										mineCount = mineCount + 1
-									elseif state == 0 then
-										table.insert(unknowns, neighbor)
-									end
-								end
-							end
-							if #unknowns > 0 then
-								local constraint = { unknowns = unknowns, remaining = number - mineCount }
-								for _, u in ipairs(unknowns) do
-									if not tileToConstraints[u] then
-										tileToConstraints[u] = {}
-										table.insert(frontierTiles, u)
-										frontierUnknownSet[u] = true
-									end
-									table.insert(tileToConstraints[u], constraint)
-								end
-							end
-						end
-					end
-				end
-
-				local nonFrontierUnknowns = 0
-				for _, t in ipairs(unknownGreenList) do
-					if not frontierUnknownSet[t] then
-						nonFrontierUnknowns = nonFrontierUnknowns + 1
-					end
-				end
-
-				local visited = {}
-				local partitions = {}
-				for _, tile in ipairs(frontierTiles) do
-					if not visited[tile] then
-						local groupTiles = {}
-						local groupConstraints = {}
-						local cVisited = {}
-						local queue = {tile}
-						local qHead = 1
-						visited[tile] = true
-						while qHead <= #queue do
-							local curr = queue[qHead]; qHead = qHead + 1
-							table.insert(groupTiles, curr)
-							for _, c in ipairs(tileToConstraints[curr]) do
-								if not cVisited[c] then
-									cVisited[c] = true
-									table.insert(groupConstraints, c)
-									for _, u in ipairs(c.unknowns) do
-										if not visited[u] then
-											visited[u] = true
-											table.insert(queue, u)
-										end
-									end
-								end
-							end
-						end
-						table.insert(partitions, { tiles = groupTiles, constraints = groupConstraints })
-					end
-				end
-
-				for _, part in ipairs(partitions) do
-					if #part.tiles <= 14 then
-						local validConfigs = 0
-						local mineFreq = {}
-						for _, t in ipairs(part.tiles) do mineFreq[t] = 0 end
-						local assignment = {}
-						local unknownsOutside = nonFrontierUnknowns + (#frontierTiles - #part.tiles)
-						local noOutsideAbsorbers = (unknownsOutside == 0)
-						local function backtrack(index, currentMines)
-							if not gameRunning.Value then return end
-							local remainingInPart = #part.tiles - index + 1
-							if hasGlobalMines and (currentMines + remainingInPart + unknownsOutside < globalRemainingMines) then return end
-							if index > #part.tiles then
-								if hasGlobalMines and noOutsideAbsorbers and currentMines ~= globalRemainingMines then return end
-								validConfigs = validConfigs + 1
-								for _, t in ipairs(part.tiles) do
-									if assignment[t] == 2 then mineFreq[t] = mineFreq[t] + 1 end
-								end
-								return
-							end
-							local tile = part.tiles[index]
-							assignment[tile] = 1
-							local canSafe = true
-							for _, c in ipairs(tileToConstraints[tile] or {}) do
-								local placed, unassigned = 0, 0
-								for _, ct in ipairs(c.unknowns) do
-									if assignment[ct] == 2 then placed = placed + 1
-									elseif assignment[ct] == nil then unassigned = unassigned + 1 end
-								end
-								if placed + unassigned < c.remaining then canSafe = false; break end
-							end
-							if canSafe then backtrack(index + 1, currentMines) end
-							local newMines = currentMines + 1
-							if not hasGlobalMines or newMines <= globalRemainingMines then
-								assignment[tile] = 2
-								local canMine = true
-								for _, c in ipairs(tileToConstraints[tile] or {}) do
-									local placed = 0
-									for _, ct in ipairs(c.unknowns) do
-										if assignment[ct] == 2 then placed = placed + 1 end
-									end
-									if placed > c.remaining then canMine = false; break end
-								end
-								if canMine then backtrack(index + 1, newMines) end
-							end
-							assignment[tile] = nil
-						end
-						backtrack(1, 0)
-						if validConfigs > 0 then
-							local partBestTile = nil
-							local partBestProb = math.huge
-							for _, t in ipairs(part.tiles) do
-								local p = mineFreq[t] / validConfigs
-								if p == 1 and tileStates[t] ~= 2 then
-									tileStates[t] = 2; changed = true
-								elseif p == 0 and tileStates[t] ~= 1 then
-									tileStates[t] = 1; changed = true
-								else
-									tileProbabilities[t] = p
-									if p < partBestProb then
-										partBestProb = p; partBestTile = t
-									end
-								end
-							end
-							if partBestTile then
-								local cx, cy, cz = 0, 0, 0
-								local count = #part.tiles
-								for _, t in ipairs(part.tiles) do
-									cx = cx + positionSnapshot[t].X
-									cy = cy + positionSnapshot[t].Y
-									cz = cz + positionSnapshot[t].Z
-								end
-								table.insert(partitionBestGuesses, {
-									tile = partBestTile,
-									prob = partBestProb,
-									centroid = Vector3.new(cx / count, cy / count, cz / count)
-								})
-							end
-						end
-					else
-						local cx, cy, cz = 0, 0, 0
-						local count = #part.tiles
-						for _, t in ipairs(part.tiles) do
-							cx = cx + positionSnapshot[t].X
-							cy = cy + positionSnapshot[t].Y
-							cz = cz + positionSnapshot[t].Z
-						end
-						local centroid = Vector3.new(cx / count, cy / count, cz / count)
-						local bestDist = math.huge
-						local bestTile = part.tiles[1]
-						for _, t in ipairs(part.tiles) do
-							local d = (positionSnapshot[t] - centroid).Magnitude
-							if d < bestDist then bestDist = d; bestTile = t end
-						end
-						table.insert(partitionBestGuesses, { tile = bestTile, prob = 0, centroid = centroid })
-					end
-				end
-
-				local nonFrontierTiles = {}
-				for _, t in ipairs(unknownGreenList) do
-					if not frontierUnknownSet[t] then
-						table.insert(nonFrontierTiles, t)
-					end
-				end
-
-				local nonFrontierVisited = {}
-				local nonFrontierPartitions = {}
-				for _, tile in ipairs(nonFrontierTiles) do
-					if not nonFrontierVisited[tile] then
-						local group = {}
-						local queue = {tile}
-						local qHead = 1
-						nonFrontierVisited[tile] = true
-						while qHead <= #queue do
-							local curr = queue[qHead]; qHead = qHead + 1
-							table.insert(group, curr)
-							for _, neighbor in ipairs(neighborsCache[curr] or {}) do
-								if isGreenColor(colorSnapshot[neighbor]) and not frontierUnknownSet[neighbor] and not nonFrontierVisited[neighbor] then
-									nonFrontierVisited[neighbor] = true
-									table.insert(queue, neighbor)
-								end
-							end
-						end
-						table.insert(nonFrontierPartitions, group)
-					end
-				end
-
-				for _, group in ipairs(nonFrontierPartitions) do
-					local cx, cy, cz = 0, 0, 0
-					for _, t in ipairs(group) do
-						cx = cx + positionSnapshot[t].X
-						cy = cy + positionSnapshot[t].Y
-						cz = cz + positionSnapshot[t].Z
-					end
-					local centroid = Vector3.new(cx / #group, cy / #group, cz / #group)
-					local bestDist = math.huge
-					local bestTile = group[1]
-					for _, t in ipairs(group) do
-						local d = (t.Position - centroid).Magnitude
-						if d < bestDist then bestDist = d; bestTile = t end
-					end
-					table.insert(partitionBestGuesses, { tile = bestTile, prob = 0, centroid = centroid })
-				end
-			end
-		end
-
-		if not gameRunning.Value then clearTiles() return end
-
-		local guessSet = {}
-		for _, entry in ipairs(partitionBestGuesses) do
-			guessSet[entry.tile] = true
-		end
-
-		local visitedYellow = {}
-		for tile, neighbors in pairs(neighborsCache) do
-			local state = tileStates[tile] or 0
-			if not visitedYellow[tile] and isGreen(tile) and state == 0 then
-				local isEdge = false
-				for _, neighbor in ipairs(neighbors) do
-					if isBeige(neighbor) then isEdge = true; break end
-				end
-				if isEdge then
-					local group = {}
-					local hasGuess = false
-					local queue = {tile}
-					local qHead = 1
-					visitedYellow[tile] = true
-					while qHead <= #queue do
-						local curr = queue[qHead]; qHead = qHead + 1
-						table.insert(group, curr)
-						if guessSet[curr] then hasGuess = true end
-						for _, neighbor in ipairs(neighborsCache[curr]) do
-							if not visitedYellow[neighbor] and isGreen(neighbor) and (tileStates[neighbor] or 0) == 0 then
-								local neighborIsEdge = false
-								for _, nn in ipairs(neighborsCache[neighbor]) do
-									if isBeige(nn) then neighborIsEdge = true; break end
-								end
-								if neighborIsEdge then
-									visitedYellow[neighbor] = true
-									table.insert(queue, neighbor)
-								end
-							end
-						end
-					end
-					if not hasGuess then
-						local cx, cy, cz = 0, 0, 0
-						for _, t in ipairs(group) do
-							cx = cx + t.Position.X
-							cy = cy + t.Position.Y
-							cz = cz + t.Position.Z
-						end
-						local centroid = Vector3.new(cx / #group, cy / #group, cz / #group)
-						local bestDist = math.huge
-						local bestTile = group[1]
-						for _, t in ipairs(group) do
-							local d = (t.Position - centroid).Magnitude
-							if d < bestDist then bestDist = d; bestTile = t end
-						end
-						guessSet[bestTile] = true
-					end
-				end
-			end
-		end
-
-		for tile, neighbors in pairs(neighborsCache) do
-			local isEdge = false
-			local tileColor = colorSnapshot[tile]
-			if tileColor and isGreenColor(tileColor) then
-				for _, neighbor in ipairs(neighbors) do
-					local nc = colorSnapshot[neighbor]
-					if nc and isBeigeColor(nc) then isEdge = true; break end
-				end
-			end
-
-			if isEdge then
-				local state = tileStates[tile] or 0
-				local targetColor
-				if state == 1 then
-					targetColor = COLOR_SAFE
-				elseif state == 2 then
-					targetColor = COLOR_MINE
-				elseif guessSet[tile] then
-					targetColor = COLOR_BEST
-				else
-					targetColor = COLOR_UNKNOWN
-				end
-
-				local visualPart = activeTiles[tile]
-				if not visualPart then
-					visualPart = acquireVisualPart(tile, targetColor)
-					activeTiles[tile] = visualPart
-				else
-					visualPart.Color = targetColor
-				end
-				local gui = visualPart:FindFirstChild("SurfaceGui")
-				local lbl = gui and gui:FindFirstChild("Label")
-				if state == 1 then
-					if lbl then lbl.Text = ""; lbl.TextTransparency = 1 end
-					visualPart.Transparency = 0.3
-					if flagConnections[tile] then
-						for _, conn in ipairs(flagConnections[tile]) do conn:Disconnect() end
-						flagConnections[tile] = nil
-					end
-				elseif state == 2 then
-					hookFlagEvents(tile)
-					local hasFlag = tileHasFlag(tile)
-					visualPart.Transparency = hasFlag and 1 or 0.3
-					if lbl then lbl.Text = "X"; lbl.TextTransparency = hasFlag and 1 or 0 end
-				elseif guessSet[tile] then
-					if lbl then lbl.Text = "?"; lbl.TextTransparency = 0 end
-					visualPart.Transparency = 0.3
-					if flagConnections[tile] then
-						for _, conn in ipairs(flagConnections[tile]) do conn:Disconnect() end
-						flagConnections[tile] = nil
-					end
-				else
-					if lbl then lbl.Text = "?"; lbl.TextTransparency = 0 end
-					visualPart.Transparency = 0.3
-					if flagConnections[tile] then
-						for _, conn in ipairs(flagConnections[tile]) do conn:Disconnect() end
-						flagConnections[tile] = nil
-					end
-				end
-			else
-				if activeTiles[tile] then
-					releaseVisualPart(activeTiles[tile])
-					activeTiles[tile] = nil
-				end
-				if flagConnections[tile] then
-					for _, conn in ipairs(flagConnections[tile]) do conn:Disconnect() end
-					flagConnections[tile] = nil
-				end
-			end
-		end
-	end
-
-	local function queueSolve()
-		if solvePending then return end
-		if not gameRunning.Value then clearTiles() return end
-		solvePending = true
-		local now = tick()
-		local wait = math.max(0, SOLVE_COOLDOWN - (now - lastSolveTime))
-		task.delay(wait, function()
-			solvePending = false
-			lastSolveTime = tick()
-			solveBoard()
-		end)
-	end
-
-	local function getTileGridKey(pos, tileWidth, tileDepth)
-		local gx = math.round(pos.X / tileWidth)
-		local gz = math.round(pos.Z / tileDepth)
-		return gx, gz
-	end
-
-	local function registerTile(tile, skipEvaluation)
-		if not tile:IsA("BasePart") then return end
-		if neighborsCache[tile] then return end
-		neighborsCache[tile] = {}
-		tileStates[tile] = 0
-		local tileWidth = tile.Size.X
-		local tileDepth = tile.Size.Z
-		if not tileGridSize then
-			tileGridSize = { x = tileWidth, z = tileDepth }
-		end
-		local gx, gz = getTileGridKey(tile.Position, tileGridSize.x, tileGridSize.z)
-		for dx = -1, 1 do
-			for dz = -1, 1 do
-				if dx ~= 0 or dz ~= 0 then
-					local key = (gx + dx) .. "," .. (gz + dz)
-					local otherTile = tileGrid[key]
-					if otherTile and neighborsCache[otherTile] then
-						table.insert(neighborsCache[tile], otherTile)
-						table.insert(neighborsCache[otherTile], tile)
-					end
-				end
-			end
-		end
-		tileGrid[gx .. "," .. gz] = tile
-		colorConnections[tile] = tile:GetPropertyChangedSignal("Color"):Connect(queueSolve)
-		local function hookDescendants(child)
-			if child:IsA("TextLabel") then
-				if not textConnections[child] then
-					textConnections[child] = child:GetPropertyChangedSignal("Text"):Connect(queueSolve)
-					queueSolve()
-				end
-			end
-		end
-		for _, desc in ipairs(tile:GetDescendants()) do
-			hookDescendants(desc)
-		end
-		descConnections[tile] = tile.DescendantAdded:Connect(hookDescendants)
-		if not skipEvaluation then
-			queueSolve()
-		end
-	end
-
-	local function unregisterTile(tile)
-		if activeTiles[tile] then
-			releaseVisualPart(activeTiles[tile])
-			activeTiles[tile] = nil
-		end
-		if colorConnections[tile] then colorConnections[tile]:Disconnect(); colorConnections[tile] = nil end
-		if descConnections[tile] then descConnections[tile]:Disconnect(); descConnections[tile] = nil end
-		if flagConnections[tile] then
-			for _, conn in ipairs(flagConnections[tile]) do conn:Disconnect() end
-			flagConnections[tile] = nil
-		end
-		for _, desc in ipairs(tile:GetDescendants()) do
-			if textConnections[desc] then
-				textConnections[desc]:Disconnect()
-				textConnections[desc] = nil
-			end
-		end
-		if tileGridSize then
-			local gx, gz = getTileGridKey(tile.Position, tileGridSize.x, tileGridSize.z)
-			local key = gx .. "," .. gz
-			if tileGrid[key] == tile then tileGrid[key] = nil end
-		end
-		if neighborsCache[tile] then
-			for _, neighbor in ipairs(neighborsCache[tile]) do
-				local nList = neighborsCache[neighbor]
-				if nList then
-					local index = table.find(nList, tile)
-					if index then table.remove(nList, index) end
-				end
-			end
-			neighborsCache[tile] = nil
-		end
-		tileStates[tile] = nil
-		tileProbabilities[tile] = nil
-	end
-
-	local function setupAllTiles()
-		table.clear(tileGrid)
-		tileGridSize = nil
-		for _, tile in ipairs(partsFolder:GetChildren()) do
-			registerTile(tile, true)
-		end
-		queueSolve()
-	end
-
-	local isCleaningUp = false
-	local function cleanupScript()
-		if isCleaningUp then return end
-		isCleaningUp = true
-		clearTiles()
-		for _, part in ipairs(partPool) do
-			if part and part.Parent then part:Destroy() end
-		end
-		table.clear(partPool)
-		if mainFolder and mainFolder.Parent then mainFolder:Destroy() end
-		for _, conn in ipairs(topLevelConnections) do conn:Disconnect() end
-		table.clear(topLevelConnections)
-		if executionTracker and executionTracker.Parent then executionTracker:Destroy() end
-	end
-
-	table.insert(topLevelConnections, partsFolder.ChildAdded:Connect(function(child)
-		registerTile(child, false)
-	end))
-
-	table.insert(topLevelConnections, partsFolder.ChildRemoved:Connect(unregisterTile))
-
-	table.insert(topLevelConnections, gameRunning:GetPropertyChangedSignal("Value"):Connect(function()
-		if gameRunning.Value then
-			setupAllTiles()
-		else
-			clearTiles()
-		end
-	end))
-
-	table.insert(topLevelConnections, executionTracker.Destroying:Connect(function()
-		cleanupScript()
-	end))
-
-	if totalMinesValue then
-		table.insert(topLevelConnections, totalMinesValue:GetPropertyChangedSignal("Value"):Connect(queueSolve))
-	end
-
-	table.insert(topLevelConnections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if not gameProcessed then
-			if input.KeyCode == Enum.KeyCode.Delete then
-				cleanupScript()
-			elseif input.KeyCode == Enum.KeyCode.H then
-				highlightsEnabled = not highlightsEnabled
-				if mainFolder then
-					mainFolder.Parent = highlightsEnabled and workspace or nil
-				end
-			end
-		end
-	end))
-
-	if gameRunning.Value then
-		setupAllTiles()
-	end
-else
-	warn("Tokaihub")
+	return body
 end
+
+local function PatchObsidianSource(Source)
+	Source = Source:gsub("Instance%[key%] = value", [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
+	return Source
+end
+
+local function LoadRemote(Url)
+	local Source = GetLoadstringSource(Url)
+	if string.find(Url, "/source.lua", 1, true) then Source = PatchObsidianSource(Source) end
+	local Chunk, LoadError = loadstring(Source)
+	if not Chunk then error("loadstring failed for " .. tostring(Url) .. ": " .. tostring(LoadError), 2) end
+	return Chunk()
+end
+
+local Library     = LoadRemote(Repository .. "source.lua")
+local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
+local SaveManager  = LoadRemote(Repository .. "addons/SaveManager.lua")
+
+local Options = getgenv().Options or {}
+local Toggles = getgenv().Toggles or {}
+
+-- ============================================
+-- MoonUI compatibility shim (same as RBM5)
+-- ============================================
+
+local MoonUI = { Scale = { Window = 1 } }
+function MoonUI:SetTheme() end
+function MoonUI:RefreshCurrentColor() end
+function MoonUI:ConfigManager(Data) return Data or {} end
+function MoonUI.newNotify()
+	return { new = function(Data)
+		local text = (Data and Data.Title) or "MineBot"
+		if Data and (Data.Content or Data.Description) then text = text .. " — " .. (Data.Content or Data.Description) end
+		pcall(function() Library:Notify(text, (Data and Data.Duration) or 5) end)
+	end }
+end
+
+local function NormalizeUIString(Value, Fallback)
+	if typeof(Value) == "EnumItem" then return Value.Name end
+	if Value == nil then return Fallback end
+	return tostring(Value)
+end
+local function NormalizeKey(Value, Fallback)
+	if typeof(Value) == "EnumItem" then return Value.Name end
+	if Value == nil then return Fallback or "None" end
+	return tostring(Value)
+end
+
+local function WrapSection(Groupbox)
+	local Section = {}
+	function Section:AddToggle(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Toggle")
+		local Toggle = Groupbox:AddToggle(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or false, Tooltip = Data.Tooltip })
+		if Data.Callback then Toggle:OnChanged(Data.Callback) end
+		return { Instance = Toggle, Link = { AddKeybind = function(_, KeyData)
+			local KeyFlag = NormalizeUIString(KeyData.Flag or KeyData.Name or (Flag.."_Key"), Flag.."_Key")
+			Toggle:AddKeyPicker(KeyFlag, { Default = NormalizeKey(KeyData.Default,"None"), Text = NormalizeUIString(KeyData.Name or "Keybind","Keybind"), Mode = NormalizeUIString(KeyData.Mode or "Toggle","Toggle"), NoUI = KeyData.NoUI or false, SyncToggleState = true })
+			if KeyData.Callback and Options[KeyFlag] then Options[KeyFlag]:OnChanged(KeyData.Callback) end
+			return Options[KeyFlag]
+		end } }
+	end
+	function Section:AddSlider(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Slider")
+		local Slider = Groupbox:AddSlider(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Default = Data.Default or Data.Min or 0, Min = Data.Min or 0, Max = Data.Max or 100, Rounding = Data.Rounding or 0, Suffix = Data.Suffix, Compact = Data.Compact or false })
+		if Data.Callback then Slider:OnChanged(Data.Callback) end
+		return Slider
+	end
+	function Section:AddDropdown(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Dropdown")
+		local Dropdown = Groupbox:AddDropdown(Flag, { Text = NormalizeUIString(Data.Name or Flag, Flag), Values = Data.Values or {}, Default = Data.Default, Multi = Data.Multi or false, Tooltip = Data.Tooltip })
+		if Data.Callback then Dropdown:OnChanged(Data.Callback) end
+		return Dropdown
+	end
+	function Section:AddColorPicker(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "ColorPicker")
+		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
+		Label:AddColorPicker(Flag, { Default = Data.Default or Color3.new(1,1,1) })
+		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+		return Options[Flag]
+	end
+	function Section:AddKeybind(Data)
+		local Flag = NormalizeUIString(Data.Flag or Data.Name, "Keybind")
+		local Label = Groupbox:AddLabel(NormalizeUIString(Data.Name or Flag, Flag))
+		Label:AddKeyPicker(Flag, { Default = NormalizeKey(Data.Default,"None"), Text = NormalizeUIString(Data.Name or Flag, Flag), NoUI = Data.NoUI or false, Mode = NormalizeUIString(Data.Mode or "Toggle","Toggle") })
+		if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+		return Options[Flag]
+	end
+	function Section:AddButton(Data)
+		return Groupbox:AddButton(Data.Name or Data.Text or "Button", Data.Callback or Data.Func or function() end)
+	end
+	return Section
+end
+
+local function WrapTab(Tab)
+	return { DrawSection = function(_, Data)
+		local Name = Data.Name or "Section"
+		local Position = string.lower(Data.Position or "left")
+		if Position == "right" then return WrapSection(Tab:AddRightGroupbox(Name))
+		else return WrapSection(Tab:AddLeftGroupbox(Name)) end
+	end }
+end
+
+function MoonUI.new(Data)
+	local Window = Library:CreateWindow({ Title = Data.Name or "MineBot", Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2 })
+	local SettingsTab
+	return {
+		Raw = Window,
+		DrawTab = function(_, TabData)
+			local Name = TabData.Name or "Tab"
+			local Tab = Window:AddTab(Name)
+			if Name == "Settings" or Name == "System" then SettingsTab = Tab end
+			return WrapTab(Tab)
+		end,
+		DrawConfig = function(_, ConfigData)
+			SettingsTab = SettingsTab or Window:AddTab("Settings")
+			ThemeManager:SetLibrary(Library)
+			SaveManager:SetLibrary(Library)
+			SaveManager:IgnoreThemeSettings()
+			SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+			ThemeManager:SetFolder("MineBot")
+			SaveManager:SetFolder("MineBot/configs")
+			SaveManager:BuildConfigSection(SettingsTab)
+			ThemeManager:ApplyToTab(SettingsTab)
+			SaveManager:LoadAutoloadConfig()
+			return { Init = function() end }
+		end,
+		SetMenuKey = function(_, Key)
+			task.defer(function() Library.ToggleKeybind = getgenv().Options and getgenv().Options.MenuKeybind end)
+		end,
+		Unload = function() Library:Unload() end,
+	}
+end
+
+-- ============================================
+-- GAME SERVICES
+-- ============================================
+
+local Players          = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+
+-- ============================================
+-- STATE VARIABLES
+-- ============================================
+
+local autoFlagActive   = false
+local autoWalkActive   = false
+local espActive        = false
+local infiniteJump     = false
+local flying           = false
+local flySpeed         = 50
+local flyGyro, flyVelocity
+local antiExplosionActive = false
+local antiExplosionConn   = nil
+local verticalInput    = 0
+
+local customWalkSpeed  = 16
+local customJumpPower  = 50
+local flagDistance     = 15
+local flagDelay        = 0.45
+local espRefreshInterval = 0.2
+
+local espSafeColor      = Color3.fromRGB(0, 0, 255)
+local espBombColor      = Color3.fromRGB(255, 0, 0)
+local espUncertainLow   = Color3.fromRGB(255, 215, 0)
+local espUncertainMed   = Color3.fromRGB(255, 165, 0)
+local espUncertainHigh  = Color3.fromRGB(220, 20, 60)
+
+local grid = {}
+local W, H = 0, 0
+local xToCol, zToRow = {}, {}
+local localFlags   = {}
+local deducedBombs = {}
+
+-- ============================================
+-- KEY SYSTEM
+-- ============================================
+
+local KEY_URL         = "https://raw.githubusercontent.com/Nattalz/rblx/refs/heads/main/keys/key1.txt"
+local STATIC_KEY      = "JawirOnTop"
+local dynamicKey      = STATIC_KEY
+
+local function fetchDynamicKey()
+	local ok, result = pcall(function() return game:HttpGet(KEY_URL, true) end)
+	if ok and result then
+		local cleaned = result:gsub("^%s*(.-)%s*$", "%1")
+		if #cleaned > 0 and cleaned ~= "404: Not Found" then
+			dynamicKey = cleaned
+			return cleaned
+		end
+	end
+	return STATIC_KEY
+end
+fetchDynamicKey()
+
+-- ============================================
+-- SECRET KEY SCANNER
+-- ============================================
+
+local function getSecretKey()
+	local salasana = workspace:FindFirstChild("Salasana")
+	if salasana and salasana:IsA("ValueObject") and salasana.Value ~= 0 then
+		return tostring(salasana.Value)
+	end
+	if getgc then
+		for _, v in pairs(getgc(true)) do
+			if type(v) == "function" then
+				local ok, info = pcall(debug.info, v, "s")
+				info = ok and info or ""
+				if info:find("MouseControl") then
+					local ok2, upvals = pcall(debug.getupvalues, v)
+					if ok2 and upvals then
+						local hasPlaceFlag, potentialKey = false, nil
+						for _, uv in pairs(upvals) do
+							if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
+								hasPlaceFlag = true
+							elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) ~= nil then
+								potentialKey = uv
+							elseif type(uv) == "number" and uv > 1000 then
+								potentialKey = tostring(uv)
+							end
+						end
+						if hasPlaceFlag and potentialKey then return potentialKey end
+					end
+				end
+			end
+		end
+		for _, v in pairs(getgc(true)) do
+			if type(v) == "function" then
+				local ok2, upvals = pcall(debug.getupvalues, v)
+				if ok2 and upvals then
+					local hasPlaceFlag, potentialKey = false, nil
+					for _, uv in pairs(upvals) do
+						if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
+							hasPlaceFlag = true
+						elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) ~= nil then
+							potentialKey = uv
+						elseif type(uv) == "number" and uv > 1000 then
+							potentialKey = tostring(uv)
+						end
+					end
+					if hasPlaceFlag and potentialKey then return potentialKey end
+				end
+			end
+		end
+	end
+	local function scanUpvaluesForKey(func, depth, maxDepth)
+		depth = depth or 0; maxDepth = maxDepth or 3
+		if depth > maxDepth then return nil end
+		local ok, upvals = pcall(debug.getupvalues, func)
+		if not ok or not upvals then return nil end
+		for _, v in pairs(upvals) do
+			if type(v) == "string" and (tonumber(v) ~= nil or #v > 10) then return v
+			elseif type(v) == "number" then return tostring(v)
+			elseif type(v) == "function" then
+				local nested = scanUpvaluesForKey(v, depth+1, maxDepth)
+				if nested then return nested end
+			end
+		end
+		return nil
+	end
+	local function getConnectionsForEvent(event)
+		local connections = {}
+		local success, conns = pcall(getconnections, event)
+		if success and conns then for _, conn in ipairs(conns) do table.insert(connections, conn) end end
+		return connections
+	end
+	local mouse = player:GetMouse()
+	local allEvents = { mouse.Button1Down, mouse.Button2Down, UserInputService.TouchTap, UserInputService.InputBegan, UserInputService.InputEnded }
+	for _, event in ipairs(allEvents) do
+		for _, conn in ipairs(getConnectionsForEvent(event)) do
+			local func = conn.Function
+			if func then local key = scanUpvaluesForKey(func); if key then return key end end
+		end
+	end
+	return nil
+end
+
+-- ============================================
+-- FLAG & BLOCK CHECKS
+-- ============================================
+
+local function hasServerFlag(part)
+	if not part then return false end
+	for _, child in ipairs(part:GetChildren()) do
+		if child:IsA("Model") then return true end
+	end
+	return false
+end
+local function checkFlagged(part) return localFlags[part] == true or deducedBombs[part] == true end
+local function checkBlocked(part) return localFlags[part] == true or deducedBombs[part] == true or hasServerFlag(part) end
+
+-- ============================================
+-- ESP SYSTEM
+-- ============================================
+
+local espFolder = workspace:FindFirstChild("BotESPFolder")
+if not espFolder then
+	espFolder = Instance.new("Folder")
+	espFolder.Name = "BotESPFolder"
+	espFolder.Parent = workspace
+end
+
+local function clearESP() espFolder:ClearAllChildren() end
+
+local function updateESP(safeTiles, borderProbabilities)
+	clearESP()
+	if not espActive then return end
+	for part in pairs(deducedBombs) do
+		if part and part.Parent then
+			local box = Instance.new("SelectionBox")
+			box.Adornee = part; box.Color3 = espBombColor
+			box.LineThickness = 0.06; box.SurfaceColor3 = espBombColor
+			box.SurfaceTransparency = 0.45; box.Parent = espFolder
+		end
+	end
+	for _, cell in pairs(safeTiles) do
+		if cell.part and cell.part.Parent then
+			local box = Instance.new("SelectionBox")
+			box.Adornee = cell.part; box.Color3 = espSafeColor
+			box.LineThickness = 0.06; box.SurfaceColor3 = espSafeColor
+			box.SurfaceTransparency = 0.45; box.Parent = espFolder
+		end
+	end
+	for part, P in pairs(borderProbabilities) do
+		if part and part.Parent then
+			local color = espUncertainMed
+			if P < 0.35 then color = espUncertainLow
+			elseif P > 0.65 then color = espUncertainHigh end
+			local box = Instance.new("SelectionBox")
+			box.Adornee = part; box.Color3 = color
+			box.LineThickness = 0.05; box.SurfaceColor3 = color
+			box.SurfaceTransparency = 0.6; box.Parent = espFolder
+			local bb = Instance.new("BillboardGui")
+			bb.Size = UDim2.new(0,100,0,40); bb.AlwaysOnTop = true
+			bb.Adornee = part; bb.StudsOffset = Vector3.new(0,3,0)
+			local label = Instance.new("TextLabel")
+			label.Size = UDim2.new(1,0,1,0); label.BackgroundTransparency = 1
+			label.TextSize = 26; label.TextColor3 = color
+			label.Font = Enum.Font.GothamBold; label.TextStrokeTransparency = 0
+			label.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+			label.Text = string.format("%.0f%%", P*100)
+			label.Parent = bb; bb.Parent = espFolder
+		end
+	end
+end
+
+-- ============================================
+-- GRID
+-- ============================================
+
+local function initGrid()
+	grid = {}; xToCol = {}; zToRow = {}; localFlags = {}; deducedBombs = {}; clearESP()
+	local flag = workspace:FindFirstChild("Flag")
+	local partsFolder = flag and flag:FindFirstChild("Parts")
+	local parts = partsFolder and partsFolder:GetChildren()
+	if not parts then return end
+	local xCoords, zCoords = {}, {}
+	for _, p in ipairs(parts) do
+		xCoords[math.floor(p.Position.X+0.5)] = true
+		zCoords[math.floor(p.Position.Z+0.5)] = true
+	end
+	local sortedX, sortedZ = {}, {}
+	for x in pairs(xCoords) do table.insert(sortedX, x) end
+	for z in pairs(zCoords) do table.insert(sortedZ, z) end
+	table.sort(sortedX); table.sort(sortedZ)
+	for col, x in ipairs(sortedX) do xToCol[x] = col end
+	for row, z in ipairs(sortedZ) do zToRow[z] = row end
+	W = #sortedX; H = #sortedZ
+	for col = 1, W do
+		grid[col] = {}
+		for row = 1, H do
+			grid[col][row] = { part=nil, isOpened=false, isFlagged=false, isBlocked=false, value=0, col=col, row=row }
+		end
+	end
+	for _, p in ipairs(parts) do
+		local col = xToCol[math.floor(p.Position.X+0.5)]
+		local row = zToRow[math.floor(p.Position.Z+0.5)]
+		if col and row then grid[col][row].part = p end
+	end
+	for col = 1, W do
+		for row = 1, H do
+			local cell = grid[col][row]
+			if cell.part and hasServerFlag(cell.part) then
+				deducedBombs[cell.part] = true; cell.isFlagged = true; cell.isBlocked = true
+			end
+		end
+	end
+	print("[Grid] Mapped: " .. W .. "x" .. H)
+end
+
+local function checkGridValid()
+	if W == 0 or H == 0 then return false end
+	for col = 1, W do
+		if not grid[col] then return false end
+		for row = 1, H do
+			local cell = grid[col][row]
+			if not cell or not cell.part or not cell.part:IsDescendantOf(workspace) then return false end
+		end
+	end
+	return true
+end
+
+-- ============================================
+-- BOARD SCAN
+-- ============================================
+
+local function scanBoard()
+	local state = {}
+	for col = 1, W do
+		state[col] = {}
+		for row = 1, H do
+			local cell = grid[col][row]
+			local isOpened, value, isFlagged, isBlocked = false, 0, false, false
+			if cell.part then
+				isOpened = cell.part:FindFirstChild("NumberGui") ~= nil
+				if isOpened then
+					local label = cell.part.NumberGui:FindFirstChild("TextLabel")
+					value = tonumber((label and label.Text) or "") or 0
+				end
+				isFlagged = checkFlagged(cell.part)
+				isBlocked = checkBlocked(cell.part)
+			end
+			state[col][row] = { isOpened=isOpened, value=value, isFlagged=isFlagged, isBlocked=isBlocked }
+		end
+	end
+	return state
+end
+
+-- ============================================
+-- PATHFINDING
+-- ============================================
+
+local function getCurrentPlayerGrid()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil, nil end
+	local nearestCol, nearestRow, minDist = nil, nil, math.huge
+	for col = 1, W do
+		for row = 1, H do
+			local cell = grid[col][row]
+			if cell.part then
+				local dist = (cell.part.Position - root.Position).Magnitude
+				if dist < minDist then minDist = dist; nearestCol = col; nearestRow = row end
+			end
+		end
+	end
+	return nearestCol, nearestRow
+end
+
+local function findPath(startCol, startRow, targetCol, targetRow)
+	local queue = {{startCol, startRow, {}}}
+	local visited = {}; visited[startCol.."_"..startRow] = true
+	while #queue > 0 do
+		local curr = table.remove(queue, 1)
+		local c, r, path = curr[1], curr[2], curr[3]
+		if c == targetCol and r == targetRow then return path end
+		for _, dir in ipairs({{1,0},{-1,0},{0,1},{0,-1}}) do
+			local nc, nr = c+dir[1], r+dir[2]
+			local key = nc.."_"..nr
+			if nc >= 1 and nc <= W and nr >= 1 and nr <= H and not visited[key] then
+				local neighbor = grid[nc][nr]
+				if neighbor.isOpened or hasServerFlag(neighbor.part) or (nc==targetCol and nr==targetRow) then
+					visited[key] = true
+					local newPath = {}
+					for _, p in ipairs(path) do table.insert(newPath, p) end
+					table.insert(newPath, neighbor.part)
+					table.insert(queue, {nc, nr, newPath})
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function getConnectedComponent(startCol, startRow)
+	local queue = {{startCol, startRow}}
+	local visited = {}; visited[startCol.."_"..startRow] = true
+	local component = {}
+	while #queue > 0 do
+		local curr = table.remove(queue, 1)
+		local c, r = curr[1], curr[2]
+		table.insert(component, grid[c][r])
+		for _, dir in ipairs({{1,0},{-1,0},{0,1},{0,-1}}) do
+			local nc, nr = c+dir[1], r+dir[2]
+			local key = nc.."_"..nr
+			if nc >= 1 and nc <= W and nr >= 1 and nr <= H and not visited[key] then
+				local neighbor = grid[nc][nr]
+				if neighbor.isOpened or hasServerFlag(neighbor.part) then
+					visited[key] = true; table.insert(queue, {nc, nr})
+				end
+			end
+		end
+	end
+	return component
+end
+
+local function getLocalGuessCandidates(pCol, pRow)
+	local component = getConnectedComponent(pCol, pRow)
+	local candidates, seen = {}, {}
+	local dirs8 = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{-1,1},{1,-1},{-1,-1}}
+	for _, cell in ipairs(component) do
+		for _, dir in ipairs(dirs8) do
+			local nc, nr = cell.col+dir[1], cell.row+dir[2]
+			if nc >= 1 and nc <= W and nr >= 1 and nr <= H then
+				local neighbor = grid[nc][nr]
+				if not neighbor.isOpened and not neighbor.isBlocked then
+					local key = nc.."_"..nr
+					if not seen[key] then seen[key] = true; table.insert(candidates, neighbor) end
+				end
+			end
+		end
+	end
+	return candidates
+end
+
+-- ============================================
+-- SOLVER ENGINE
+-- ============================================
+
+local function solveEquations(safeTiles, borderProbabilities)
+	local clues, borderMap, borderList = {}, {}, {}
+	for col = 1, W do
+		for row = 1, H do
+			local cell = grid[col][row]
+			if cell.isOpened and cell.value > 0 then
+				local unopened, flaggedCount = {}, 0
+				for dc = -1, 1 do
+					for dr = -1, 1 do
+						if not (dc==0 and dr==0) then
+							local nc, nr = col+dc, row+dr
+							if nc >= 1 and nc <= W and nr >= 1 and nr <= H then
+								local nCell = grid[nc][nr]
+								if nCell.isFlagged then flaggedCount = flaggedCount+1
+								elseif not nCell.isOpened then table.insert(unopened, nCell) end
+							end
+						end
+					end
+				end
+				if #unopened > 0 then
+					table.insert(clues, { cell=cell, unopened=unopened, target=cell.value-flaggedCount })
+					for _, nCell in ipairs(unopened) do
+						if not borderMap[nCell] then borderMap[nCell]=true; table.insert(borderList, nCell) end
+					end
+				end
+			end
+		end
+	end
+	if #borderList == 0 then return end
+	local components, visitedClues, visitedVars = {}, {}, {}
+	for _, clue in ipairs(clues) do
+		if not visitedClues[clue] then
+			local compClues, compVars = {}, {}
+			local queue = {clue}; visitedClues[clue] = true
+			while #queue > 0 do
+				local currClue = table.remove(queue, 1)
+				table.insert(compClues, currClue)
+				for _, nCell in ipairs(currClue.unopened) do
+					if not visitedVars[nCell] then
+						visitedVars[nCell] = true; table.insert(compVars, nCell)
+						for _, otherClue in ipairs(clues) do
+							if not visitedClues[otherClue] then
+								local contains = false
+								for _, c in ipairs(otherClue.unopened) do if c == nCell then contains=true; break end end
+								if contains then visitedClues[otherClue]=true; table.insert(queue, otherClue) end
+							end
+						end
+					end
+				end
+			end
+			table.insert(components, { clues=compClues, vars=compVars })
+		end
+	end
+	for _, comp in ipairs(components) do
+		local vars, compClues = comp.vars, comp.clues
+		if #vars <= 20 then
+			local solutions, currentAssignment = {}, {}
+			local function backtrack(varIndex)
+				if varIndex > #vars then
+					for _, clue in ipairs(compClues) do
+						local sum = 0
+						for _, nCell in ipairs(clue.unopened) do sum = sum + (currentAssignment[nCell] or 0) end
+						if sum ~= clue.target then return end
+					end
+					local sol = {}
+					for k, v in pairs(currentAssignment) do sol[k] = v end
+					table.insert(solutions, sol); return
+				end
+				local currentVar = vars[varIndex]
+				for _, clue in ipairs(compClues) do
+					local sum, unassigned = 0, 0
+					for _, nCell in ipairs(clue.unopened) do
+						local assign = currentAssignment[nCell]
+						if assign then sum = sum+assign else unassigned = unassigned+1 end
+					end
+					if sum > clue.target or sum+unassigned < clue.target then return end
+				end
+				currentAssignment[currentVar] = 0; backtrack(varIndex+1)
+				currentAssignment[currentVar] = 1; backtrack(varIndex+1)
+				currentAssignment[currentVar] = nil
+			end
+			backtrack(1)
+			if #solutions > 0 then
+				for _, var in ipairs(vars) do
+					local bombCount = 0
+					for _, sol in ipairs(solutions) do if sol[var]==1 then bombCount=bombCount+1 end end
+					local P = bombCount / #solutions
+					if P == 0 then safeTiles[var.col.."_"..var.row] = var
+					elseif P == 1 then deducedBombs[var.part] = true
+					else borderProbabilities[var.part] = P end
+				end
+			end
+		end
+	end
+end
+
+local function updateDeductions()
+	local state1 = scanBoard(); task.wait(0.05); local state2 = scanBoard()
+	local stable = true
+	for col = 1, W do
+		for row = 1, H do
+			local c1, c2 = state1[col][row], state2[col][row]
+			if c1.isOpened ~= c2.isOpened or c1.value ~= c2.value or c1.isFlagged ~= c2.isFlagged or c1.isBlocked ~= c2.isBlocked then
+				stable = false; break
+			end
+		end
+		if not stable then break end
+	end
+	if not stable then return false end
+	for col = 1, W do
+		for row = 1, H do
+			local cell = grid[col][row]; local st = state1[col][row]
+			cell.isOpened = st.isOpened; cell.value = st.value
+			cell.isFlagged = st.isFlagged; cell.isBlocked = st.isBlocked
+		end
+	end
+	local safeTiles, borderProbabilities, deducedNewBomb = {}, {}, false
+	local totalUnopened, totalFlagged = {}, 0
+	for col = 1, W do
+		for row = 1, H do
+			local cell = grid[col][row]
+			if cell.part then
+				if cell.isFlagged then totalFlagged = totalFlagged+1
+				elseif not cell.isOpened then table.insert(totalUnopened, cell) end
+			end
+		end
+	end
+	local minesVal = ReplicatedStorage:FindFirstChild("Info") and
+		ReplicatedStorage.Info:FindFirstChild("Mines") and
+		ReplicatedStorage.Info.Mines.Value or 0
+	local remainingMines = minesVal - totalFlagged
+	if #totalUnopened > 0 then
+		if #totalUnopened == remainingMines then
+			for _, cell in ipairs(totalUnopened) do
+				if not deducedBombs[cell.part] then
+					deducedBombs[cell.part] = true; cell.isFlagged = true; cell.isBlocked = true; deducedNewBomb = true
+				end
+			end
+		elseif remainingMines == 0 then
+			for _, cell in ipairs(totalUnopened) do safeTiles[cell.col.."_"..cell.row] = cell end
+		end
+	end
+	if not deducedNewBomb then
+		solveEquations(safeTiles, borderProbabilities)
+		for col = 1, W do
+			for row = 1, H do
+				local cell = grid[col][row]
+				if cell.isOpened and cell.value > 0 then
+					local flaggedNeighbors, unopenedNeighbors = 0, {}
+					for dc = -1, 1 do
+						for dr = -1, 1 do
+							if not (dc==0 and dr==0) then
+								local nc, nr = col+dc, row+dr
+								if nc >= 1 and nc <= W and nr >= 1 and nr <= H then
+									local nCell = grid[nc][nr]
+									if nCell.isFlagged then flaggedNeighbors = flaggedNeighbors+1
+									elseif not nCell.isOpened then table.insert(unopenedNeighbors, nCell) end
+								end
+							end
+						end
+					end
+					if cell.value-flaggedNeighbors == #unopenedNeighbors and #unopenedNeighbors > 0 then
+						for _, nCell in ipairs(unopenedNeighbors) do
+							if not deducedBombs[nCell.part] then
+								deducedBombs[nCell.part] = true; nCell.isFlagged = true; nCell.isBlocked = true; deducedNewBomb = true
+							end
+						end
+					end
+					if cell.value == flaggedNeighbors and #unopenedNeighbors > 0 then
+						for _, nCell in ipairs(unopenedNeighbors) do
+							if not nCell.isFlagged and not nCell.isOpened then safeTiles[nCell.col.."_"..nCell.row] = nCell end
+						end
+					end
+				end
+			end
+		end
+	end
+	if espActive then updateESP(safeTiles, borderProbabilities) end
+	return true, safeTiles, borderProbabilities, deducedNewBomb
+end
+
+-- ============================================
+-- MOVEMENT
+-- ============================================
+
+local function walkTo(part)
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not root or not hum then return end
+	hum.WalkSpeed = customWalkSpeed
+	local targetPos = Vector3.new(part.Position.X, root.Position.Y, part.Position.Z)
+	hum:MoveTo(targetPos)
+	local startT = os.clock()
+	while (root.Position-targetPos).Magnitude > 1.0 and autoWalkActive do
+		if os.clock()-startT > 3 then break end
+		task.wait(); hum:MoveTo(targetPos)
+	end
+end
+
+local function walkPath(path)
+	for _, part in ipairs(path) do
+		if not autoWalkActive then break end
+		walkTo(part)
+	end
+end
+
+-- ============================================
+-- BOARD MANAGER LOOP
+-- ============================================
+
+task.spawn(function()
+	while true do
+		task.wait(espRefreshInterval)
+		if autoWalkActive or autoFlagActive or espActive then
+			local gameRunningVal = ReplicatedStorage:FindFirstChild("Info") and
+				ReplicatedStorage.Info:FindFirstChild("GameRunning") and
+				ReplicatedStorage.Info.GameRunning.Value
+			if not gameRunningVal then
+				localFlags = {}; deducedBombs = {}; clearESP(); task.wait(0.5); continue
+			end
+			if not checkGridValid() then initGrid(); task.wait(0.1); continue end
+			local success, safeTiles, borderProbabilities, deducedNewBomb = updateDeductions()
+			if not success then continue end
+			if autoFlagActive then
+				local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				local key = getSecretKey()
+				if root and key then
+					for part in pairs(deducedBombs) do
+						if not hasServerFlag(part) then
+							local dist = (part.Position-root.Position).Magnitude
+							if dist < flagDistance then
+								ReplicatedStorage.Events.FlagEvents.PlaceFlag:FireServer(part, key, true)
+								localFlags[part] = true
+								if flagDelay > 0 then task.wait(flagDelay) end
+							end
+						end
+					end
+				end
+			end
+			if autoWalkActive and not deducedNewBomb then
+				local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				local pCol, pRow = getCurrentPlayerGrid()
+				if root and pCol and pRow then
+					local openedCount = 0
+					for col = 1, W do for row = 1, H do if grid[col][row].isOpened then openedCount = openedCount+1 end end end
+					if openedCount == 0 then
+						local midCol = math.floor(W/2)+1; local midRow = math.floor(H/2)+1
+						local targetPart = grid[midCol][midRow].part
+						if targetPart then walkTo(targetPart); task.wait(0.3) end
+					else
+						local key = getSecretKey()
+						if key then
+							local targetCell, bestPath, minPathLen = nil, nil, math.huge
+							for _, cell in pairs(safeTiles) do
+								local path = findPath(pCol, pRow, cell.col, cell.row)
+								if path and #path < minPathLen then minPathLen=#path; targetCell=cell; bestPath=path end
+							end
+							if bestPath and targetCell then
+								walkPath(bestPath)
+								local startWait = os.clock()
+								while not targetCell.part:FindFirstChild("NumberGui") and os.clock()-startWait < 1.0 and autoWalkActive do task.wait(0.05) end
+							else
+								local bestGuessCell, minProb = nil, math.huge
+								for part, P in pairs(borderProbabilities) do
+									local col = xToCol[math.floor(part.Position.X+0.5)]
+									local row = zToRow[math.floor(part.Position.Z+0.5)]
+									if col and row and P < minProb then minProb=P; bestGuessCell=grid[col][row] end
+								end
+								if bestGuessCell then
+									local path = findPath(pCol, pRow, bestGuessCell.col, bestGuessCell.row)
+									if path then walkPath(path) else walkTo(bestGuessCell.part) end
+									local startWait = os.clock()
+									while not bestGuessCell.part:FindFirstChild("NumberGui") and os.clock()-startWait < 1.0 and autoWalkActive do task.wait(0.05) end
+								else
+									local candidates = getLocalGuessCandidates(pCol, pRow)
+									if #candidates > 0 then
+										local guessCell = candidates[math.random(1, #candidates)]
+										local path = findPath(pCol, pRow, guessCell.col, guessCell.row)
+										if path then walkPath(path) else walkTo(guessCell.part) end
+										local startWait = os.clock()
+										while not guessCell.part:FindFirstChild("NumberGui") and os.clock()-startWait < 1.0 and autoWalkActive do task.wait(0.05) end
+									else
+										autoWalkActive = false
+										Library:Notify("Auto Walk stopped — no candidates.", 4)
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		else
+			clearESP(); task.wait(0.2)
+		end
+	end
+end)
+
+-- ============================================
+-- INFINITE JUMP
+-- ============================================
+
+UserInputService.JumpRequest:Connect(function()
+	if infiniteJump then
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+	end
+end)
+
+-- ============================================
+-- ANTI-EXPLOSION
+-- ============================================
+
+local function applyAntiExplosion(char)
+	if not char then return end
+	local hum = char:WaitForChild("Humanoid", 3)
+	if not hum then return end
+	if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end
+	if not antiExplosionActive then return end
+	antiExplosionConn = hum.StateChanged:Connect(function(old, new)
+		if not antiExplosionActive then return end
+		if new == Enum.HumanoidStateType.Dead then
+			task.defer(function()
+				if hum and hum.Parent then hum.Health = hum.MaxHealth; hum:ChangeState(Enum.HumanoidStateType.Running) end
+			end)
+		end
+	end)
+end
+
+player.CharacterAdded:Connect(function(char)
+	if antiExplosionActive then task.defer(function() applyAntiExplosion(char) end) end
+end)
+
+-- ============================================
+-- CHARACTER / FLY
+-- ============================================
+
+local function startFlying()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not root or not hum then return end
+	if flyGyro then flyGyro:Destroy() end
+	if flyVelocity then flyVelocity:Destroy() end
+	flyGyro = Instance.new("BodyGyro")
+	flyGyro.P = 9e4; flyGyro.maxTorque = Vector3.new(9e9,9e9,9e9)
+	flyGyro.cframe = root.CFrame; flyGyro.Parent = root
+	flyVelocity = Instance.new("BodyVelocity")
+	flyVelocity.velocity = Vector3.new(0,0.1,0)
+	flyVelocity.maxForce = Vector3.new(9e9,9e9,9e9)
+	flyVelocity.Parent = root
+	hum.PlatformStand = true
+	task.spawn(function()
+		while flying and player.Character and root and root.Parent and hum do
+			local camera = workspace.CurrentCamera
+			local joystickDir = hum.MoveDirection
+			local moveDir = Vector3.zero
+			if joystickDir.Magnitude > 0 then
+				local look = camera.CFrame.LookVector
+				local horizontalLook = Vector3.new(look.X,0,look.Z)
+				if horizontalLook.Magnitude > 0.001 then horizontalLook = horizontalLook.Unit end
+				local forwardDot = joystickDir:Dot(horizontalLook)
+				moveDir = Vector3.new(joystickDir.X, forwardDot*look.Y, joystickDir.Z)
+			else
+				local look = camera.CFrame.LookVector
+				local right = camera.CFrame.RightVector
+				if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir+look end
+				if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir-look end
+				if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir-right end
+				if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir+right end
+			end
+			local vertical = verticalInput
+			if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vertical = 1 end
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then vertical = -1 end
+			moveDir = moveDir + Vector3.new(0, vertical, 0)
+			flyVelocity.velocity = moveDir.Magnitude > 0 and (moveDir.Unit * flySpeed) or Vector3.zero
+			flyGyro.cframe = camera.CFrame
+			task.wait()
+		end
+		if flyGyro then flyGyro:Destroy(); flyGyro = nil end
+		if flyVelocity then flyVelocity:Destroy(); flyVelocity = nil end
+		if hum and hum.Parent then hum.PlatformStand = false end
+	end)
+end
+
+local function stopFlying()
+	if flyGyro then flyGyro:Destroy(); flyGyro = nil end
+	if flyVelocity then flyVelocity:Destroy(); flyVelocity = nil end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = false end
+end
+
+local function onCharacterAdded(char)
+	local hum = char:WaitForChild("Humanoid", 5)
+	if hum then hum.UseJumpPower = true; hum.WalkSpeed = customWalkSpeed; hum.JumpPower = customJumpPower end
+end
+if player.Character then task.spawn(onCharacterAdded, player.Character) end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- ============================================
+-- UI — libba (RBM5 style)
+-- ============================================
+
+local Window = MoonUI.new({ Name = "Minesweeper Bot" })
+
+-- ==================== TAB: AUTO BOT ====================
+local BotTab = Window:DrawTab({ Name = "Auto Bot", Icon = "bot", Type = "Double" })
+
+local S_AutoWalk = BotTab:DrawSection({ Name = "Auto Walk", Position = "left" })
+local AutoWalkToggle = S_AutoWalk:AddToggle({
+	Name = "Auto Walk", Flag = "AutoWalk_Enabled", Default = false,
+	Callback = function(v)
+		autoWalkActive = v
+		if v then initGrid(); Library:Notify("Auto Walk ON", 3) else Library:Notify("Auto Walk OFF", 3) end
+	end
+})
+AutoWalkToggle.Link:AddKeybind({ Name = "Auto Walk Key", Flag = "AutoWalk_Key", Default = "L" })
+
+local S_AutoFlag = BotTab:DrawSection({ Name = "Auto Flag", Position = "right" })
+local AutoFlagToggle = S_AutoFlag:AddToggle({
+	Name = "Auto Flag", Flag = "AutoFlag_Enabled", Default = false,
+	Callback = function(v)
+		autoFlagActive = v
+		if v then initGrid(); Library:Notify("Auto Flag ON", 3) else Library:Notify("Auto Flag OFF", 3) end
+	end
+})
+AutoFlagToggle.Link:AddKeybind({ Name = "Auto Flag Key", Flag = "AutoFlag_Key", Default = "P" })
+
+local S_FlagSettings = BotTab:DrawSection({ Name = "Flag Settings", Position = "right" })
+S_FlagSettings:AddSlider({ Name = "Flag Distance", Flag = "FlagDist", Min = 5, Max = 30, Default = 15, Suffix = " studs", Callback = function(v) flagDistance = v end })
+S_FlagSettings:AddSlider({ Name = "Flag Delay", Flag = "FlagDelay", Min = 0, Max = 200, Default = 45, Rounding = 0, Suffix = "x0.01s", Callback = function(v) flagDelay = v * 0.01 end })
+
+-- ==================== TAB: ESP ====================
+local EspTab = Window:DrawTab({ Name = "ESP", Icon = "eye", Type = "Double" })
+
+local S_ESP = EspTab:DrawSection({ Name = "ESP Settings", Position = "left" })
+local ESPToggle = S_ESP:AddToggle({
+	Name = "ESP Active", Flag = "ESP_Active", Default = false,
+	Callback = function(v)
+		espActive = v
+		if v then initGrid(); Library:Notify("ESP ON", 3) else clearESP(); Library:Notify("ESP OFF", 3) end
+	end
+})
+ESPToggle.Link:AddKeybind({ Name = "ESP Key", Flag = "ESP_Key", Default = "M" })
+S_ESP:AddSlider({ Name = "Refresh Interval", Flag = "ESP_Refresh", Min = 5, Max = 500, Default = 20, Suffix = "x0.01s", Callback = function(v) espRefreshInterval = v * 0.01 end })
+
+local S_Colors = EspTab:DrawSection({ Name = "ESP Colors", Position = "right" })
+S_Colors:AddColorPicker({ Name = "Safe Tile", Flag = "ESP_SafeColor", Default = espSafeColor, Callback = function(c) espSafeColor = c end })
+S_Colors:AddColorPicker({ Name = "Bomb Tile", Flag = "ESP_BombColor", Default = espBombColor, Callback = function(c) espBombColor = c end })
+S_Colors:AddColorPicker({ Name = "Low Risk", Flag = "ESP_LowColor", Default = espUncertainLow, Callback = function(c) espUncertainLow = c end })
+S_Colors:AddColorPicker({ Name = "Med Risk", Flag = "ESP_MedColor", Default = espUncertainMed, Callback = function(c) espUncertainMed = c end })
+S_Colors:AddColorPicker({ Name = "High Risk", Flag = "ESP_HighColor", Default = espUncertainHigh, Callback = function(c) espUncertainHigh = c end })
+
+-- ==================== TAB: CHARACTER ====================
+local CharTab = Window:DrawTab({ Name = "Character", Icon = "user", Type = "Double" })
+
+local S_Movement = CharTab:DrawSection({ Name = "Movement", Position = "left" })
+S_Movement:AddSlider({ Name = "Walk Speed", Flag = "WalkSpeed", Min = 16, Max = 150, Default = 16, Callback = function(v)
+	customWalkSpeed = v
+	local char = player.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.WalkSpeed = v end
+end })
+S_Movement:AddSlider({ Name = "Jump Power", Flag = "JumpPower", Min = 50, Max = 300, Default = 50, Callback = function(v)
+	customJumpPower = v
+	local char = player.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.UseJumpPower = true; hum.JumpPower = v end
+end })
+S_Movement:AddToggle({ Name = "Infinite Jump", Flag = "InfJump", Default = false, Callback = function(v) infiniteJump = v end })
+
+local S_Flight = CharTab:DrawSection({ Name = "Flight", Position = "right" })
+local FlyToggle = S_Flight:AddToggle({
+	Name = "Fly Mode", Flag = "Fly_Enabled", Default = false,
+	Callback = function(v)
+		flying = v
+		if v then startFlying(); Library:Notify("Fly ON — Space/Shift for vertical", 3)
+		else stopFlying(); Library:Notify("Fly OFF", 3) end
+	end
+})
+FlyToggle.Link:AddKeybind({ Name = "Fly Key", Flag = "Fly_Key", Default = "F" })
+S_Flight:AddSlider({ Name = "Fly Speed", Flag = "FlySpeed", Min = 10, Max = 200, Default = 50, Callback = function(v) flySpeed = v end })
+
+local S_Safety = CharTab:DrawSection({ Name = "Safety", Position = "right" })
+S_Safety:AddToggle({ Name = "Anti-Explosion", Flag = "AntiExp", Default = false, Callback = function(v)
+	antiExplosionActive = v
+	if v then applyAntiExplosion(player.Character); Library:Notify("Anti-Explosion ON", 3)
+	else if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end; Library:Notify("Anti-Explosion OFF", 3) end
+end })
+
+-- ==================== TAB: MISC ====================
+local MiscTab = Window:DrawTab({ Name = "Misc", Icon = "droplets", Type = "Double" })
+
+local S_Util = MiscTab:DrawSection({ Name = "Utilities", Position = "left" })
+S_Util:AddButton({ Name = "Re-init Grid", Callback = function()
+	initGrid(); Library:Notify("Grid re-initialized.", 3)
+end })
+S_Util:AddButton({ Name = "Clear ESP", Callback = function()
+	clearESP(); Library:Notify("ESP cleared.", 3)
+end })
+S_Util:AddButton({ Name = "Reset All", Callback = function()
+	autoWalkActive = false; autoFlagActive = false; espActive = false
+	flying = false; infiniteJump = false; antiExplosionActive = false
+	if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end
+	stopFlying(); clearESP()
+	local char = player.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.WalkSpeed = 16; hum.JumpPower = 50; hum.UseJumpPower = false; hum.PlatformStand = false end
+	Library:Notify("All features reset.", 3)
+end })
+
+-- ==================== SETTINGS ====================
+Window:DrawConfig({})
+
+print("[MineBot] libba UI loaded.")

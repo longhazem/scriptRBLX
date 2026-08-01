@@ -1056,163 +1056,78 @@ local Lighting = game:GetService("Lighting")
 local dayNightActive = false
 local dayNightConn   = nil
 local dayNightMode   = "Day"
-local cycleSpeed     = 60
-local lockedTime     = 14  -- giờ bị khóa khi mode Day hoặc Night
+local lockedTime     = 14
 
--- Fix: dùng Heartbeat lock thay vì set 1 lần
--- Game thường có script server-side override ClockTime mỗi frame
--- → phải counter-override mỗi frame mạnh hơn nó
+-- Fix chớp tắt: game server override ClockTime qua __newindex hoặc Heartbeat.
+-- Giải pháp: hook __newindex của Lighting để chặn mọi thứ cố ghi ClockTime khi đang lock.
+-- Nếu executor không support hookmetamethod thì fallback về Heartbeat counter ở tốc độ cao hơn.
+
+local lightingHooked = false
+local originalNewindex = nil
+
+local function applyLock(time)
+	pcall(function() Lighting.ClockTime = time end)
+end
+
+local function hookLightingNewindex()
+	if lightingHooked then return end
+	local ok = pcall(function()
+		originalNewindex = hookmetamethod(Lighting, "__newindex", function(self, key, value)
+			if dayNightActive and (key == "ClockTime" or key == "TimeOfDay") then
+				-- Chặn ghi từ bên ngoài, chỉ cho phép giá trị khớp lockedTime
+				if math.abs((type(value)=="number" and value or 0) - lockedTime) > 0.1 then
+					return -- block
+				end
+			end
+			return originalNewindex(self, key, value)
+		end)
+	end)
+	if ok then
+		lightingHooked = true
+	end
+end
+
+local function unhookLightingNewindex()
+	if not lightingHooked then return end
+	pcall(function()
+		hookmetamethod(Lighting, "__newindex", originalNewindex)
+	end)
+	lightingHooked = false
+	originalNewindex = nil
+end
+
 local function setDayNight(mode)
 	dayNightMode = mode
 	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
 
 	if mode == "Day" then
 		lockedTime = 14
+		applyLock(lockedTime)
+		hookLightingNewindex()
+		-- Heartbeat backup: nếu hook miss thì counter ngay lập tức
 		dayNightConn = RunService.Heartbeat:Connect(function()
 			if not dayNightActive then return end
 			if math.abs(Lighting.ClockTime - lockedTime) > 0.05 then
-				pcall(function() Lighting.ClockTime = lockedTime end)
+				rawset(Lighting, "ClockTime", lockedTime)
 			end
 		end)
 	elseif mode == "Night" then
 		lockedTime = 0
+		applyLock(lockedTime)
+		hookLightingNewindex()
 		dayNightConn = RunService.Heartbeat:Connect(function()
 			if not dayNightActive then return end
 			if math.abs(Lighting.ClockTime - lockedTime) > 0.05 then
-				pcall(function() Lighting.ClockTime = lockedTime end)
+				rawset(Lighting, "ClockTime", lockedTime)
 			end
 		end)
-	elseif mode == "Cycle" then
-		dayNightConn = RunService.Heartbeat:Connect(function(dt)
-			if not dayNightActive then return end
-			local next = (Lighting.ClockTime + dt * cycleSpeed / 60) % 24
-			pcall(function() Lighting.ClockTime = next end)
-		end)
-	end
-end
-
--- ============================================
--- AUTO TELEPORTER — dùng walkTo/walkPath từ solver
--- ============================================
-
-local autoTpActive = false
-local autoTpDelay  = 0.5
-local autoTpThread = nil
-
-local function getDeducedSafeTiles()
-	-- Chạy solver nhanh để lấy safeTiles mới nhất
-	local safeTiles = {}
-	-- Simple single-cell rule: cell mở có value == flaggedNeighbors → unopened xung quanh là safe
-	for col = 1, W do
-		for row = 1, H do
-			local cell = grid[col][row]
-			if cell.isOpened and cell.value > 0 then
-				local flaggedNeighbors, unopenedNeighbors = 0, {}
-				for dc = -1, 1 do
-					for dr = -1, 1 do
-						if not (dc==0 and dr==0) then
-							local nc, nr = col+dc, row+dr
-							if nc >= 1 and nc <= W and nr >= 1 and nr <= H then
-								local nCell = grid[nc][nr]
-								if nCell.isFlagged then flaggedNeighbors = flaggedNeighbors+1
-								elseif not nCell.isOpened then table.insert(unopenedNeighbors, nCell) end
-							end
-						end
-					end
-				end
-				if cell.value == flaggedNeighbors then
-					for _, nCell in ipairs(unopenedNeighbors) do
-						if not nCell.isFlagged and not nCell.isOpened then
-							safeTiles[nCell.col.."_"..nCell.row] = nCell
-						end
-					end
-				end
-			end
-		end
-	end
-	return safeTiles
-end
-
-local function runAutoTp()
-	while autoTpActive do
-		task.wait(autoTpDelay)
-
-		if not checkGridValid() then initGrid(); task.wait(0.2); continue end
-
-		-- Scan board trước
-		local state = scanBoard()
-		for col = 1, W do
-			for row = 1, H do
-				local cell = grid[col][row]; local st = state[col][row]
-				cell.isOpened = st.isOpened; cell.value = st.value
-				cell.isFlagged = st.isFlagged; cell.isBlocked = st.isBlocked
-			end
-		end
-
-		local pCol, pRow = getCurrentPlayerGrid()
-		if not pCol then continue end
-
-		-- Ưu tiên 1: deduced safe từ solver
-		local safeTiles = getDeducedSafeTiles()
-		local targetCell, bestPath, minLen = nil, nil, math.huge
-
-		for _, cell in pairs(safeTiles) do
-			if not cell.isOpened then
-				local path = findPath(pCol, pRow, cell.col, cell.row)
-				if path and #path < minLen then
-					minLen = #path; targetCell = cell; bestPath = path
-				end
-			end
-		end
-
-		-- Ưu tiên 2: ô chưa mở, không bomb, không flag — xung quanh ô đã mở
-		if not targetCell then
-			for col = 1, W do
-				for row = 1, H do
-					local cell = grid[col][row]
-					if not cell.isOpened and not cell.isFlagged
-					and not cell.isBlocked and not deducedBombs[cell.part] then
-						-- Chỉ lấy ô kề với ô đã mở
-						local adjacentOpened = false
-						for dc = -1, 1 do
-							for dr = -1, 1 do
-								local nc, nr = col+dc, row+dr
-								if nc >= 1 and nc <= W and nr >= 1 and nr <= H then
-									if grid[nc][nr].isOpened then adjacentOpened = true end
-								end
-							end
-						end
-						if adjacentOpened then
-							local path = findPath(pCol, pRow, col, row)
-							if path and #path < minLen then
-								minLen = #path; targetCell = cell; bestPath = path
-							end
-						end
-					end
-				end
-			end
-		end
-
-		if targetCell and bestPath then
-			-- Dùng walkPath — giống Auto Walk, không raw teleport
-			walkPath(bestPath)
-			-- Đợi ô mở (game click tự động hoặc chờ server)
-			local waited = 0
-			while targetCell.part and not targetCell.part:FindFirstChild("NumberGui")
-			and waited < 1.5 and autoTpActive do
-				task.wait(0.05); waited = waited + 0.05
-			end
-		else
-			Library:Notify("Auto TP: Không tìm được đường đến ô an toàn.", 3)
-			task.wait(1)
-		end
 	end
 end
 
 -- ==================== TAB: MISC ====================
 local MiscTab = Window:DrawTab({ Name = "Misc", Icon = "droplets", Type = "Double" })
 
--- Day/Night Section
+-- Day/Night Section — chỉ toggle + dropdown, không có slider
 local S_DayNight = MiscTab:DrawSection({ Name = "Day / Night", Position = "left" })
 
 S_DayNight:AddToggle({ Name = "Bật Điều Chỉnh Thời Gian", Flag = "DayNight_Active", Default = false,
@@ -1223,13 +1138,14 @@ S_DayNight:AddToggle({ Name = "Bật Điều Chỉnh Thời Gian", Flag = "DayNi
 			Library:Notify("Time Control ON — " .. dayNightMode, 3)
 		else
 			if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
+			unhookLightingNewindex()
 			Library:Notify("Time Control OFF", 3)
 		end
 	end
 })
 
 S_DayNight:AddDropdown({ Name = "Chế Độ", Flag = "DayNight_Mode",
-	Values = { "Day", "Night", "Cycle" }, Default = "Day",
+	Values = { "Day", "Night" }, Default = "Day",
 	Callback = function(v)
 		dayNightMode = v
 		if dayNightActive then
@@ -1239,97 +1155,8 @@ S_DayNight:AddDropdown({ Name = "Chế Độ", Flag = "DayNight_Mode",
 	end
 })
 
--- Slider giờ tuỳ chỉnh — chỉ áp dụng khi mode Day hoặc Night
--- Khi kéo slider, lockedTime thay đổi → Heartbeat lock tự giữ giờ mới
-S_DayNight:AddSlider({ Name = "Giờ Tuỳ Chỉnh (0-23)", Flag = "DayNight_Hour",
-	Min = 0, Max = 23, Default = 14,
-	Callback = function(v)
-		lockedTime = v
-		-- Restart để áp giờ mới ngay lập tức nếu đang lock
-		if dayNightActive and (dayNightMode == "Day" or dayNightMode == "Night") then
-			setDayNight(dayNightMode)
-		end
-	end
-})
-
-S_DayNight:AddSlider({ Name = "Cycle Speed (phút/giây)", Flag = "DayNight_CycleSpeed",
-	Min = 1, Max = 300, Default = 60,
-	Callback = function(v)
-		cycleSpeed = v
-		if dayNightActive and dayNightMode == "Cycle" then setDayNight("Cycle") end
-	end
-})
-
--- Auto Teleporter Section
-local S_AutoTp = MiscTab:DrawSection({ Name = "Auto Teleporter", Position = "right" })
-
-local AutoTpToggle = S_AutoTp:AddToggle({ Name = "Auto TP Ô An Toàn", Flag = "AutoTp_Active", Default = false,
-	Callback = function(v)
-		autoTpActive = v
-		if v then
-			initGrid()
-			autoTpThread = task.spawn(runAutoTp)
-			Library:Notify("Auto TP ON", 3)
-		else
-			autoTpActive = false
-			-- thread tự dừng vì while autoTpActive check ở đầu loop
-			Library:Notify("Auto TP OFF", 3)
-		end
-	end
-})
-AutoTpToggle.Link:AddKeybind({ Name = "Auto TP Key", Flag = "AutoTp_Key", Default = "T" })
-
-S_AutoTp:AddSlider({ Name = "Delay (giây)", Flag = "AutoTp_Delay",
-	Min = 1, Max = 30, Default = 5, Suffix = "x0.1s",
-	Callback = function(v) autoTpDelay = v * 0.1 end
-})
-
--- Bước 1 thủ công: walk đến ô safe gần nhất 1 lần
-S_AutoTp:AddButton({ Name = "Walk Đến Ô An Toàn Gần Nhất", Callback = function()
-	if not checkGridValid() then initGrid() end
-	local pCol, pRow = getCurrentPlayerGrid()
-	if not pCol then Library:Notify("Không tìm thấy vị trí player.", 3); return end
-
-	local safeTiles = getDeducedSafeTiles()
-	local targetCell, bestPath, minLen = nil, nil, math.huge
-
-	for _, cell in pairs(safeTiles) do
-		if not cell.isOpened then
-			local path = findPath(pCol, pRow, cell.col, cell.row)
-			if path and #path < minLen then minLen=#path; targetCell=cell; bestPath=path end
-		end
-	end
-
-	if not targetCell then
-		-- Fallback: ô chưa mở kề với ô đã mở
-		for col = 1, W do
-			for row = 1, H do
-				local cell = grid[col][row]
-				if not cell.isOpened and not cell.isFlagged and not cell.isBlocked and not deducedBombs[cell.part] then
-					local adj = false
-					for dc = -1, 1 do for dr = -1, 1 do
-						local nc, nr = col+dc, row+dr
-						if nc >= 1 and nc <= W and nr >= 1 and nr <= H and grid[nc][nr].isOpened then adj=true end
-					end end
-					if adj then
-						local path = findPath(pCol, pRow, col, row)
-						if path and #path < minLen then minLen=#path; targetCell=cell; bestPath=path end
-					end
-				end
-			end
-		end
-	end
-
-	if bestPath then
-		task.spawn(function() walkPath(bestPath) end)
-		Library:Notify("Walking to safe tile...", 3)
-	else
-		Library:Notify("Không tìm được ô an toàn.", 3)
-	end
-end })
-
 -- Utilities Section
-local S_Util = MiscTab:DrawSection({ Name = "Utilities", Position = "left" })
+local S_Util = MiscTab:DrawSection({ Name = "Utilities", Position = "right" })
 S_Util:AddButton({ Name = "Re-init Grid", Callback = function()
 	initGrid(); Library:Notify("Grid re-initialized.", 3)
 end })
@@ -1339,10 +1166,10 @@ end })
 S_Util:AddButton({ Name = "Reset All", Callback = function()
 	autoWalkActive = false; autoFlagActive = false; espActive = false
 	flying = false; infiniteJump = false; antiExplosionActive = false
-	autoTpActive = false; dayNightActive = false
+	dayNightActive = false
 	if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end
 	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
-	-- autoTpThread tự dừng vì autoTpActive = false
+	unhookLightingNewindex()
 	stopFlying(); clearESP()
 	local char = player.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then hum.WalkSpeed = 16; hum.JumpPower = 50; hum.UseJumpPower = false; hum.PlatformStand = false end

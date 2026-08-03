@@ -665,8 +665,8 @@ GetCombatTarget = function(mode)
 	local candidates=getgenv()._targetCandidates or table.create(64)
 	table.clear(candidates); getgenv()._targetCandidates=candidates
 	local now=tick(); local ignoredTargets=ActorManager._ignoredTargets
-	local mouse,mouseX,mouseY
-	if useFOV then mouse=UserInputService:GetMouseLocation(); mouseX,mouseY=mouse.X,mouse.Y end
+	local mouseX,mouseY
+	if useFOV then local sc=Camera.ViewportSize/2; mouseX,mouseY=sc.X,sc.Y end
 	local enemyList
 	if mode=="Rage" and ActorManager._sectors and ActorManager._playerSector then
 		enemyList={}
@@ -800,7 +800,9 @@ local function HookController(controller)
 end
 
 local FOVCircle=Drawing.new("Circle")
-FOVCircle.Thickness=1; FOVCircle.NumSides=60; FOVCircle.Radius=Config.SilentAimFOV
+FOVCircle.Thickness=1
+pcall(function() FOVCircle.NumSides=60 end)
+FOVCircle.Radius=Config.SilentAimFOV
 FOVCircle.Filled=false; FOVCircle.Visible=false; FOVCircle.Color=Color3.fromRGB(255,255,255)
 
 getgenv().VelocityCache={}
@@ -1172,19 +1174,24 @@ local function UpdateCombat(frameId)
 	if equippedController then
 		ApplyGunMods(equippedController,false)
 
-		-- Auto Reload
+		-- Auto Reload (global tick — không gán lên controller, không block manual R)
 		if Config.AutoReload then
-			local now_ar=tick()
-			if not equippedController._lastARCheck or (now_ar-equippedController._lastARCheck)>0.2 then
-				equippedController._lastARCheck=now_ar
-				local magEmpty=(equippedController._mag and (equippedController._mag.Capacity or 0)==0) or not equippedController._mag
-				if magEmpty and not equippedController._reloading then
+			local now_ar = tick()
+			if (now_ar - (getgenv()._autoReloadTick or 0)) > 0.2 then
+				getgenv()._autoReloadTick = now_ar
+				-- Chỉ trigger khi mag = 0 VÀ không đang reload (manual hoặc auto)
+				local magCapacity = equippedController._mag and (equippedController._mag.Capacity or 0) or 0
+				local magEmpty = magCapacity == 0
+				local isReloading = equippedController._reloading == true
+				if magEmpty and not isReloading then
 					pcall(function()
-						if equippedController._getMags then
-							local mags=equippedController:_getMags()
-							if mags and #mags>0 then equippedController:_reload(); return end
+						-- Dùng _getMags trước (source gốc), không fallback Reload() để tránh conflict PC
+						if equippedController._getMags and equippedController._reload then
+							local mags = equippedController:_getMags()
+							if mags and #mags > 0 then
+								equippedController:_reload()
+							end
 						end
-						if equippedController.Reload then equippedController:Reload() end
 					end)
 				end
 			end
@@ -1323,12 +1330,11 @@ local function UpdateCombat(frameId)
 			end
 		end
 	end
-	local mouse=UserInputService:GetMouseLocation()
 	if FOVCircle then
 		pcall(function() FOVCircle.Radius=Config.SilentAimFOV end)
 		local fovShow=Config.SilentAim and Config.ShowFOV
 		pcall(function() FOVCircle.Visible=fovShow end)
-		if fovShow then pcall(function() FOVCircle.Position=mouse end) end
+		if fovShow then local sc=Camera.ViewportSize/2; pcall(function() FOVCircle.Position=Vector2.new(sc.X,sc.Y) end) end
 	end
 	local targetPart=targetPart_SA; local targetActor=ActorManager.SelectedActor_SA
 	if targetPart then
@@ -1404,7 +1410,7 @@ local function CreateHighlight(actor,color)
 	if not actor.Character then return nil end
 	local highlight=Instance.new("Highlight")
 	highlight.FillColor=color; highlight.FillTransparency=0.9; highlight.OutlineColor=color
-	highlight.OutlineTransparency=0; highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.OutlineTransparency=0; pcall(function() highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop end)
 	highlight.Parent=actor.Character; return highlight
 end
 
@@ -1474,14 +1480,25 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 	espData.LastUpdate=frameId
 	if not actor or not actor.Alive then RemoveESP(uid); return end
 	if not ShouldShowEntity(actor,entityType,localSquad) then SetAllVisible(espData.Drawing,espData,false); return end
-	local distance=actor.LOD_Distance or 9999
-	if distance>cachedCfg.MaxDistance then
+	-- Tính distance thực nếu LOD_Distance không có
+	local distance = actor.LOD_Distance
+	if not distance or distance <= 0 then
+		local pos = actor.Position
+		if not pos and actor.Character and actor.Character.PrimaryPart then
+			pos = actor.Character.PrimaryPart.Position
+		end
+		if pos then
+			distance = (Camera.CFrame.Position - pos).Magnitude
+		else
+			distance = 0
+		end
+	end
+	if distance > cachedCfg.MaxDistance then
 		SetAllVisible(espData.Drawing,espData,false)
 		if espData.SimpleESP and espData.SimpleESP.Box then pcall(function() espData.SimpleESP.Box.Visible=false end) end
 		return
 	end
-	if distance>1500 and (frameId%4)~=0 then return end
-	if distance>500 and (frameId%2)~=0 then return end
+	if distance > 1500 and (frameId%2) ~= 0 then return end
 	if cachedCfg.SimpleESP then
 		SetAllVisible(espData.Drawing,espData,false)
 		local sESP=espData.SimpleESP
@@ -1495,11 +1512,17 @@ local function UpdateESPForActor(uid,espData,frameId,cachedCfg,localSquad)
 		return
 	end
 	local drawings=espData.Drawing
-	local worldPos=actor.Position or (actor.RootPart and actor.RootPart.Position)
+	local worldPos = actor.Position
+	if not worldPos then
+		if actor.Character then
+			local pp = actor.Character.PrimaryPart or actor.Character:FindFirstChild("Head")
+			if pp then worldPos = pp.Position end
+		end
+	end
 	if not worldPos then SetAllVisible(drawings,espData,false); return end
 	local screen_point,onScreen=Camera:WorldToViewportPoint(worldPos)
-	local engineVisible=onScreen or actor.ViewportOnScreen or (distance<128)
-	if not engineVisible or not onScreen then SetAllVisible(drawings,espData,false); return end
+	-- Chỉ dùng onScreen — reliable trên PC
+	if not onScreen then SetAllVisible(drawings,espData,false); return end
 	local screenPos=Vector2_new(screen_point.X,screen_point.Y)
 	SetAllVisible(drawings,espData,true)
 	if espData.Highlight then espData.Highlight.FillColor=espData.Color;espData.Highlight.OutlineColor=espData.Color end
@@ -1758,7 +1781,7 @@ local CombatTab=Window:DrawTab({ Name="Combat", Icon="swords", Type="Double" })
 local S_Rage=CombatTab:DrawSection({ Name="Ragebot", Position="right" })
 S_Rage:AddToggle({ Name="Enabled", Flag="Rage_Enabled", Default=false, Callback=function(v) Config.RageMode=v end })
 S_Rage:AddToggle({ Name="Look At Target", Flag="Rage_LookAt", Default=false, Callback=function(v) Config.Rage_LookAt=v end })
-S_Rage:AddSlider({ Name="Rage Range", Flag="Rage_Range", Min=50, Max=2000, Default=500, Callback=function(v) Config.Rage_Range=v end })
+S_Rage:AddSlider({ Name="Rage Range", Flag="Rage_Range", Min=50, Max=10000, Default=500, Callback=function(v) Config.Rage_Range=v end })
 S_Rage:AddDropdown({ Name="Target Part", Flag="Rage_TargetPart", Default="Head", Values={"Head","UpperTorso"}, Callback=function(v) Config.Rage_TargetPart=v end })
 S_Rage:AddToggle({ Name="Auto Fire", Flag="Rage_AutoFire", Default=false, Callback=function(v) Config.Rage_AutoFire=v end })
 S_Rage:AddToggle({ Name="Ammo Saver (Efficiency)", Flag="Rage_AmmoSaver", Default=false, Callback=function(v) Config.Rage_AmmoSaver=v end })
@@ -1789,7 +1812,7 @@ S_GunMods:AddToggle({ Name="No Recoil", Flag="Combat_NoRecoil", Default=false, C
 S_GunMods:AddToggle({ Name="No Spread", Flag="Combat_NoSpread", Default=false, Callback=function(v) Config.NoSpread=v end })
 S_GunMods:AddToggle({ Name="Unlock Firemodes", Flag="Combat_Firemodes", Default=false, Callback=function(v) Config.UnlockFiremodes=v end })
 S_GunMods:AddToggle({ Name="Custom RPM", Flag="Combat_CustomRPM", Default=false, Callback=function(v) Config.CustomRPM=v end })
-S_GunMods:AddSlider({ Name="RPM Value", Min=100, Max=3000, Default=800, Flag="Combat_RPMValue", Callback=function(v) Config.RPMValue=v end })
+S_GunMods:AddSlider({ Name="RPM Value", Min=100, Max=10000, Default=800, Flag="Combat_RPMValue", Callback=function(v) Config.RPMValue=v end })
 
 -- ESP Tab
 local VisualsTab=Window:DrawTab({ Name="ESP", Icon="eye", Type="Double" })
@@ -1811,7 +1834,7 @@ S_ESP:AddToggle({ Name="Show Prediction", Flag="ESP_ShowPred", Default=false, Ca
 S_ESP:AddColorPicker({ Name="Prediction Color", Default=Config.PredictionColor, Flag="ESP_PredColor", Callback=function(v)
 	Config.PredictionColor=v; local dot=getgenv().PredictionDot; if dot then dot.Color=v end end })
 Config.TextScale=1.2
-S_ESP:AddSlider({ Name="Max Distance (m)", Min=25, Max=3000, Default=1000, Flag="ESP_MaxDist", Callback=function(v)
+S_ESP:AddSlider({ Name="Max Distance (m)", Min=25, Max=10000, Default=1000, Flag="ESP_MaxDist", Callback=function(v)
 	Config.MaxDistance=math.floor(v*3.57) end })
 
 local S_Filters=VisualsTab:DrawSection({ Name="Entity Filters", Position="right" })
@@ -2184,207 +2207,17 @@ function AutoFarm.Stop()
 end
 
 
--- ==========================================
-getgenv().AutoFarm = AutoFarm
-getgenv().BulletTracer = BulletTracer
-
-print("[AutoFarm + BulletTracer] Modules loaded")
-
--- ==========================================
--- BULLET TRACER v2
--- Track projectile parts spawned by game
--- ==========================================
-
-local BulletTracer = {
-	Enabled = false,
-	Lifetime = 3,
-	Transparency = 0.3,
-	Thickness = 2,
-	Color = Color3.fromRGB(255, 200, 50),
-	FadeOut = true,
-	_tracers = {},   -- { line, born, from3, to3 }
-	_watched = {},   -- { part, line, lastPos } — active projectile tracking
-}
-
--- Tìm tất cả projectile parts đang tồn tại
--- Game BRM5 spawn bullet parts vào Workspace với tên chứa "Bullet" hoặc "Projectile"
--- hoặc là BasePart với CanCollide=false, Anchored=false, size nhỏ
-
-local function IsLikelyProjectile(part)
-	if not part:IsA("BasePart") then return false end
-	local name = part.Name:lower()
-	if name:find("bullet") or name:find("projectile") or name:find("shell") or name:find("ammo") then
-		return true
-	end
-	-- size nhỏ, không collide, không anchor
-	if part.Size.Magnitude < 1.5 and not part.CanCollide and not part.Anchored then
-		return true
-	end
-	return false
-end
-
--- Spawn một tracer line tĩnh (from → to)
-local function SpawnStaticTracer(fromPos, toPos)
-	local line = Drawing.new("Line")
-	line.Color = BulletTracer.Color
-	line.Thickness = BulletTracer.Thickness
-	line.Transparency = 1 - BulletTracer.Transparency
-	line.Visible = false
-	line.ZIndex = 10
-
-	local fromS, fromOn = Camera:WorldToViewportPoint(fromPos)
-	local toS, toOn = Camera:WorldToViewportPoint(toPos)
-
-	if fromOn or toOn then
-		line.From = Vector2.new(fromS.X, fromS.Y)
-		line.To = Vector2.new(toS.X, toS.Y)
-		line.Visible = true
-	end
-
-	table.insert(BulletTracer._tracers, {
-		line = line,
-		born = tick(),
-		from3 = fromPos,
-		to3 = toPos,
-	})
-end
-
--- Watch một projectile part: vẽ line theo path của nó
-local function WatchProjectile(part, muzzlePos)
-	local line = Drawing.new("Line")
-	line.Color = BulletTracer.Color
-	line.Thickness = BulletTracer.Thickness
-	line.Transparency = 1 - BulletTracer.Transparency
-	line.Visible = false
-	line.ZIndex = 10
-
-	table.insert(BulletTracer._watched, {
-		part = part,
-		line = line,
-		from3 = muzzlePos,
-		born = tick(),
-	})
-end
-
--- Update loop: cả static tracers (fade) và live projectile tracking
-local function BulletTracer_Update()
-	local now = tick()
-	local toRemoveStatic = {}
-	local toRemoveWatched = {}
-
-	-- Update static fade tracers
-	for i, t in ipairs(BulletTracer._tracers) do
-		local age = now - t.born
-		local lifetime = BulletTracer.Lifetime
-
-		if age >= lifetime then
-			pcall(function() t.line:Remove() end)
-			table.insert(toRemoveStatic, i)
-		else
-			local fromS, fromOn = Camera:WorldToViewportPoint(t.from3)
-			local toS, toOn = Camera:WorldToViewportPoint(t.to3)
-
-			if fromOn or toOn then
-				local alpha = BulletTracer.FadeOut and (1 - (age / lifetime)) or 1
-				t.line.Transparency = (1 - BulletTracer.Transparency) * alpha
-				t.line.From = Vector2.new(fromS.X, fromS.Y)
-				t.line.To = Vector2.new(toS.X, toS.Y)
-				t.line.Visible = true
-			else
-				t.line.Visible = false
-			end
-		end
-	end
-
-	-- Update live projectile tracers
-	for i, w in ipairs(BulletTracer._watched) do
-		local age = now - w.born
-		-- Part biến mất hoặc quá lâu → chuyển thành static tracer
-		local partGone = not w.part or not w.part.Parent
-		local timeout = age > 8  -- projectile sống tối đa 8s
-
-		if partGone or timeout then
-			-- Lấy vị trí cuối của projectile làm endpoint
-			local endPos = w.to3  -- fallback
-			if w.part and w.part.Parent then
-				endPos = w.part.Position
-			end
-
-			pcall(function() w.line:Remove() end)
-			table.insert(toRemoveWatched, i)
-
-			-- Tạo static tracer từ muzzle → điểm cuối
-			SpawnStaticTracer(w.from3, endPos or w.from3 + Vector3.new(0,0,100))
-		else
-			-- Part còn sống: vẽ line từ muzzle → vị trí hiện tại
-			local curPos = w.part.Position
-			local fromS, fromOn = Camera:WorldToViewportPoint(w.from3)
-			local toS, toOn = Camera:WorldToViewportPoint(curPos)
-
-			if fromOn or toOn then
-				w.line.From = Vector2.new(fromS.X, fromS.Y)
-				w.line.To = Vector2.new(toS.X, toS.Y)
-				w.line.Visible = true
-			else
-				w.line.Visible = false
-			end
-		end
-	end
-
-	-- Cleanup reverse
-	for i = #toRemoveStatic, 1, -1 do table.remove(BulletTracer._tracers, toRemoveStatic[i]) end
-	for i = #toRemoveWatched, 1, -1 do table.remove(BulletTracer._watched, toRemoveWatched[i]) end
-end
-
--- Listen Workspace.ChildAdded để bắt projectile khi spawn
-local _tracerWorkspaceConn = nil
-
-local function BulletTracer_StartWatching()
-	if _tracerWorkspaceConn then return end
-
-	_tracerWorkspaceConn = Workspace.ChildAdded:Connect(function(child)
-		if not BulletTracer.Enabled then return end
-		if not IsLikelyProjectile(child) then return end
-
-		-- Lấy muzzle từ WeaponManager hoặc Camera
-		local muzzlePos = GetMuzzlePosition() or Camera.CFrame.Position
-		WatchProjectile(child, muzzlePos)
-	end)
-
-	table.insert(getgenv().Moon_Connections, _tracerWorkspaceConn)
-end
-
-local tracerRenderLoop = RunService.RenderStepped:Connect(function()
-	if BulletTracer.Enabled then
-		BulletTracer_Update()
-	end
-end)
-table.insert(getgenv().Moon_Connections, tracerRenderLoop)
-
-getgenv().BulletTracer = BulletTracer
 
 
 -- ==========================================
--- VEHICLE AUTO RELOAD + CUSTOM RPM
--- Dùng findModule("Turrets") để access turret config
--- Dùng _getMags() + _reload() cho auto reload
+-- VEHICLE MODS — Turret RPM + Auto Reload
 -- ==========================================
+local _TurretConfigModule = nil
+local _TurretOriginals = {}
+local _TurretMods = { CustomRPM=false, RPMValue=1000 }
 
-local VehicleMods = {
-	AutoReload = false,
-	TurretCustomRPM = false,
-	TurretRPMValue = 1000,
-	_turretConfigCache = nil,
-	_originalRPMs = {},       -- backup RPM gốc theo turret name
-	_lastReloadCheck = 0,
-}
-
--- findModule: tìm ModuleScript theo tên trong ReplicatedFirst / ReplicatedStorage
-local function findModule(name)
+local function _findModule(name)
 	local rf = game:GetService("ReplicatedFirst")
-	local rs = game:GetService("ReplicatedStorage")
-
-	-- Priority: Services folder bên trong Flux
 	for _, flux in ipairs(rf:GetChildren()) do
 		if flux.Name:find("Flux") then
 			local services = flux:FindFirstChild("Services")
@@ -2395,273 +2228,236 @@ local function findModule(name)
 			end
 		end
 	end
-
 	local function search(parent)
 		if not parent then return end
 		for _, child in ipairs(parent:GetChildren()) do
-			local cName = child.Name
-			if (cName:find(name, 1, true) or cName:lower():find(name:lower(), 1, true))
-				and child:IsA("ModuleScript") then
-				if child.Parent then return child end
-			end
+			if (child.Name:find(name,1,true) or child.Name:lower():find(name:lower(),1,true))
+				and child:IsA("ModuleScript") then return child end
 			local found = search(child)
 			if found then return found end
 		end
 	end
-	return search(rf) or search(rs)
+	return search(rf) or search(game:GetService("ReplicatedStorage"))
 end
 
--- Lấy turret config table từ module "Turrets"
-local function GetTurretConfig()
-	if VehicleMods._turretConfigCache then return VehicleMods._turretConfigCache end
-	local mod = findModule("Turrets")
-	if mod then
-		local ok, result = pcall(require, mod)
-		if ok and result then
-			VehicleMods._turretConfigCache = result
-			return result
+local function _GetTurretConfig()
+	if not _TurretConfigModule then
+		local mod = _findModule("Turrets")
+		if mod then
+			local ok, result = pcall(require, mod)
+			if ok and result then _TurretConfigModule = result end
 		end
 	end
-	-- Fallback: scan GC cho turret config
-	local ok, gc = pcall(function() return filtergc("table") end)
-	if not ok then ok, gc = pcall(function() return getgc(true) end) end
-	if ok and gc then
-		for _, obj in pairs(gc) do
-			if type(obj) == "table" then
-				-- Turret config table có nhiều sub-tables với field RPM, Barrel_Spread
-				local count = 0
-				for k, v in pairs(obj) do
-					if type(v) == "table" and (v.RPM or v.Barrel_Spread) then count = count + 1 end
-					if count >= 2 then
-						VehicleMods._turretConfigCache = obj
-						return obj
-					end
-				end
-			end
-		end
-	end
-	return nil
+	return _TurretConfigModule
 end
 
--- Apply turret RPM từ config table
 local function ApplyTurretRPM()
-	if not VehicleMods.TurretCustomRPM then
-		-- Restore originals
-		local configs = VehicleMods._turretConfigCache
-		if configs then
-			for name, stats in pairs(configs) do
-				if type(stats) == "table" and stats.RPM and VehicleMods._originalRPMs[name] then
-					stats.RPM = VehicleMods._originalRPMs[name]
-				end
-			end
-		end
-		return
-	end
-
-	local configs = GetTurretConfig()
+	local configs = _GetTurretConfig()
 	if not configs then return end
-
 	for name, stats in pairs(configs) do
 		if type(stats) == "table" and stats.RPM then
-			-- Backup original
-			if not VehicleMods._originalRPMs[name] then
-				VehicleMods._originalRPMs[name] = stats.RPM
-			end
-			stats.RPM = VehicleMods.TurretRPMValue
-
-			-- Juga apply ke tConfig live jika ada di AllControllersCache
-			if setreadonly then pcall(setreadonly, stats, false) end
-		end
-	end
-
-	-- Also patch live turret controllers dari cache
-	if AllControllersCache and AllControllersCache.Visuals then
-		for _, controller in ipairs(AllControllersCache.Visuals) do
-			if type(controller) == "table" then
-				local tConfig = rawget(controller, "_config")
-				if tConfig and tConfig.RPM then
-					if setreadonly then pcall(setreadonly, tConfig, false) end
-					if not VehicleMods._originalRPMs["_live_"..tostring(controller)] then
-						VehicleMods._originalRPMs["_live_"..tostring(controller)] = tConfig.RPM
-					end
-					tConfig.RPM = VehicleMods.TurretRPMValue
-				end
-			end
-		end
-	end
-
-	-- LocalActor turret
-	if ReplicatorService and ReplicatorService.LocalActor then
-		local myActor = ReplicatorService.LocalActor
-		if myActor.Turret and type(myActor.Turret) == "table" then
-			local tConfig = myActor.Turret._config
-			if tConfig and tConfig.RPM then
-				if setreadonly then pcall(setreadonly, tConfig, false) end
-				if not VehicleMods._originalRPMs["_local_turret"] then
-					VehicleMods._originalRPMs["_local_turret"] = tConfig.RPM
-				end
-				tConfig.RPM = VehicleMods.TurretRPMValue
+			if not _TurretOriginals[name] then _TurretOriginals[name] = stats.RPM end
+			if _TurretMods.CustomRPM then
+				stats.RPM = _TurretMods.RPMValue
+			else
+				stats.RPM = _TurretOriginals[name]
 			end
 		end
 	end
 end
 
--- Auto reload: check magazine của equipped weapon mỗi 0.2s
-local function DoAutoReload()
-	if not VehicleMods.AutoReload then return end
+local _autoReloadTick2 = 0
+local function DoAutoReload_Veh()
 	local now = tick()
-	if now - VehicleMods._lastReloadCheck < 0.2 then return end
-	VehicleMods._lastReloadCheck = now
-
+	if now - _autoReloadTick2 < 0.2 then return end
+	_autoReloadTick2 = now
 	local weapon = WeaponManager.Equipped
 		or (InventoryService and InventoryService.Equipped and InventoryService.Equipped.Handler)
-
 	if not weapon then return end
-
-	-- Check mag capacity = 0 và không đang reload
 	local magEmpty = (weapon._mag and (weapon._mag.Capacity or 0) == 0) or not weapon._mag
-	local notReloading = not weapon._reloading
-
-	if magEmpty and notReloading then
-		-- Thử _getMags + _reload (pattern từ source)
+	if magEmpty and not weapon._reloading then
 		pcall(function()
-			if weapon._getMags then
+			if weapon._getMags and weapon._reload then
 				local mags = weapon:_getMags()
-				if mags and #mags > 0 then
-					weapon:_reload()
-					return
-				end
-			end
-			-- Fallback: method Reload (public API)
-			if weapon.Reload then
-				weapon:Reload()
-			end
+				if mags and #mags > 0 then weapon:_reload() end
+			elseif weapon.Reload then weapon:Reload() end
 		end)
 	end
 end
 
--- Heartbeat loop cho vehicle mods
-local vehicleModLoop = RunService.Heartbeat:Connect(function()
-	DoAutoReload()
-	-- RPM apply throttled mỗi 10 frames
-	if VehicleMods.TurretCustomRPM then
-		ApplyTurretRPM()
-	end
-end)
-table.insert(getgenv().Moon_Connections, vehicleModLoop)
-
-
--- ==========================================
--- UI: Bullet Tracer → Misc tab
--- UI: Vehicle Auto Reload + RPM → Vehicle tab
--- ==========================================
-
--- Bullet Tracer section (Misc tab)
-local S_Tracer = MiscTab:DrawSection({ Name = "Bullet Tracer", Position = "right" })
-
-S_Tracer:AddToggle({
-	Name = "Enable Tracer",
-	Flag = "BT_Enabled",
-	Default = false,
-	Callback = function(v)
-		BulletTracer.Enabled = v
-		if v then BulletTracer_StartWatching() end
-	end
-})
-
-S_Tracer:AddSlider({
-	Name = "Lifetime (s)",
-	Flag = "BT_Lifetime",
-	Min = 1,
-	Max = 20,
-	Default = 3,
-	Rounding = 0,
-	Callback = function(v) BulletTracer.Lifetime = v end
-})
-
-S_Tracer:AddSlider({
-	Name = "Transparency",
-	Flag = "BT_Transparency",
-	Min = 0,
-	Max = 100,
-	Default = 30,
-	Rounding = 0,
-	Callback = function(v) BulletTracer.Transparency = v / 100 end
-})
-
-S_Tracer:AddSlider({
-	Name = "Thickness",
-	Flag = "BT_Thickness",
-	Min = 1,
-	Max = 8,
-	Default = 2,
-	Rounding = 0,
-	Callback = function(v)
-		BulletTracer.Thickness = v
-		for _, t in ipairs(BulletTracer._tracers) do pcall(function() t.line.Thickness = v end) end
-		for _, w in ipairs(BulletTracer._watched) do pcall(function() w.line.Thickness = v end) end
-	end
-})
-
-S_Tracer:AddToggle({
-	Name = "Fade Out",
-	Flag = "BT_FadeOut",
-	Default = true,
-	Callback = function(v) BulletTracer.FadeOut = v end
-})
-
-S_Tracer:AddColorPicker({
-	Name = "Tracer Color",
-	Flag = "BT_Color",
-	Default = BulletTracer.Color,
-	Callback = function(v)
-		BulletTracer.Color = v
-		for _, t in ipairs(BulletTracer._tracers) do pcall(function() t.line.Color = v end) end
-		for _, w in ipairs(BulletTracer._watched) do pcall(function() w.line.Color = v end) end
-	end
-})
-
-
--- Auto Reload + Turret RPM → S_VehTurret (Turret Mods section)
-S_VehTurret:AddToggle({
-	Name = "Auto Reload",
-	Flag = "Veh_AutoReload",
-	Default = false,
-	Callback = function(v)
-		VehicleMods.AutoReload = v
-	end
-})
-
-S_VehTurret:AddToggle({
-	Name = "Turret Custom RPM",
-	Flag = "Veh_TurretCustomRPM",
-	Default = false,
-	Callback = function(v)
-		VehicleMods.TurretCustomRPM = v
-		if not v then ApplyTurretRPM() end
-	end
-})
-
-S_VehTurret:AddSlider({
-	Name = "Turret RPM",
-	Flag = "Veh_TurretRPMValue",
-	Min = 100,
-	Max = 3000,
-	Default = 1000,
-	Rounding = 0,
-	Callback = function(v)
-		VehicleMods.TurretRPMValue = v
-	end
-})
-
-S_VehTurret:AddButton({
-	Name = "Force Apply RPM",
-	Callback = function()
-		VehicleMods._turretConfigCache = nil
-		VehicleMods._originalRPMs = {}
-		ApplyTurretRPM()
-	end
-})
-
+local VehicleMods = { AutoReload=false, TurretCustomRPM=false, TurretRPMValue=1000 }
 getgenv().VehicleMods = VehicleMods
-print("[BulletTracer v2 + VehicleMods] Loaded")
+
+local _vmHb = RunService.Heartbeat:Connect(function()
+	if VehicleMods.AutoReload then DoAutoReload_Veh() end
+	if VehicleMods.TurretCustomRPM then ApplyTurretRPM() end
+end)
+table.insert(getgenv().Moon_Connections, _vmHb)
+
+S_VehTurret:AddToggle({ Name="Auto Reload", Flag="Veh_AutoReload", Default=false,
+	Callback=function(v) VehicleMods.AutoReload=v end })
+S_VehTurret:AddToggle({ Name="Turret Custom RPM", Flag="Veh_TurretCustomRPM", Default=false,
+	Callback=function(v)
+		VehicleMods.TurretCustomRPM=v; _TurretMods.CustomRPM=v
+		if not v then _TurretOriginals={}; ApplyTurretRPM() end
+	end })
+S_VehTurret:AddSlider({ Name="Turret RPM", Flag="Veh_TurretRPMValue",
+	Min=100, Max=10000, Default=1000, Rounding=0,
+	Callback=function(v) VehicleMods.TurretRPMValue=v; _TurretMods.RPMValue=v end })
+S_VehTurret:AddButton({ Name="Force Apply RPM",
+	Callback=function()
+		_TurretOriginals={}; _TurretConfigModule=nil; ApplyTurretRPM()
+		Notifier.new({ Title="Turret RPM", Content="Applied ".._TurretMods.RPMValue.." RPM", Duration=3 })
+	end })
+
+
+-- ==========================================
+-- BULLET TRACER v3 — Part Neon, chỉ local
+-- ==========================================
+local BulletTracer = {
+	Enabled=false, Lifetime=3, Color=Color3.fromRGB(255,200,50),
+	Transparency=0.3, Width=0.05, FadeOut=true, _parts={},
+}
+local function BT_SpawnPart(fromPos, toPos)
+	local dist = (toPos-fromPos).Magnitude
+	if dist < 0.5 then return end
+	local part = Instance.new("Part")
+	part.Name="BT"; part.Anchored=true; part.CanCollide=false
+	part.CanTouch=false; part.CastShadow=false
+	part.Size=Vector3.new(BulletTracer.Width, BulletTracer.Width, dist)
+	part.CFrame=CFrame.new((fromPos+toPos)/2, toPos)
+	part.Color=BulletTracer.Color; part.Transparency=BulletTracer.Transparency
+	part.Material=Enum.Material.Neon
+	pcall(function() part.Parent=Workspace end)
+	table.insert(BulletTracer._parts, {part=part, born=tick()})
+end
+local function BT_Update()
+	local now=tick(); local rem={}
+	for i,t in ipairs(BulletTracer._parts) do
+		if not t.part or not t.part.Parent then rem[#rem+1]=i; continue end
+		local age=now-t.born
+		if age>=BulletTracer.Lifetime then
+			pcall(function() t.part:Destroy() end); rem[#rem+1]=i
+		elseif BulletTracer.FadeOut then
+			local a=age/BulletTracer.Lifetime
+			pcall(function() t.part.Transparency=BulletTracer.Transparency+(1-BulletTracer.Transparency)*a end)
+		end
+	end
+	for i=#rem,1,-1 do table.remove(BulletTracer._parts, rem[i]) end
+end
+local function BT_Hook()
+	if not BulletService or BulletService._tracerHooked then return end
+	local existing = BulletService.Discharge
+	BulletService.Discharge = function(self, originCF, ...)
+		local res = {pcall(existing, self, originCF, ...)}
+		if BulletTracer.Enabled and originCF then
+			local localMuzzle = GetMuzzlePosition()
+			local mPos = originCF.Position
+			if not localMuzzle or (mPos-localMuzzle).Magnitude <= 5 then
+				local dir = originCF.LookVector
+				local rp = RaycastParams.new()
+				rp.FilterType = Enum.RaycastFilterType.Exclude
+				local fl = {Camera}
+				if LocalPlayer.Character then fl[2]=LocalPlayer.Character end
+				rp.FilterDescendantsInstances = fl
+				local ray = Workspace:Raycast(mPos, dir*2000, rp)
+				task.spawn(BT_SpawnPart, mPos, ray and ray.Position or mPos+dir*800)
+			end
+		end
+		if res[1] then return table.unpack(res, 2) end
+	end
+	BulletService._tracerHooked = true
+end
+local _btHb = RunService.Heartbeat:Connect(function()
+	if #BulletTracer._parts > 0 then BT_Update() end
+end)
+table.insert(getgenv().Moon_Connections, _btHb)
+getgenv().BulletTracer = BulletTracer
+
+local S_BT = MiscTab:DrawSection({ Name="Bullet Tracer", Position="right" })
+S_BT:AddToggle({ Name="Enable Tracer", Flag="BT_Enabled", Default=false,
+	Callback=function(v) BulletTracer.Enabled=v; if v then BT_Hook() end end })
+S_BT:AddSlider({ Name="Lifetime (s)", Flag="BT_Lifetime", Min=1, Max=20, Default=3, Rounding=0,
+	Callback=function(v) BulletTracer.Lifetime=v end })
+S_BT:AddSlider({ Name="Transparency", Flag="BT_Transparency", Min=0, Max=100, Default=30, Rounding=0,
+	Callback=function(v) BulletTracer.Transparency=v/100 end })
+S_BT:AddSlider({ Name="Width (x0.01)", Flag="BT_Width", Min=1, Max=50, Default=5, Rounding=0,
+	Callback=function(v) BulletTracer.Width=v/100 end })
+S_BT:AddToggle({ Name="Fade Out", Flag="BT_FadeOut", Default=true,
+	Callback=function(v) BulletTracer.FadeOut=v end })
+S_BT:AddColorPicker({ Name="Tracer Color", Flag="BT_Color", Default=BulletTracer.Color,
+	Callback=function(v)
+		BulletTracer.Color=v
+		for _,t in ipairs(BulletTracer._parts) do
+			pcall(function() if t.part and t.part.Parent then t.part.Color=v end end)
+		end
+	end })
+
+print("[VehicleMods + BulletTracer + FOV Screen-Center] Loaded")
+
+-- ==========================================
+-- AUTO REMOVE TREE
+-- ==========================================
+local _TreePrefixes = {"arb", "qradbiq", "oradbbig", "oragedbbig"}
+local _AutoTree = { Enabled = false, _connection = nil }
+
+local function _startsWith(str, prefix)
+	return string.sub(str:lower(), 1, #prefix) == prefix
+end
+
+local function _DeleteTrees()
+	local toDelete = {}
+	local parentMark = {}
+	for _, obj in pairs(Workspace:GetDescendants()) do
+		local name = obj.Name:lower()
+		local matched = false
+		for _, p in ipairs(_TreePrefixes) do
+			if _startsWith(name, p) then matched = true; break end
+		end
+		if matched then
+			if obj:IsA("Model") or obj:IsA("Folder") then
+				table.insert(toDelete, obj)
+				parentMark[obj] = true
+			else
+				local parent = obj.Parent
+				if parent and not parentMark[parent] then
+					table.insert(toDelete, obj)
+				end
+			end
+		end
+	end
+	for _, obj in pairs(toDelete) do
+		if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+	end
+end
+
+local S_AutoTree = MiscTab:DrawSection({ Name="Auto Remove Tree", Position="left" })
+
+S_AutoTree:AddToggle({
+	Name = "Enable",
+	Flag = "AT_Enabled",
+	Default = false,
+	Callback = function(v)
+		_AutoTree.Enabled = v
+		if v then
+			if not _AutoTree._connection then
+				_AutoTree._connection = RunService.Heartbeat:Connect(function()
+					if _AutoTree.Enabled then _DeleteTrees() end
+				end)
+				table.insert(getgenv().Moon_Connections, _AutoTree._connection)
+			end
+		else
+			if _AutoTree._connection then
+				pcall(function() _AutoTree._connection:Disconnect() end)
+				_AutoTree._connection = nil
+			end
+		end
+	end
+})
+
+S_AutoTree:AddButton({
+	Name = "Delete Once",
+	Callback = function() _DeleteTrees() end
+})
+
+print("[AutoRemoveTree] Loaded")

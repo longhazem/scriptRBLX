@@ -1,4 +1,4 @@
-local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
+local Repository = ""
 
 local function GetLoadstringSource(Url)
 	local function tryRequest(fn, args)

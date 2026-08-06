@@ -1,4 +1,4 @@
-local blockedExecutors = {["Solara"] = true, ["Xeno"] = true, ["Wave"] = true, ["Synapse Z"] = true, ["Opiumware"] = true, ["Vega x"] = true}
+local blockedExecutors = {["Solara"] = true, ["Xeno"] = true, ["Wave"] = true, ["Synapse Z"] = true, ["Opiumware"] = true, ["Vega x"] = true, ["Delta"] = true}
 local currentExecutor = identifyexecutor and identifyexecutor() or "Unknown"
 
 local function calculateUNC()

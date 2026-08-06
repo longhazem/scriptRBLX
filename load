@@ -1,4 +1,4 @@
-local blockedExecutors = {["Solara"] = true, ["Xeno"] = true, ["Wave"] = true, ["Synapse Z"] = true, ["Opiumware"] = true, ["Vega x"] = true, ["Delta"] = true}
+local blockedExecutors = {["Solara"] = true, ["Xeno"] = true, ["Wave"] = true, ["Synapse Z"] = true, ["Opiumware"] = true, ["Vega x"] = true}
 local currentExecutor = identifyexecutor and identifyexecutor() or "Unknown"
 
 local function calculateUNC()
@@ -44,7 +44,7 @@ stroke.Parent = frame
 
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 40)
-title.Text = "SYSTEM COMPATIBILITY CHECK"
+title.Text = "Tokaihub check executor"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 14
@@ -117,7 +117,7 @@ task.wait(1.5)
 sg:Destroy()
 
 local success, result = pcall(function()
-    return loadstring(game:HttpGet("https://githubusercontent.com"))()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/note/refs/heads/main/RBM5"))()
 end)
 
 if not success then

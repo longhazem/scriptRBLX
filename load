@@ -1,125 +1,202 @@
-local blockedExecutors = {["Solara"] = true, ["Xeno"] = true, ["Wave"] = true, ["Synapse Z"] = true, ["Opiumware"] = true, ["Vega x"] = true}
+local blockedExecutors = {["Solara"]=true,["Xeno"]=true,["Wave"]=true,["Synapse Z"]=true,["Opiumware"]=true,["Vega x"]=true}
 local currentExecutor = identifyexecutor and identifyexecutor() or "Unknown"
 
 local function calculateUNC()
-    local coreFunctions = {hookfunction, hookmetatable, getgc, getreg, getgenv, getupvalues, checkclosure, isourclosure, newcclosure, setclipboard, getloadedmodules, getnilinstances}
-    local passed = 0
-    for _, func in pairs(coreFunctions) do if func then passed = passed + 1 end end
-    return math.floor((passed / #coreFunctions) * 100)
+	local coreFunctions = {hookfunction,hookmetatable,getgc,getreg,getgenv,getupvalues,checkclosure,isourclosure,newcclosure,setclipboard,getloadedmodules,getnilinstances}
+	local passed = 0
+	for _, func in pairs(coreFunctions) do if func then passed = passed + 1 end end
+	return math.floor((passed / #coreFunctions) * 100)
 end
 
 local userUNC = calculateUNC()
 local isBlocked = false
 
-for blockedName, _ in pairs(blockedExecutors) do
-    if currentExecutor:lower():find(blockedName:lower()) then
-        isBlocked = true
-        break
-    end
+for blockedName in pairs(blockedExecutors) do
+	if currentExecutor:lower():find(blockedName:lower()) then
+		isBlocked = true; break
+	end
 end
 
+-- URLs
+local URL_PC     = "https://raw.githubusercontent.com/longhazem/scriptRBLX/refs/heads/main/tokaihub_pc.lua"
+local URL_MOBILE = "https://raw.githubusercontent.com/longhazem/scriptRBLX/refs/heads/main/tokaihub_mobile.lua"
+
+-- ScreenGui
 local sg = Instance.new("ScreenGui")
-sg.Name = "BRM5_Loader_UI"
+sg.Name = "Tokaihub_Loader"
 sg.ResetOnSpawn = false
 pcall(function() sg.Parent = game:GetService("CoreGui") end)
 if not sg.Parent then sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui") end
 
+-- Main Frame
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 360, 0, 240)
-frame.Position = UDim2.new(0.5, -180, 0.5, -120)
-frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+frame.Size = UDim2.new(0, 380, 0, 280)
+frame.Position = UDim2.new(0.5, -190, 0.5, -140)
+frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 frame.BorderSizePixel = 0
 frame.Active = true
 frame.Draggable = true
 frame.Parent = sg
 
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 8)
-corner.Parent = frame
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
 
 local stroke = Instance.new("UIStroke")
 stroke.Thickness = 1.5
-stroke.Color = isBlocked and Color3.fromRGB(220, 50, 50) or Color3.fromRGB(50, 150, 250)
+stroke.Color = isBlocked and Color3.fromRGB(220,50,50) or Color3.fromRGB(88,101,242)
 stroke.Parent = frame
 
+-- Title
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 40)
-title.Text = "Tokaihub check executor"
+title.Size = UDim2.new(1, 0, 0, 45)
+title.Position = UDim2.new(0, 0, 0, 0)
+title.Text = "Tokaihub"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBold
-title.TextSize = 14
+title.TextSize = 16
 title.BackgroundTransparency = 1
 title.Parent = frame
 
+-- Divider
+local div = Instance.new("Frame")
+div.Size = UDim2.new(1, -40, 0, 1)
+div.Position = UDim2.new(0, 20, 0, 45)
+div.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+div.BorderSizePixel = 0
+div.Parent = frame
+
+-- Info
 local infoText = Instance.new("TextLabel")
-infoText.Size = UDim2.new(1, -40, 0, 60)
-infoText.Position = UDim2.new(0, 20, 0, 50)
+infoText.Size = UDim2.new(1, -40, 0, 50)
+infoText.Position = UDim2.new(0, 20, 0, 54)
 infoText.Text = string.format("Executor: %s\nUNC Score: %d%%", currentExecutor, userUNC)
-infoText.TextColor3 = Color3.fromRGB(200, 200, 200)
+infoText.TextColor3 = Color3.fromRGB(180, 180, 190)
 infoText.Font = Enum.Font.Gotham
-infoText.TextSize = 14
+infoText.TextSize = 13
 infoText.TextXAlignment = Enum.TextXAlignment.Left
 infoText.BackgroundTransparency = 1
 infoText.Parent = frame
 
+-- Status
 local statusText = Instance.new("TextLabel")
-statusText.Size = UDim2.new(1, -40, 0, 40)
-statusText.Position = UDim2.new(0, 20, 0, 115)
+statusText.Size = UDim2.new(1, -40, 0, 35)
+statusText.Position = UDim2.new(0, 20, 0, 110)
 statusText.Font = Enum.Font.GothamBold
 statusText.TextSize = 13
+statusText.TextXAlignment = Enum.TextXAlignment.Left
 statusText.BackgroundTransparency = 1
 statusText.Parent = frame
 
-local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(1, -40, 0, 40)
-btn.Position = UDim2.new(0, 20, 0, 175)
-btn.Font = Enum.Font.GothamBold
-btn.TextSize = 14
-btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-btn.BorderSizePixel = 0
-btn.Parent = frame
+-- Helper: tạo button
+local function makeBtn(text, color, posY, parent)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0.5, -25, 0, 44)
+	b.Position = posY
+	b.Text = text
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 14
+	b.TextColor3 = Color3.fromRGB(255, 255, 255)
+	b.BackgroundColor3 = color
+	b.BorderSizePixel = 0
+	b.Parent = parent
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
 
-local btnCorner = Instance.new("UICorner")
-btnCorner.CornerRadius = UDim.new(0, 6)
-btnCorner.Parent = btn
-
-if isBlocked or userUNC < 70 then
-    statusText.Text = "Status: The executor is not supported."
-    statusText.TextColor3 = Color3.fromRGB(240, 70, 70)
-    
-    btn.Text = "Support Discord (Copy Link)"
-    btn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-    
-    btn.MouseButton1Click:Connect(function()
-        if setclipboard then
-            setclipboard("https://discord.gg/deVVQEVybd")
-            btn.Text = "Copied to Clipboard!"
-            task.wait(2)
-            btn.Text = "Support Discord (Copy Link)"
-        else
-            btn.Text = "Error: setclipboard not supported"
-        end
-    end)
-    return
-else
-    statusText.Text = "Status: Compatibility Passed! Loading script..."
-    statusText.TextColor3 = Color3.fromRGB(70, 240, 70)
-    
-    btn.Text = "Close Loader"
-    btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    
-    btn.MouseButton1Click:Connect(function()
-        sg:Destroy()
-    end)
+	-- Hover effect
+	b.MouseEnter:Connect(function()
+		b.BackgroundColor3 = Color3.fromRGB(
+			math.min(color.R*255+20, 255),
+			math.min(color.G*255+20, 255),
+			math.min(color.B*255+20, 255)
+		)
+	end)
+	b.MouseLeave:Connect(function()
+		b.BackgroundColor3 = color
+	end)
+	return b
 end
 
-task.wait(1.5)
-sg:Destroy()
+-- BLOCKED / LOW UNC
+if isBlocked or userUNC < 70 then
+	statusText.Text = "✗  Executor không được hỗ trợ"
+	statusText.TextColor3 = Color3.fromRGB(240, 70, 70)
 
-local success, result = pcall(function()
-    return loadstring(game:HttpGet("https://raw.githubusercontent.com/longhazem/note/refs/heads/main/RBM5"))()
+	local discordBtn = Instance.new("TextButton")
+	discordBtn.Size = UDim2.new(1, -40, 0, 44)
+	discordBtn.Position = UDim2.new(0, 20, 0, 210)
+	discordBtn.Text = "Support Discord (Copy Link)"
+	discordBtn.Font = Enum.Font.GothamBold
+	discordBtn.TextSize = 14
+	discordBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	discordBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+	discordBtn.BorderSizePixel = 0
+	discordBtn.Parent = frame
+	Instance.new("UICorner", discordBtn).CornerRadius = UDim.new(0, 7)
+
+	discordBtn.MouseButton1Click:Connect(function()
+		if setclipboard then
+			setclipboard("https://discord.gg/deVVQEVybd")
+			discordBtn.Text = "✓ Copied!"
+			task.wait(2)
+			discordBtn.Text = "Support Discord (Copy Link)"
+		else
+			discordBtn.Text = "setclipboard không được hỗ trợ"
+		end
+	end)
+	return
+end
+
+-- PASSED — hiện 2 nút chọn platform
+statusText.Text = "✓  Compatibility Passed! Chọn phiên bản:"
+statusText.TextColor3 = Color3.fromRGB(70, 220, 70)
+
+-- Nút PC
+local pcBtn = makeBtn(
+	"💻  PC",
+	Color3.fromRGB(88, 101, 242),
+	UDim2.new(0, 20, 0, 180),
+	frame
+)
+
+-- Nút Mobile
+local mobileBtn = makeBtn(
+	"📱  Mobile",
+	Color3.fromRGB(50, 160, 80),
+	UDim2.new(0.5, 5, 0, 180),
+	frame
+)
+
+-- Loading label
+local loadingLabel = Instance.new("TextLabel")
+loadingLabel.Size = UDim2.new(1, -40, 0, 30)
+loadingLabel.Position = UDim2.new(0, 20, 0, 235)
+loadingLabel.Text = ""
+loadingLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+loadingLabel.Font = Enum.Font.Gotham
+loadingLabel.TextSize = 12
+loadingLabel.BackgroundTransparency = 1
+loadingLabel.Parent = frame
+
+local function loadScript(url, platform)
+	pcBtn.Active = false; mobileBtn.Active = false
+	pcBtn.BackgroundColor3 = Color3.fromRGB(50,50,60)
+	mobileBtn.BackgroundColor3 = Color3.fromRGB(50,50,60)
+	loadingLabel.Text = "Đang tải "..platform.."..."
+
+	task.wait(0.5)
+	sg:Destroy()
+
+	local ok, err = pcall(function()
+		loadstring(game:HttpGet(url))()
+	end)
+
+	if not ok then
+		warn("[Tokaihub Loader] Failed: " .. tostring(err))
+	end
+end
+
+pcBtn.MouseButton1Click:Connect(function()
+	loadScript(URL_PC, "PC")
 end)
 
-if not success then
-    warn("[BRM5 Loader Error]: Failed to load the main script. Error: " .. tostring(result))
-end
+mobileBtn.MouseButton1Click:Connect(function()
+	loadScript(URL_MOBILE, "Mobile")
+end)

@@ -212,109 +212,9 @@ local xToCol, zToRow = {}, {}
 local localFlags   = {}
 local deducedBombs = {}
 
--- ============================================
--- KEY SYSTEM
--- ============================================
 
-local KEY_URL         = "https://raw.githubusercontent.com/Nattalz/rblx/refs/heads/main/keys/key1.txt"
-local STATIC_KEY      = "JawirOnTop"
-local dynamicKey      = STATIC_KEY
 
-local function fetchDynamicKey()
-	local ok, result = pcall(function() return game:HttpGet(KEY_URL, true) end)
-	if ok and result then
-		local cleaned = result:gsub("^%s*(.-)%s*$", "%1")
-		if #cleaned > 0 and cleaned ~= "404: Not Found" then
-			dynamicKey = cleaned
-			return cleaned
-		end
-	end
-	return STATIC_KEY
-end
-fetchDynamicKey()
 
--- ============================================
--- SECRET KEY SCANNER
--- ============================================
-
-local function getSecretKey()
-	local salasana = workspace:FindFirstChild("Salasana")
-	if salasana and salasana:IsA("ValueObject") and salasana.Value ~= 0 then
-		return tostring(salasana.Value)
-	end
-	if getgc then
-		for _, v in pairs(getgc(true)) do
-			if type(v) == "function" then
-				local ok, info = pcall(debug.info, v, "s")
-				info = ok and info or ""
-				if info:find("MouseControl") then
-					local ok2, upvals = pcall(debug.getupvalues, v)
-					if ok2 and upvals then
-						local hasPlaceFlag, potentialKey = false, nil
-						for _, uv in pairs(upvals) do
-							if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
-								hasPlaceFlag = true
-							elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) ~= nil then
-								potentialKey = uv
-							elseif type(uv) == "number" and uv > 1000 then
-								potentialKey = tostring(uv)
-							end
-						end
-						if hasPlaceFlag and potentialKey then return potentialKey end
-					end
-				end
-			end
-		end
-		for _, v in pairs(getgc(true)) do
-			if type(v) == "function" then
-				local ok2, upvals = pcall(debug.getupvalues, v)
-				if ok2 and upvals then
-					local hasPlaceFlag, potentialKey = false, nil
-					for _, uv in pairs(upvals) do
-						if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
-							hasPlaceFlag = true
-						elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) ~= nil then
-							potentialKey = uv
-						elseif type(uv) == "number" and uv > 1000 then
-							potentialKey = tostring(uv)
-						end
-					end
-					if hasPlaceFlag and potentialKey then return potentialKey end
-				end
-			end
-		end
-	end
-	local function scanUpvaluesForKey(func, depth, maxDepth)
-		depth = depth or 0; maxDepth = maxDepth or 3
-		if depth > maxDepth then return nil end
-		local ok, upvals = pcall(debug.getupvalues, func)
-		if not ok or not upvals then return nil end
-		for _, v in pairs(upvals) do
-			if type(v) == "string" and (tonumber(v) ~= nil or #v > 10) then return v
-			elseif type(v) == "number" then return tostring(v)
-			elseif type(v) == "function" then
-				local nested = scanUpvaluesForKey(v, depth+1, maxDepth)
-				if nested then return nested end
-			end
-		end
-		return nil
-	end
-	local function getConnectionsForEvent(event)
-		local connections = {}
-		local success, conns = pcall(getconnections, event)
-		if success and conns then for _, conn in ipairs(conns) do table.insert(connections, conn) end end
-		return connections
-	end
-	local mouse = player:GetMouse()
-	local allEvents = { mouse.Button1Down, mouse.Button2Down, UserInputService.TouchTap, UserInputService.InputBegan, UserInputService.InputEnded }
-	for _, event in ipairs(allEvents) do
-		for _, conn in ipairs(getConnectionsForEvent(event)) do
-			local func = conn.Function
-			if func then local key = scanUpvaluesForKey(func); if key then return key end end
-		end
-	end
-	return nil
-end
 
 -- ============================================
 -- FLAG & BLOCK CHECKS
@@ -784,13 +684,12 @@ task.spawn(function()
 			if not success then continue end
 			if autoFlagActive then
 				local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-				local key = getSecretKey()
-				if root and key then
+				if root then
 					for part in pairs(deducedBombs) do
 						if not hasServerFlag(part) then
 							local dist = (part.Position-root.Position).Magnitude
 							if dist < flagDistance then
-								ReplicatedStorage.Events.FlagEvents.PlaceFlag:FireServer(part, key, true)
+								ReplicatedStorage.Events.FlagEvents.PlaceFlag:FireServer(part, true)
 								localFlags[part] = true
 								if flagDelay > 0 then task.wait(flagDelay) end
 							end
@@ -809,9 +708,8 @@ task.spawn(function()
 						local targetPart = grid[midCol][midRow].part
 						if targetPart then walkTo(targetPart); task.wait(0.3) end
 					else
-						local key = getSecretKey()
-						if key then
-							local targetCell, bestPath, minPathLen = nil, nil, math.huge
+						do
+						local targetCell, bestPath, minPathLen = nil, nil, math.huge
 							for _, cell in pairs(safeTiles) do
 								local path = findPath(pCol, pRow, cell.col, cell.row)
 								if path and #path < minPathLen then minPathLen=#path; targetCell=cell; bestPath=path end

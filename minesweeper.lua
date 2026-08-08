@@ -1,6 +1,5 @@
 -- ============================================
 -- Minesweeper Bot & ESP — libba UI Edition
--- Ported from Rayfield → libba (RBM5 style)
 -- ============================================
 
 local Repository = "https://raw.githubusercontent.com/longhazem/libba/main/"
@@ -48,7 +47,7 @@ local function LoadRemote(Url)
 	return Chunk()
 end
 
-local Library     = LoadRemote(Repository .. "source.lua")
+local Library      = LoadRemote(Repository .. "source.lua")
 local ThemeManager = LoadRemote(Repository .. "addons/ThemeManager.lua")
 local SaveManager  = LoadRemote(Repository .. "addons/SaveManager.lua")
 
@@ -56,7 +55,7 @@ local Options = getgenv().Options or {}
 local Toggles = getgenv().Toggles or {}
 
 -- ============================================
--- MoonUI compatibility shim (same as RBM5)
+-- MoonUI shim
 -- ============================================
 
 local MoonUI = { Scale = { Window = 1 } }
@@ -168,43 +167,42 @@ function MoonUI.new(Data)
 end
 
 -- ============================================
--- GAME SERVICES
+-- SERVICES
 -- ============================================
 
-local Players          = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
-local RunService       = game:GetService("RunService")
-local TweenService     = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 
 -- ============================================
--- STATE VARIABLES
+-- STATE
 -- ============================================
 
-local autoFlagActive   = false
-local autoWalkActive   = false
-local espActive        = false
-local infiniteJump     = false
-local flying           = false
-local flySpeed         = 50
+local autoFlagActive      = false
+local autoWalkActive      = false
+local espActive           = false
+local infiniteJump        = false
+local flying              = false
+local flySpeed            = 50
 local flyGyro, flyVelocity
 local antiExplosionActive = false
 local antiExplosionConn   = nil
-local verticalInput    = 0
+local verticalInput       = 0
 
-local customWalkSpeed  = 16
-local customJumpPower  = 50
-local flagDistance     = 15
-local flagDelay        = 0.45
+local customWalkSpeed    = 16
+local customJumpPower    = 50
+local flagDistance       = 15
+local flagDelay          = 0.45
 local espRefreshInterval = 0.2
 
-local espSafeColor      = Color3.fromRGB(0, 0, 255)
-local espBombColor      = Color3.fromRGB(255, 0, 0)
-local espUncertainLow   = Color3.fromRGB(255, 215, 0)
-local espUncertainMed   = Color3.fromRGB(255, 165, 0)
-local espUncertainHigh  = Color3.fromRGB(220, 20, 60)
+local espSafeColor     = Color3.fromRGB(0, 0, 255)
+local espBombColor     = Color3.fromRGB(255, 0, 0)
+local espUncertainLow  = Color3.fromRGB(255, 215, 0)
+local espUncertainMed  = Color3.fromRGB(255, 165, 0)
+local espUncertainHigh = Color3.fromRGB(220, 20, 60)
 
 local grid = {}
 local W, H = 0, 0
@@ -213,34 +211,28 @@ local localFlags   = {}
 local deducedBombs = {}
 
 -- ============================================
--- KEY SYSTEM
--- ============================================
-
-local KEY_URL         = "https://raw.githubusercontent.com/Nattalz/rblx/refs/heads/main/keys/key1.txt"
-local STATIC_KEY      = "JawirOnTop"
-local dynamicKey      = STATIC_KEY
-
-local function fetchDynamicKey()
-	local ok, result = pcall(function() return game:HttpGet(KEY_URL, true) end)
-	if ok and result then
-		local cleaned = result:gsub("^%s*(.-)%s*$", "%1")
-		if #cleaned > 0 and cleaned ~= "404: Not Found" then
-			dynamicKey = cleaned
-			return cleaned
-		end
-	end
-	return STATIC_KEY
-end
-fetchDynamicKey()
-
--- ============================================
--- SECRET KEY SCANNER
+-- SECRET KEY SCANNER (no key system — scans game directly)
 -- ============================================
 
 local function getSecretKey()
 	local salasana = workspace:FindFirstChild("Salasana")
 	if salasana and salasana:IsA("ValueObject") and salasana.Value ~= 0 then
 		return tostring(salasana.Value)
+	end
+	local function scanUpvaluesForKey(func, depth, maxDepth)
+		depth = depth or 0; maxDepth = maxDepth or 3
+		if depth > maxDepth then return nil end
+		local ok, upvals = pcall(debug.getupvalues, func)
+		if not ok or not upvals then return nil end
+		for _, v in pairs(upvals) do
+			if type(v) == "string" and (tonumber(v) ~= nil or #v > 10) then return v
+			elseif type(v) == "number" then return tostring(v)
+			elseif type(v) == "function" then
+				local nested = scanUpvaluesForKey(v, depth+1, maxDepth)
+				if nested then return nested end
+			end
+		end
+		return nil
 	end
 	if getgc then
 		for _, v in pairs(getgc(true)) do
@@ -265,39 +257,6 @@ local function getSecretKey()
 				end
 			end
 		end
-		for _, v in pairs(getgc(true)) do
-			if type(v) == "function" then
-				local ok2, upvals = pcall(debug.getupvalues, v)
-				if ok2 and upvals then
-					local hasPlaceFlag, potentialKey = false, nil
-					for _, uv in pairs(upvals) do
-						if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
-							hasPlaceFlag = true
-						elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) ~= nil then
-							potentialKey = uv
-						elseif type(uv) == "number" and uv > 1000 then
-							potentialKey = tostring(uv)
-						end
-					end
-					if hasPlaceFlag and potentialKey then return potentialKey end
-				end
-			end
-		end
-	end
-	local function scanUpvaluesForKey(func, depth, maxDepth)
-		depth = depth or 0; maxDepth = maxDepth or 3
-		if depth > maxDepth then return nil end
-		local ok, upvals = pcall(debug.getupvalues, func)
-		if not ok or not upvals then return nil end
-		for _, v in pairs(upvals) do
-			if type(v) == "string" and (tonumber(v) ~= nil or #v > 10) then return v
-			elseif type(v) == "number" then return tostring(v)
-			elseif type(v) == "function" then
-				local nested = scanUpvaluesForKey(v, depth+1, maxDepth)
-				if nested then return nested end
-			end
-		end
-		return nil
 	end
 	local function getConnectionsForEvent(event)
 		local connections = {}
@@ -331,7 +290,7 @@ local function checkFlagged(part) return localFlags[part] == true or deducedBomb
 local function checkBlocked(part) return localFlags[part] == true or deducedBombs[part] == true or hasServerFlag(part) end
 
 -- ============================================
--- ESP SYSTEM
+-- ESP
 -- ============================================
 
 local espFolder = workspace:FindFirstChild("BotESPFolder")
@@ -555,7 +514,7 @@ local function getLocalGuessCandidates(pCol, pRow)
 end
 
 -- ============================================
--- SOLVER ENGINE
+-- SOLVER
 -- ============================================
 
 local function solveEquations(safeTiles, borderProbabilities)
@@ -893,7 +852,7 @@ player.CharacterAdded:Connect(function(char)
 end)
 
 -- ============================================
--- CHARACTER / FLY
+-- FLY
 -- ============================================
 
 local function startFlying()
@@ -960,12 +919,60 @@ if player.Character then task.spawn(onCharacterAdded, player.Character) end
 player.CharacterAdded:Connect(onCharacterAdded)
 
 -- ============================================
--- UI — libba (RBM5 style)
+-- DAY/NIGHT
+-- ============================================
+
+local Lighting        = game:GetService("Lighting")
+local dayNightActive  = false
+local dayNightConn    = nil
+local dayNightMode    = "Day"
+local lockedTime      = 14
+local lightingHooked  = false
+local originalNewindex = nil
+
+local function applyLock(time) pcall(function() Lighting.ClockTime = time end) end
+
+local function hookLightingNewindex()
+	if lightingHooked then return end
+	local ok = pcall(function()
+		originalNewindex = hookmetamethod(Lighting, "__newindex", function(self, key, value)
+			if dayNightActive and (key == "ClockTime" or key == "TimeOfDay") then
+				if math.abs((type(value)=="number" and value or 0) - lockedTime) > 0.1 then return end
+			end
+			return originalNewindex(self, key, value)
+		end)
+	end)
+	if ok then lightingHooked = true end
+end
+
+local function unhookLightingNewindex()
+	if not lightingHooked then return end
+	pcall(function() hookmetamethod(Lighting, "__newindex", originalNewindex) end)
+	lightingHooked = false; originalNewindex = nil
+end
+
+local function setDayNight(mode)
+	dayNightMode = mode
+	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
+	if mode == "Day" then lockedTime = 14
+	elseif mode == "Night" then lockedTime = 0 end
+	applyLock(lockedTime)
+	hookLightingNewindex()
+	dayNightConn = RunService.Heartbeat:Connect(function()
+		if not dayNightActive then return end
+		if math.abs(Lighting.ClockTime - lockedTime) > 0.05 then
+			rawset(Lighting, "ClockTime", lockedTime)
+		end
+	end)
+end
+
+-- ============================================
+-- UI
 -- ============================================
 
 local Window = MoonUI.new({ Name = "Minesweeper Bot" })
 
--- ==================== TAB: AUTO BOT ====================
+-- TAB: AUTO BOT
 local BotTab = Window:DrawTab({ Name = "Auto Bot", Icon = "bot", Type = "Double" })
 
 local S_AutoWalk = BotTab:DrawSection({ Name = "Auto Walk", Position = "left" })
@@ -992,7 +999,7 @@ local S_FlagSettings = BotTab:DrawSection({ Name = "Flag Settings", Position = "
 S_FlagSettings:AddSlider({ Name = "Flag Distance", Flag = "FlagDist", Min = 5, Max = 30, Default = 15, Suffix = " studs", Callback = function(v) flagDistance = v end })
 S_FlagSettings:AddSlider({ Name = "Flag Delay", Flag = "FlagDelay", Min = 0, Max = 200, Default = 45, Rounding = 0, Suffix = "x0.01s", Callback = function(v) flagDelay = v * 0.01 end })
 
--- ==================== TAB: ESP ====================
+-- TAB: ESP
 local EspTab = Window:DrawTab({ Name = "ESP", Icon = "eye", Type = "Double" })
 
 local S_ESP = EspTab:DrawSection({ Name = "ESP Settings", Position = "left" })
@@ -1013,7 +1020,7 @@ S_Colors:AddColorPicker({ Name = "Low Risk", Flag = "ESP_LowColor", Default = es
 S_Colors:AddColorPicker({ Name = "Med Risk", Flag = "ESP_MedColor", Default = espUncertainMed, Callback = function(c) espUncertainMed = c end })
 S_Colors:AddColorPicker({ Name = "High Risk", Flag = "ESP_HighColor", Default = espUncertainHigh, Callback = function(c) espUncertainHigh = c end })
 
--- ==================== TAB: CHARACTER ====================
+-- TAB: CHARACTER
 local CharTab = Window:DrawTab({ Name = "Character", Icon = "user", Type = "Double" })
 
 local S_Movement = CharTab:DrawSection({ Name = "Movement", Position = "left" })
@@ -1034,7 +1041,7 @@ local FlyToggle = S_Flight:AddToggle({
 	Name = "Fly Mode", Flag = "Fly_Enabled", Default = false,
 	Callback = function(v)
 		flying = v
-		if v then startFlying(); Library:Notify("Fly ON — Space/Shift for vertical", 3)
+		if v then startFlying(); Library:Notify("Fly ON", 3)
 		else stopFlying(); Library:Notify("Fly OFF", 3) end
 	end
 })
@@ -1048,135 +1055,40 @@ S_Safety:AddToggle({ Name = "Anti-Explosion", Flag = "AntiExp", Default = false,
 	else if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end; Library:Notify("Anti-Explosion OFF", 3) end
 end })
 
--- ============================================
--- DAY/NIGHT CONTROLLER
--- ============================================
-
-local Lighting = game:GetService("Lighting")
-local dayNightActive = false
-local dayNightConn   = nil
-local dayNightMode   = "Day"
-local lockedTime     = 14
-
--- Fix chớp tắt: game server override ClockTime qua __newindex hoặc Heartbeat.
--- Giải pháp: hook __newindex của Lighting để chặn mọi thứ cố ghi ClockTime khi đang lock.
--- Nếu executor không support hookmetamethod thì fallback về Heartbeat counter ở tốc độ cao hơn.
-
-local lightingHooked = false
-local originalNewindex = nil
-
-local function applyLock(time)
-	pcall(function() Lighting.ClockTime = time end)
-end
-
-local function hookLightingNewindex()
-	if lightingHooked then return end
-	local ok = pcall(function()
-		originalNewindex = hookmetamethod(Lighting, "__newindex", function(self, key, value)
-			if dayNightActive and (key == "ClockTime" or key == "TimeOfDay") then
-				-- Chặn ghi từ bên ngoài, chỉ cho phép giá trị khớp lockedTime
-				if math.abs((type(value)=="number" and value or 0) - lockedTime) > 0.1 then
-					return -- block
-				end
-			end
-			return originalNewindex(self, key, value)
-		end)
-	end)
-	if ok then
-		lightingHooked = true
-	end
-end
-
-local function unhookLightingNewindex()
-	if not lightingHooked then return end
-	pcall(function()
-		hookmetamethod(Lighting, "__newindex", originalNewindex)
-	end)
-	lightingHooked = false
-	originalNewindex = nil
-end
-
-local function setDayNight(mode)
-	dayNightMode = mode
-	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
-
-	if mode == "Day" then
-		lockedTime = 14
-		applyLock(lockedTime)
-		hookLightingNewindex()
-		-- Heartbeat backup: nếu hook miss thì counter ngay lập tức
-		dayNightConn = RunService.Heartbeat:Connect(function()
-			if not dayNightActive then return end
-			if math.abs(Lighting.ClockTime - lockedTime) > 0.05 then
-				rawset(Lighting, "ClockTime", lockedTime)
-			end
-		end)
-	elseif mode == "Night" then
-		lockedTime = 0
-		applyLock(lockedTime)
-		hookLightingNewindex()
-		dayNightConn = RunService.Heartbeat:Connect(function()
-			if not dayNightActive then return end
-			if math.abs(Lighting.ClockTime - lockedTime) > 0.05 then
-				rawset(Lighting, "ClockTime", lockedTime)
-			end
-		end)
-	end
-end
-
--- ==================== TAB: MISC ====================
+-- TAB: MISC
 local MiscTab = Window:DrawTab({ Name = "Misc", Icon = "droplets", Type = "Double" })
 
--- Day/Night Section — chỉ toggle + dropdown, không có slider
 local S_DayNight = MiscTab:DrawSection({ Name = "Day / Night", Position = "left" })
-
 S_DayNight:AddToggle({ Name = "Bật Điều Chỉnh Thời Gian", Flag = "DayNight_Active", Default = false,
 	Callback = function(v)
 		dayNightActive = v
-		if v then
-			setDayNight(dayNightMode)
-			Library:Notify("Time Control ON — " .. dayNightMode, 3)
+		if v then setDayNight(dayNightMode); Library:Notify("Time Control ON — " .. dayNightMode, 3)
 		else
 			if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
-			unhookLightingNewindex()
-			Library:Notify("Time Control OFF", 3)
+			unhookLightingNewindex(); Library:Notify("Time Control OFF", 3)
 		end
 	end
 })
-
-S_DayNight:AddDropdown({ Name = "Chế Độ", Flag = "DayNight_Mode",
-	Values = { "Day", "Night" }, Default = "Day",
+S_DayNight:AddDropdown({ Name = "Chế Độ", Flag = "DayNight_Mode", Values = { "Day", "Night" }, Default = "Day",
 	Callback = function(v)
 		dayNightMode = v
-		if dayNightActive then
-			setDayNight(v)
-			Library:Notify("Chế độ: " .. v, 3)
-		end
+		if dayNightActive then setDayNight(v); Library:Notify("Chế độ: " .. v, 3) end
 	end
 })
 
--- Utilities Section
 local S_Util = MiscTab:DrawSection({ Name = "Utilities", Position = "right" })
-S_Util:AddButton({ Name = "Re-init Grid", Callback = function()
-	initGrid(); Library:Notify("Grid re-initialized.", 3)
-end })
-S_Util:AddButton({ Name = "Clear ESP", Callback = function()
-	clearESP(); Library:Notify("ESP cleared.", 3)
-end })
+S_Util:AddButton({ Name = "Re-init Grid", Callback = function() initGrid(); Library:Notify("Grid re-initialized.", 3) end })
+S_Util:AddButton({ Name = "Clear ESP", Callback = function() clearESP(); Library:Notify("ESP cleared.", 3) end })
 S_Util:AddButton({ Name = "Reset All", Callback = function()
 	autoWalkActive = false; autoFlagActive = false; espActive = false
-	flying = false; infiniteJump = false; antiExplosionActive = false
-	dayNightActive = false
+	flying = false; infiniteJump = false; antiExplosionActive = false; dayNightActive = false
 	if antiExplosionConn then antiExplosionConn:Disconnect(); antiExplosionConn = nil end
 	if dayNightConn then dayNightConn:Disconnect(); dayNightConn = nil end
-	unhookLightingNewindex()
-	stopFlying(); clearESP()
+	unhookLightingNewindex(); stopFlying(); clearESP()
 	local char = player.Character; local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then hum.WalkSpeed = 16; hum.JumpPower = 50; hum.UseJumpPower = false; hum.PlatformStand = false end
 	Library:Notify("All features reset.", 3)
 end })
 
--- ==================== SETTINGS ====================
 Window:DrawConfig({})
-
-print("[MineBot] libba UI loaded.")
+print("[MineBot] Loaded — no key system.")

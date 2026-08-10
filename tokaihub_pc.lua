@@ -2720,3 +2720,218 @@ S_AntiFall:AddToggle({
 })
 
 print("[AntiFall] Loaded")
+
+
+
+-- AURA KILL — Verified từ Flux_client.lua source
+-- Cipher đúng 100%: netEncode verified = RSpy dump match
+-- net:FireServer() = RemoteEvent:FireServer(netEncode(JSONEncode({_code,...}), _key))
+-- ==========================================
+local AuraKill = {
+	Enabled = false,
+	Range = 20,
+	Interval = 0.5,
+	TargetPart = "Head",
+	_net = nil,
+	_remote = nil,
+	_lastFire = 0,
+	_connection = nil,
+	_running = false,
+}
+
+-- Tìm network object: table có _code (UUID) + _key (array 5 nums) + _events
+local function AK_FindNet()
+	if AuraKill._net then return AuraKill._net end
+
+	-- Method 1: shared.import("network") — đúng theo source
+	local ok, net = pcall(function() return shared.import("network") end)
+	if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+		AuraKill._net = net
+		print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
+		return net
+	end
+
+	-- Method 2: GC scan
+	local gok, gc = pcall(function() return filtergc("table") end)
+	if not gok then gok, gc = pcall(function() return getgc(true) end) end
+	if gok and gc then
+		for _, v in pairs(gc) do
+			if type(v) ~= "table" then continue end
+			local k  = rawget(v, "_key")
+			local co = rawget(v, "_code")
+			local ev = rawget(v, "_events")
+			if type(k)=="table" and #k>=5
+				and type(co)=="string" and co:match("^%x+%-%x+%-%x+%-%x+%-%x+$")
+				and type(ev)=="table"
+			then
+				local allNums = true
+				for _, n in ipairs(k) do if type(n)~="number" then allNums=false; break end end
+				if allNums then
+					AuraKill._net = v
+					print("[AuraKill] Net via GC, code:", co:sub(1,8), "key[1]:", k[1])
+					return v
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function AK_GetRemote()
+	if AuraKill._remote and AuraKill._remote.Parent then return AuraKill._remote end
+	-- Source: v_u_11 = RemoteEvent (reliable channel)
+	-- Path: ReplicatedStorage.Events.RemoteEvent
+	local ev = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+	if ev then
+		local re = ev:FindFirstChild("RemoteEvent")
+		if re then AuraKill._remote=re; return re end
+	end
+	for _, v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+		if v:IsA("RemoteEvent") then AuraKill._remote=v; return v end
+	end
+	return nil
+end
+
+-- netEncode đúng theo Flux_client.lua line 31-50
+local function AK_NetEncode(jsonStr, key)
+	local result = ""
+	for i = 1, #jsonStr do
+		local ki = i % 4  -- 0,1,2,3,0,1,2,3...
+		local kval = key[ki + 1]  -- Lua 1-indexed: key[1..4]
+		local nb = (string.byte(jsonStr, i) - 32 + kval) % 95 + 32
+		result = result .. string.char(nb)
+	end
+	-- Padding: đúng theo source lines 43-50
+	-- v25 = string.byte(p16) = first byte of jsonStr
+	-- v27 = v25 - string.byte(tostring(v24))
+	local firstByte = string.byte(jsonStr, 1)
+	for v24 = 1, key[5] do
+		local v26 = tostring(v24)
+		local v27 = firstByte - string.byte(v26, 1)
+		result = result .. string.char(v27)
+	end
+	return result
+end
+
+local function AK_Encrypt(data, net)
+	local hs = game:GetService("HttpService")
+	local ok, raw = pcall(function()
+		return hs:JSONEncode(data)
+	end)
+	if not ok or not raw then return nil end
+	return AK_NetEncode(raw, net._key)
+end
+
+-- Actor UID: UUID string
+local function AK_GetUID(actor)
+	for _, field in ipairs({"UID","_id","Id","UUID"}) do
+		local v = rawget(actor, field)
+		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+	end
+	for k, v in pairs(actor) do
+		if type(v)=="string" and v:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then return v end
+	end
+	return nil
+end
+
+local function AK_Fire(actor)
+	local net = AK_FindNet()
+	if not net then return false end
+	local remote = AK_GetRemote()
+	if not remote then return false end
+	local char = actor.Character
+	if not char then return false end
+	local part = char:FindFirstChild(AuraKill.TargetPart)
+		or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+	if not part then return false end
+	local pos = part.Position
+	local uid = AK_GetUID(actor)
+	if not uid then return false end
+
+	local n = math.random(1, 3)
+
+	-- Slash: {_code, "InventoryAction", "Slash", n} → encrypt → RemoteEvent:FireServer
+	local encSlash = AK_Encrypt({net._code, "InventoryAction", "Slash", n}, net)
+	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
+
+	-- Impact sau delay
+	task.delay(0.15, function()
+		-- {_code, "InventoryAction", "Impact", {x,y,z}, uid, partName}
+		local encImpact = AK_Encrypt(
+			{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+			net
+		)
+		if encImpact then pcall(function() remote:FireServer(encImpact) end) end
+	end)
+
+	return true
+end
+
+local function AK_Tick()
+	if not AuraKill.Enabled then return end
+	local now = tick()
+	if now - AuraKill._lastFire < AuraKill.Interval then return end
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local myPos = myActor.Position or Camera.CFrame.Position
+	local best, bestDist = nil, AuraKill.Range
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if not actor or not actor.Alive or not actor.Character then continue end
+			local aPos = actor.Position
+			if not aPos and actor.Character.PrimaryPart then aPos=actor.Character.PrimaryPart.Position end
+			if not aPos then continue end
+			local d = (aPos-myPos).Magnitude
+			if d < bestDist then bestDist=d; best=actor end
+		end
+	end
+	if not best then return end
+	AuraKill._lastFire = now
+	task.spawn(function()
+		if not AK_Fire(best) then AuraKill._net=nil end
+	end)
+end
+
+function AuraKill.Start()
+	if AuraKill._running then return end
+	AuraKill._running = true
+	task.spawn(AK_FindNet); task.spawn(AK_GetRemote)
+	AuraKill._connection = RunService.Heartbeat:Connect(AK_Tick)
+	table.insert(getgenv().Moon_Connections, AuraKill._connection)
+	print("[AuraKill] Started")
+end
+
+function AuraKill.Stop()
+	AuraKill._running = false
+	if AuraKill._connection then
+		pcall(function() AuraKill._connection:Disconnect() end)
+		AuraKill._connection = nil
+	end
+end
+
+getgenv().AuraKill = AuraKill
+
+local S_AK = CombatTab:DrawSection({Name="Aura Kill", Position="left"})
+S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
+	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
+S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
+	Callback=function(v) AuraKill.Range=v end})
+S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=100, Max=2000, Default=500, Rounding=0,
+	Callback=function(v) AuraKill.Interval=v/1000 end})
+S_AK:AddDropdown({Name="Target Part", Flag="AK_TargetPart", Default="Head",
+	Values={"Head","UpperTorso","LowerTorso"},
+	Callback=function(v) AuraKill.TargetPart=v end})
+S_AK:AddButton({Name="Rescan Network",
+	Callback=function()
+		AuraKill._net=nil; AuraKill._remote=nil
+		task.spawn(function()
+			local net=AK_FindNet(); local re=AK_GetRemote()
+			Notifier.new({Title="AuraKill",
+				Content=net and re
+					and "OK! code:"..net._code:sub(1,8).." key["..tostring(net._key[1]).."]"
+					or "Fail",
+				Duration=5})
+		end)
+	end})
+
+print("[AuraKill] Loaded — Cipher verified vs RSpy dump")

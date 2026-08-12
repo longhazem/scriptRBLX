@@ -2730,7 +2730,7 @@ print("[AntiFall] Loaded")
 local AuraKill = {
 	Enabled = false,
 	Range = 20,
-	Interval = 0.5,
+	Interval = 0,
 	TargetPart = "Head",
 	_net = nil,
 	_remote = nil,
@@ -2744,11 +2744,13 @@ local function AK_FindNet()
 	if AuraKill._net then return AuraKill._net end
 
 	-- Method 1: shared.import("network") — đúng theo source
-	local ok, net = pcall(function() return shared.import("network") end)
-	if ok and net and rawget(net, "_key") and rawget(net, "_code") then
-		AuraKill._net = net
-		print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
-		return net
+	if shared and type(shared.import) == "function" then
+		local ok, net = pcall(function() return shared.import("network") end)
+		if ok and net and rawget(net, "_key") and rawget(net, "_code") then
+			AuraKill._net = net
+			print("[AuraKill] Net via shared.import, code:", net._code:sub(1,8))
+			return net
+		end
 	end
 
 	-- Method 2: GC scan
@@ -2855,14 +2857,12 @@ local function AK_Fire(actor)
 	if encSlash then pcall(function() remote:FireServer(encSlash) end) end
 
 	-- Impact sau delay
-	task.delay(0.15, function()
-		-- {_code, "InventoryAction", "Impact", {x,y,z}, uid, partName}
-		local encImpact = AK_Encrypt(
-			{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
-			net
-		)
-		if encImpact then pcall(function() remote:FireServer(encImpact) end) end
-	end)
+	-- Impact ngay lập tức — không delay
+	local encImpact = AK_Encrypt(
+		{net._code, "InventoryAction", "Impact", {pos.X, pos.Y, pos.Z}, uid, part.Name},
+		net
+	)
+	if encImpact then pcall(function() remote:FireServer(encImpact) end) end
 
 	return true
 end
@@ -2916,7 +2916,7 @@ S_AK:AddToggle({Name="Enable Aura Kill", Flag="AK_Enabled", Default=false,
 	Callback=function(v) AuraKill.Enabled=v; if v then AuraKill.Start() else AuraKill.Stop() end end})
 S_AK:AddSlider({Name="Range (studs)", Flag="AK_Range", Min=1, Max=10, Default=5, Rounding=0,
 	Callback=function(v) AuraKill.Range=v end})
-S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=100, Max=2000, Default=500, Rounding=0,
+S_AK:AddSlider({Name="Attack Rate (ms)", Flag="AK_Interval", Min=0, Max=2000, Default=0, Rounding=0,
 	Callback=function(v) AuraKill.Interval=v/1000 end})
 S_AK:AddDropdown({Name="Target Part", Flag="AK_TargetPart", Default="Head",
 	Values={"Head","UpperTorso","LowerTorso"},
@@ -2935,3 +2935,170 @@ S_AK:AddButton({Name="Rescan Network",
 	end})
 
 print("[AuraKill] Loaded — Cipher verified vs RSpy dump")
+
+
+
+pcall(function()
+-- AUTO FARM
+local AutoFarm = {Enabled=false, OffsetY=-2, _connection=nil, _running=false}
+
+local function AF_GetTarget()
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return nil end
+	local myPos = myActor.Position or Camera.CFrame.Position
+	local best, bestDist = nil, math.huge
+	if ActorManager.Initialized then
+		for _, actor in ipairs(ActorManager.Enemies) do
+			if actor and actor.Alive and actor.Character then
+				local pos = actor.Position
+				if not pos and actor.Character.PrimaryPart then
+					pos = actor.Character.PrimaryPart.Position
+				end
+				if pos then
+					local d = (pos - myPos).Magnitude
+					if d < bestDist then bestDist = d; best = actor end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function AF_TeleportTo(actor)
+	local myActor = ReplicatorService and ReplicatorService.LocalActor
+	if not myActor then return end
+	local pos = actor.Position
+	if not pos and actor.Character and actor.Character.PrimaryPart then
+		pos = actor.Character.PrimaryPart.Position
+	end
+	if not pos then return end
+	local targetPos = Vector3.new(pos.X, pos.Y + AutoFarm.OffsetY, pos.Z)
+	pcall(function()
+		if ControllerService and ControllerService.Controller then
+			local ctrl = ControllerService.Controller
+			ctrl._position = targetPos
+			ctrl._lastSafePosition = targetPos
+		end
+		myActor.SimulatedPosition = targetPos
+		myActor.CFrame = CFrame.new(targetPos)
+	end)
+end
+
+local function AF_Tick()
+	if not AutoFarm.Enabled then return end
+	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=2})
+		AutoFarm.Enabled = false
+		return
+	end
+	local target = AF_GetTarget()
+	if target then AF_TeleportTo(target) end
+end
+
+function AutoFarm.Start()
+	if AutoFarm._running then return end
+	if not (getgenv().AuraKill and getgenv().AuraKill.Enabled) then
+		Notifier.new({Title="Auto Farm", Content="Bật Aura Kill trước!", Duration=3})
+		return
+	end
+	AutoFarm._running = true
+	AutoFarm._connection = RunService.Heartbeat:Connect(AF_Tick)
+	table.insert(getgenv().Moon_Connections, AutoFarm._connection)
+end
+
+function AutoFarm.Stop()
+	AutoFarm._running = false
+	if AutoFarm._connection then
+		pcall(function() AutoFarm._connection:Disconnect() end)
+		AutoFarm._connection = nil
+	end
+end
+
+getgenv().AutoFarm = AutoFarm
+
+local S_AF = MiscTab:DrawSection({Name="Auto Farm", Position="left"})
+S_AF:AddToggle({Name="Enable Auto Farm", Flag="AF_Enabled", Default=false,
+	Callback=function(v) AutoFarm.Enabled=v; if v then AutoFarm.Start() else AutoFarm.Stop() end end})
+S_AF:AddSlider({Name="Y Offset", Flag="AF_OffsetY", Min=-10, Max=0, Default=-2, Rounding=0,
+	Callback=function(v) AutoFarm.OffsetY=v end})
+print("[AutoFarm] Loaded")
+end)
+
+
+
+
+
+-- AUTO LOCKPICK v4
+-- InputService._mounts["PickLock"] là callback thật
+-- Tìm InputService instance → gọi _mounts["PickLock"](true) mỗi frame
+pcall(function()
+
+local AutoLockpick = {Enabled=false, _connection=nil}
+
+local function ALP_FindInputService()
+    -- InputService: table có _mounts, Binds, Connected, Overrides
+    local ok, gc = pcall(function() return filtergc("table") end)
+    if not ok then ok, gc = pcall(function() return getgc(true) end) end
+    if not ok or not gc then return nil end
+    for _, v in pairs(gc) do
+        if type(v) == "table"
+            and rawget(v, "_mounts") ~= nil
+            and rawget(v, "Binds") ~= nil
+            and rawget(v, "Connected") ~= nil
+            and rawget(v, "Overrides") ~= nil
+        then
+            return v
+        end
+    end
+    return nil
+end
+
+local _inputSvc = nil
+local _lastScan = 0
+
+local function ALP_Tick()
+    if not AutoLockpick.Enabled then return end
+
+    -- Rescan InputService mỗi 1s
+    local now = tick()
+    if not _inputSvc or (now - _lastScan > 1) then
+        _lastScan = now
+        _inputSvc = ALP_FindInputService()
+    end
+    if not _inputSvc then return end
+
+    local mounts = rawget(_inputSvc, "_mounts")
+    if not mounts then return end
+
+    -- Gọi PickLock callback nếu đang active
+    local pickFn = rawget(mounts, "PickLock")
+    if pickFn and type(pickFn) == "function" then
+        pcall(pickFn, true)
+    end
+end
+
+function AutoLockpick.Start()
+    if AutoLockpick._connection then return end
+    AutoLockpick._connection = RunService.Heartbeat:Connect(ALP_Tick)
+    table.insert(getgenv().Moon_Connections, AutoLockpick._connection)
+    print("[AutoLockpick] Started")
+end
+
+function AutoLockpick.Stop()
+    if AutoLockpick._connection then
+        pcall(function() AutoLockpick._connection:Disconnect() end)
+        AutoLockpick._connection = nil
+    end
+    _inputSvc = nil
+end
+
+getgenv().AutoLockpick = AutoLockpick
+
+local S_ALP = MiscTab:DrawSection({Name="Auto Lockpick", Position="right"})
+S_ALP:AddToggle({Name="Enable Auto Lockpick", Flag="ALP_Enabled", Default=false,
+    Callback=function(v)
+        AutoLockpick.Enabled = v
+        if v then AutoLockpick.Start() else AutoLockpick.Stop() end
+    end})
+print("[AutoLockpick] Loaded")
+end)

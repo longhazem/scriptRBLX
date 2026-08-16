@@ -2731,6 +2731,7 @@ local AuraKill = {
 	Enabled = false,
 	Range = 20,
 	Interval = 0,
+	BatchSize = 10,
 	TargetPart = "Head",
 	_net = nil,
 	_remote = nil,
@@ -2867,6 +2868,8 @@ local function AK_Fire(actor)
 	return true
 end
 
+-- Fire up to ten nearest targets per heartbeat.
+-- Each target still receives exactly two packets: Slash + Impact.
 local function AK_Tick()
 	if not AuraKill.Enabled then return end
 	local now = tick()
@@ -2874,22 +2877,39 @@ local function AK_Tick()
 	local myActor = ReplicatorService and ReplicatorService.LocalActor
 	if not myActor then return end
 	local myPos = myActor.Position or Camera.CFrame.Position
-	local best, bestDist = nil, AuraKill.Range
+	local candidates = {}
+
 	if ActorManager.Initialized then
 		for _, actor in ipairs(ActorManager.Enemies) do
 			if not actor or not actor.Alive or not actor.Character then continue end
 			local aPos = actor.Position
-			if not aPos and actor.Character.PrimaryPart then aPos=actor.Character.PrimaryPart.Position end
+			if not aPos and actor.Character.PrimaryPart then
+				aPos = actor.Character.PrimaryPart.Position
+			end
 			if not aPos then continue end
-			local d = (aPos-myPos).Magnitude
-			if d < bestDist then bestDist=d; best=actor end
+
+			local d = (aPos - myPos).Magnitude
+			if d <= AuraKill.Range then
+				candidates[#candidates + 1] = {Actor = actor, Distance = d}
+			end
 		end
 	end
-	if not best then return end
-	AuraKill._lastFire = now
-	task.spawn(function()
-		if not AK_Fire(best) then AuraKill._net=nil end
+
+	if #candidates == 0 then return end
+
+	table.sort(candidates, function(a, b)
+		return a.Distance < b.Distance
 	end)
+
+	AuraKill._lastFire = now
+
+	local count = math.min(AuraKill.BatchSize, #candidates)
+	for i = 1, count do
+		local target = candidates[i].Actor
+		task.spawn(function()
+			if not AK_Fire(target) then AuraKill._net = nil end
+		end)
+	end
 end
 
 function AuraKill.Start()

@@ -1,0 +1,2007 @@
+--[[
+    ⚡ SUPER DUMPER v5.0 (3-PHASE SYSTEM)
+
+    PHASES:
+    1. SCANNING     - Collects all unique scripts from all 6 sources.
+    2. DECOMPILING  - Decompiles collected scripts, applies filters.
+    3. WRITING 1:1  - Saves with exact game tree structure (GetFullName).
+]]
+
+local UIParent
+if gethui then
+	UIParent = gethui()
+else
+	for _, child in ipairs(game:GetChildren()) do
+		local ok, cn = pcall(function()
+			return child.ClassName
+		end)
+		if ok and cn == "CoreGui" then
+			UIParent = child
+			break
+		end
+	end
+end
+if not UIParent then
+	pcall(function()
+		UIParent = game:GetService("CoreGui")
+	end)
+end
+
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local OUT_DIR = "MTC"
+
+-- =================================================================
+-- CONFIG STATE & DEFAULT SETTINGS
+-- =================================================================
+local Config = {
+	Decompile = true,
+	UseMedalDecompiler = false,
+	FallbackBytecode = false,
+	RecreateHierarchy = true,
+	ThreadingSpeed = "Medium",
+	CleanHeaders = true,
+	MaxFileSize = 1024 * 1024 * 3,
+	ScanThreats = true,
+	KeywordFilterActive = false,
+	KeywordFilterText = "",
+	NameFilterActive = false,
+	NameFilterText = "",
+	TargetedDumpActive = false,
+	TargetedDumpPath = "",
+	NetworkSpyActive = false,
+	Services = {
+		Workspace = true,
+		ReplicatedStorage = true,
+		ReplicatedFirst = true,
+		StarterGui = true,
+		StarterPack = true,
+		StarterPlayer = true,
+		Chat = false,
+		SoundService = false,
+		Lighting = false,
+		Players = true,
+		Teams = true,
+		MaterialService = false,
+	},
+}
+
+local ThreadSpeeds = {
+	Fast   = { YieldInterval = 30, YieldTime = 0.001 },
+	Medium = { YieldInterval = 10, YieldTime = 0.005 },
+	Safe   = { YieldInterval = 3,  YieldTime = 0.02  },
+}
+
+-- =================================================================
+-- UI BUILDER (PREMIUM DARK NEON DESIGN)
+-- =================================================================
+if _G.SuperDumperGUI then
+	pcall(function() _G.SuperDumperGUI:Destroy() end)
+	_G.SuperDumperGUI = nil
+end
+
+local SG = Instance.new("ScreenGui")
+SG.Name = "RobloxSystemGui_" .. tostring(math.random(100000, 999999))
+SG.ResetOnSpawn = false
+SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function() SG.Parent = UIParent end)
+_G.SuperDumperGUI = SG
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "Main"
+MainFrame.Size = UDim2.new(0, 520, 0, 450)
+MainFrame.Position = UDim2.new(0.5, -260, 0.5, -225)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = SG
+MainFrame.Active = true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
+
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Color3.fromRGB(150, 80, 255)
+UIStroke.Thickness = 1.5
+UIStroke.Transparency = 0.4
+UIStroke.Parent = MainFrame
+
+-- Title Bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 48)
+TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 12)
+
+local TitleCover = Instance.new("Frame")
+TitleCover.Size = UDim2.new(1, 0, 0, 10)
+TitleCover.Position = UDim2.new(0, 0, 1, -10)
+TitleCover.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+TitleCover.BorderSizePixel = 0
+TitleCover.Parent = TitleBar
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size = UDim2.new(1, -50, 1, 0)
+TitleText.Position = UDim2.new(0, 16, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text = "⚡ SUPER DUMPER PRO v5"
+TitleText.TextColor3 = Color3.fromRGB(180, 100, 255)
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextSize = 16
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = TitleBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 32, 0, 32)
+CloseBtn.Position = UDim2.new(1, -40, 0, 8)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(30, 25, 35)
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(235, 90, 90)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 14
+CloseBtn.Parent = TitleBar
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+
+-- Dragging
+local dragInput, dragStart, startPos
+local function update(input)
+	local delta = input.Position - dragStart
+	local targetPos = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	TweenService:Create(MainFrame, TweenInfo.new(0.08, Enum.EasingStyle.Quad), { Position = targetPos }):Play()
+end
+TitleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragStart = input.Position
+		startPos = MainFrame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragStart = nil end
+		end)
+	end
+end)
+TitleBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+game:GetService("UserInputService").InputChanged:Connect(function(input)
+	if input == dragInput and dragStart then update(input) end
+end)
+
+local TitleGradient = Instance.new("UIGradient")
+TitleGradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0,   Color3.fromRGB(20, 20, 28)),
+	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(28, 20, 45)),
+	ColorSequenceKeypoint.new(1,   Color3.fromRGB(20, 20, 28)),
+})
+TitleGradient.Parent = TitleBar
+
+CloseBtn.MouseEnter:Connect(function()
+	TweenService:Create(CloseBtn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+		BackgroundColor3 = Color3.fromRGB(60, 20, 30),
+		TextColor3 = Color3.fromRGB(255, 100, 100)
+	}):Play()
+end)
+CloseBtn.MouseLeave:Connect(function()
+	TweenService:Create(CloseBtn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+		BackgroundColor3 = Color3.fromRGB(30, 25, 35),
+		TextColor3 = Color3.fromRGB(235, 90, 90)
+	}):Play()
+end)
+
+-- Sidebar
+local Sidebar = Instance.new("Frame")
+Sidebar.Size = UDim2.new(0, 130, 1, -48)
+Sidebar.Position = UDim2.new(0, 0, 0, 48)
+Sidebar.BackgroundColor3 = Color3.fromRGB(16, 16, 24)
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = MainFrame
+
+local SidebarList = Instance.new("UIListLayout")
+SidebarList.Padding = UDim.new(0, 6)
+SidebarList.Parent = Sidebar
+
+local SidebarPad = Instance.new("UIPadding")
+SidebarPad.PaddingTop = UDim.new(0, 12)
+SidebarPad.PaddingLeft = UDim.new(0, 8)
+SidebarPad.PaddingRight = UDim.new(0, 8)
+SidebarPad.Parent = Sidebar
+
+-- Pages Container
+local Pages = Instance.new("Frame")
+Pages.Size = UDim2.new(1, -130, 1, -48)
+Pages.Position = UDim2.new(0, 130, 0, 48)
+Pages.BackgroundTransparency = 1
+Pages.Parent = MainFrame
+
+-- Tab Frames
+local DashboardTab = Instance.new("Frame")
+DashboardTab.Size = UDim2.new(1, 0, 1, 0)
+DashboardTab.BackgroundTransparency = 1
+DashboardTab.Parent = Pages
+
+local SettingsTab = Instance.new("ScrollingFrame")
+SettingsTab.Size = UDim2.new(1, 0, 1, 0)
+SettingsTab.BackgroundTransparency = 1
+SettingsTab.BorderSizePixel = 0
+SettingsTab.ScrollBarThickness = 4
+SettingsTab.CanvasSize = UDim2.new(0, 0, 0, 0)
+SettingsTab.AutomaticCanvasSize = Enum.AutomaticSize.Y
+SettingsTab.Visible = false
+SettingsTab.Parent = Pages
+
+local LogsTab = Instance.new("Frame")
+LogsTab.Size = UDim2.new(1, 0, 1, 0)
+LogsTab.BackgroundTransparency = 1
+LogsTab.Visible = false
+LogsTab.Parent = Pages
+
+local FiltersTab = Instance.new("Frame")
+FiltersTab.Size = UDim2.new(1, 0, 1, 0)
+FiltersTab.BackgroundTransparency = 1
+FiltersTab.Visible = false
+FiltersTab.Parent = Pages
+
+-- Tab switching
+local activeTab = "Dashboard"
+local tabButtons = {}
+
+local function switchTab(tabName)
+	activeTab = tabName
+	DashboardTab.Visible = (tabName == "Dashboard")
+	SettingsTab.Visible  = (tabName == "Settings")
+	FiltersTab.Visible   = (tabName == "Filters")
+	LogsTab.Visible      = (tabName == "Logs")
+	for name, btn in pairs(tabButtons) do
+		if name == tabName then
+			TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				BackgroundColor3 = Color3.fromRGB(40, 30, 60),
+				TextColor3 = Color3.fromRGB(200, 120, 255)
+			}):Play()
+			btn.UIStroke.Enabled = true
+		else
+			TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				BackgroundColor3 = Color3.fromRGB(22, 22, 30),
+				TextColor3 = Color3.fromRGB(160, 160, 180)
+			}):Play()
+			btn.UIStroke.Enabled = false
+		end
+	end
+end
+
+local function createTabButton(name, text)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, 0, 0, 36)
+	btn.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+	btn.Text = text
+	btn.TextColor3 = Color3.fromRGB(160, 160, 180)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 12
+	btn.Parent = Sidebar
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "UIStroke"
+	stroke.Color = Color3.fromRGB(150, 80, 255)
+	stroke.Thickness = 1
+	stroke.Enabled = false
+	stroke.Parent = btn
+	btn.MouseEnter:Connect(function()
+		if activeTab ~= name then
+			TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				BackgroundColor3 = Color3.fromRGB(28, 28, 38),
+				TextColor3 = Color3.fromRGB(180, 180, 200)
+			}):Play()
+		end
+	end)
+	btn.MouseLeave:Connect(function()
+		if activeTab ~= name then
+			TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				BackgroundColor3 = Color3.fromRGB(22, 22, 30),
+				TextColor3 = Color3.fromRGB(160, 160, 180)
+			}):Play()
+		end
+	end)
+	btn.MouseButton1Click:Connect(function() switchTab(name) end)
+	tabButtons[name] = btn
+end
+
+createTabButton("Dashboard", "📊 Stats")
+createTabButton("Settings",  "⚙️ Settings")
+createTabButton("Filters",   "🔍 Filters & Scanner")
+createTabButton("Logs",      "📜 Console")
+switchTab("Dashboard")
+
+-- =================================================================
+-- DASHBOARD TAB COMPONENTS
+-- =================================================================
+local DashPad = Instance.new("UIPadding")
+DashPad.PaddingTop = UDim.new(0, 16)
+DashPad.PaddingLeft = UDim.new(0, 16)
+DashPad.PaddingRight = UDim.new(0, 16)
+DashPad.Parent = DashboardTab
+
+local ProgressText = Instance.new("TextLabel")
+ProgressText.Size = UDim2.new(1, 0, 0, 24)
+ProgressText.BackgroundTransparency = 1
+ProgressText.Text = "Ready for 3-phase dump"
+ProgressText.TextColor3 = Color3.fromRGB(220, 220, 255)
+ProgressText.Font = Enum.Font.GothamMedium
+ProgressText.TextSize = 14
+ProgressText.TextXAlignment = Enum.TextXAlignment.Left
+ProgressText.Parent = DashboardTab
+
+local StatsFrame = Instance.new("Frame")
+StatsFrame.Size = UDim2.new(1, 0, 0, 150)
+StatsFrame.Position = UDim2.new(0, 0, 0, 36)
+StatsFrame.BackgroundTransparency = 1
+StatsFrame.Parent = DashboardTab
+
+local StatsGrid = Instance.new("UIGridLayout")
+StatsGrid.CellSize = UDim2.new(0.48, 0, 0, 65)
+StatsGrid.CellPadding = UDim2.new(0.04, 0, 0, 10)
+StatsGrid.Parent = StatsFrame
+
+local function createStatCard(title, initVal, color)
+	local card = Instance.new("Frame")
+	card.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+	Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Thickness = 1
+	stroke.Transparency = 0.7
+	stroke.Parent = card
+	local t = Instance.new("TextLabel")
+	t.Size = UDim2.new(1, 0, 0, 24)
+	t.Position = UDim2.new(0, 0, 0, 5)
+	t.BackgroundTransparency = 1
+	t.Text = title
+	t.TextColor3 = Color3.fromRGB(150, 150, 170)
+	t.Font = Enum.Font.Gotham
+	t.TextSize = 10
+	t.Parent = card
+	local val = Instance.new("TextLabel")
+	val.Size = UDim2.new(1, 0, 0, 30)
+	val.Position = UDim2.new(0, 0, 0, 26)
+	val.BackgroundTransparency = 1
+	val.Text = tostring(initVal)
+	val.TextColor3 = color
+	val.Font = Enum.Font.GothamBold
+	val.TextSize = 20
+	val.Parent = card
+	card.MouseEnter:Connect(function()
+		TweenService:Create(stroke, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { Thickness = 1.5, Transparency = 0.2 }):Play()
+	end)
+	card.MouseLeave:Connect(function()
+		TweenService:Create(stroke, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { Thickness = 1, Transparency = 0.7 }):Play()
+	end)
+	card.Parent = StatsFrame
+	return val
+end
+
+local LuaCountText    = createStatCard("Decompiled (.lua)",   0,     Color3.fromRGB(80, 255, 140))
+local LuacCountText   = createStatCard("Bytecode (.luac)",         0,     Color3.fromRGB(180, 140, 255))
+local SkipCountText   = createStatCard("Skipped",    0,     Color3.fromRGB(240, 180, 80))
+local TimeElapsedText = createStatCard("Time",            "0.0s",Color3.fromRGB(80, 200, 255))
+
+-- =================================================================
+-- PHASE PROGRESS INDICATORS (3-ETAPY)
+-- =================================================================
+local PhaseSectionLabel = Instance.new("TextLabel")
+PhaseSectionLabel.Size = UDim2.new(1, 0, 0, 14)
+PhaseSectionLabel.Position = UDim2.new(0, 0, 0, 193)
+PhaseSectionLabel.BackgroundTransparency = 1
+PhaseSectionLabel.Text = "Progress"
+PhaseSectionLabel.TextColor3 = Color3.fromRGB(80, 80, 110)
+PhaseSectionLabel.Font = Enum.Font.GothamBold
+PhaseSectionLabel.TextSize = 9
+PhaseSectionLabel.TextXAlignment = Enum.TextXAlignment.Left
+PhaseSectionLabel.Parent = DashboardTab
+
+local PhaseContainer = Instance.new("Frame")
+PhaseContainer.Size = UDim2.new(1, 0, 0, 106)
+PhaseContainer.Position = UDim2.new(0, 0, 0, 209)
+PhaseContainer.BackgroundTransparency = 1
+PhaseContainer.Parent = DashboardTab
+
+local PhaseContainerList = Instance.new("UIListLayout")
+PhaseContainerList.Padding = UDim.new(0, 4)
+PhaseContainerList.Parent = PhaseContainer
+
+local function createPhaseRow(num, label)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 32)
+	row.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+	row.BorderSizePixel = 0
+	row.Parent = PhaseContainer
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(40, 40, 55)
+	stroke.Thickness = 1
+	stroke.Parent = row
+	local numLbl = Instance.new("TextLabel")
+	numLbl.Size = UDim2.new(0, 26, 1, 0)
+	numLbl.Position = UDim2.new(0, 8, 0, 0)
+	numLbl.BackgroundTransparency = 1
+	numLbl.Text = num
+	numLbl.TextColor3 = Color3.fromRGB(100, 100, 120)
+	numLbl.Font = Enum.Font.GothamBold
+	numLbl.TextSize = 12
+	numLbl.Parent = row
+	local nameLbl = Instance.new("TextLabel")
+	nameLbl.Size = UDim2.new(0.55, 0, 1, 0)
+	nameLbl.Position = UDim2.new(0, 36, 0, 0)
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.Text = label
+	nameLbl.TextColor3 = Color3.fromRGB(150, 150, 170)
+	nameLbl.Font = Enum.Font.GothamMedium
+	nameLbl.TextSize = 11
+	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+	nameLbl.Parent = row
+	local statusLbl = Instance.new("TextLabel")
+	statusLbl.Size = UDim2.new(0, 94, 1, 0)
+	statusLbl.Position = UDim2.new(1, -98, 0, 0)
+	statusLbl.BackgroundTransparency = 1
+	statusLbl.Text = "Wait..."
+	statusLbl.TextColor3 = Color3.fromRGB(80, 80, 100)
+	statusLbl.Font = Enum.Font.Gotham
+	statusLbl.TextSize = 10
+	statusLbl.TextXAlignment = Enum.TextXAlignment.Right
+	statusLbl.Parent = row
+	return { row = row, stroke = stroke, numLbl = numLbl, nameLbl = nameLbl, statusLbl = statusLbl }
+end
+
+local phaseRows = {
+	scan      = createPhaseRow("1", "🔍 Scanning"),
+	decompile = createPhaseRow("2", "🧪 Decompiling"),
+	write     = createPhaseRow("3", "📁 Saving"),
+}
+
+local setPhaseStatus, markPhaseActive, markPhaseDone, resetPhaseUI
+
+setPhaseStatus = function(key, countOrText, total)
+	local row = phaseRows[key]
+	if not row then return end
+	if total then
+		row.statusLbl.Text = tostring(countOrText) .. "/" .. tostring(total)
+	else
+		row.statusLbl.Text = tostring(countOrText)
+	end
+end
+
+markPhaseActive = function(key)
+	local row = phaseRows[key]
+	if not row then return end
+	TweenService:Create(row.row,    TweenInfo.new(0.3), { BackgroundColor3 = Color3.fromRGB(28, 20, 45) }):Play()
+	TweenService:Create(row.stroke, TweenInfo.new(0.3), { Color = Color3.fromRGB(150, 80, 255), Thickness = 1.5 }):Play()
+	row.numLbl.TextColor3    = Color3.fromRGB(180, 100, 255)
+	row.nameLbl.TextColor3   = Color3.fromRGB(220, 220, 240)
+	row.statusLbl.Text       = "▶ Active"
+	row.statusLbl.TextColor3 = Color3.fromRGB(180, 100, 255)
+end
+
+markPhaseDone = function(key, count)
+	local row = phaseRows[key]
+	if not row then return end
+	TweenService:Create(row.row,    TweenInfo.new(0.3), { BackgroundColor3 = Color3.fromRGB(14, 28, 18) }):Play()
+	TweenService:Create(row.stroke, TweenInfo.new(0.3), { Color = Color3.fromRGB(80, 255, 140), Thickness = 1 }):Play()
+	row.numLbl.TextColor3    = Color3.fromRGB(80, 255, 140)
+	row.nameLbl.TextColor3   = Color3.fromRGB(200, 240, 210)
+	row.statusLbl.Text       = "✓ " .. tostring(count)
+	row.statusLbl.TextColor3 = Color3.fromRGB(80, 255, 140)
+end
+
+resetPhaseUI = function()
+	for _, key in ipairs({ "scan", "decompile", "write" }) do
+		local row = phaseRows[key]
+		if row then
+			TweenService:Create(row.row,    TweenInfo.new(0.3), { BackgroundColor3 = Color3.fromRGB(18, 18, 26) }):Play()
+			TweenService:Create(row.stroke, TweenInfo.new(0.3), { Color = Color3.fromRGB(40, 40, 55), Thickness = 1 }):Play()
+			row.numLbl.TextColor3    = Color3.fromRGB(100, 100, 120)
+			row.nameLbl.TextColor3   = Color3.fromRGB(150, 150, 170)
+			row.statusLbl.Text       = "Wait..."
+			row.statusLbl.TextColor3 = Color3.fromRGB(80, 80, 100)
+		end
+	end
+end
+
+-- Big Action Button
+local StartBtn = Instance.new("TextButton")
+StartBtn.Size = UDim2.new(1, 0, 0, 48)
+StartBtn.Position = UDim2.new(0, 0, 1, -64)
+StartBtn.BackgroundColor3 = Color3.fromRGB(130, 70, 255)
+StartBtn.Text = "▶ Start"
+StartBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+StartBtn.Font = Enum.Font.GothamBold
+StartBtn.TextSize = 14
+StartBtn.Parent = DashboardTab
+Instance.new("UICorner", StartBtn).CornerRadius = UDim.new(0, 8)
+
+local StartGradient = Instance.new("UIGradient")
+StartGradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(150, 80, 255)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(100, 50, 200))
+})
+StartGradient.Parent = StartBtn
+
+local StartStroke = Instance.new("UIStroke")
+StartStroke.Color = Color3.fromRGB(180, 120, 255)
+StartStroke.Thickness = 0
+StartStroke.Transparency = 0.5
+StartStroke.Parent = StartBtn
+
+StartBtn.MouseEnter:Connect(function()
+	TweenService:Create(StartStroke, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { Thickness = 1.5, Transparency = 0.2 }):Play()
+end)
+StartBtn.MouseLeave:Connect(function()
+	TweenService:Create(StartStroke, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { Thickness = 0, Transparency = 0.5 }):Play()
+end)
+
+-- =================================================================
+-- SETTINGS TAB COMPONENTS
+-- =================================================================
+local SetPad = Instance.new("UIPadding")
+SetPad.PaddingTop = UDim.new(0, 16)
+SetPad.PaddingLeft = UDim.new(0, 16)
+SetPad.PaddingRight = UDim.new(0, 16)
+SetPad.Parent = SettingsTab
+
+local SetList = Instance.new("UIListLayout")
+SetList.Padding = UDim.new(0, 12)
+SetList.Parent = SettingsTab
+
+SetList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	SettingsTab.CanvasSize = UDim2.new(0, 0, 0, SetList.AbsoluteContentSize.Y + 32)
+end)
+
+local function createToggleSetting(key, title, desc, callback)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(1, 0, 0, 40)
+	frame.BackgroundTransparency = 1
+	frame.Parent = SettingsTab
+	local titleLbl = Instance.new("TextLabel")
+	titleLbl.Size = UDim2.new(0.8, 0, 0, 20)
+	titleLbl.BackgroundTransparency = 1
+	titleLbl.Text = title
+	titleLbl.TextColor3 = Color3.fromRGB(230, 230, 240)
+	titleLbl.Font = Enum.Font.GothamBold
+	titleLbl.TextSize = 13
+	titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+	titleLbl.Parent = frame
+	local descLbl = Instance.new("TextLabel")
+	descLbl.Size = UDim2.new(0.8, 0, 0, 18)
+	descLbl.Position = UDim2.new(0, 0, 0, 20)
+	descLbl.BackgroundTransparency = 1
+	descLbl.Text = desc
+	descLbl.TextColor3 = Color3.fromRGB(140, 140, 150)
+	descLbl.Font = Enum.Font.Gotham
+	descLbl.TextSize = 11
+	descLbl.TextXAlignment = Enum.TextXAlignment.Left
+	descLbl.Parent = frame
+	local toggleBtn = Instance.new("TextButton")
+	toggleBtn.Size = UDim2.new(0, 46, 0, 24)
+	toggleBtn.Position = UDim2.new(1, -48, 0, 8)
+	toggleBtn.BackgroundColor3 = Config[key] and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(40, 40, 50)
+	toggleBtn.Text = ""
+	toggleBtn.Parent = frame
+	Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 12)
+	local toggleDot = Instance.new("Frame")
+	toggleDot.Size = UDim2.new(0, 18, 0, 18)
+	toggleDot.Position = Config[key] and UDim2.new(1, -21, 0, 3) or UDim2.new(0, 3, 0, 3)
+	toggleDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	toggleDot.Parent = toggleBtn
+	Instance.new("UICorner", toggleDot).CornerRadius = UDim.new(0, 9)
+	toggleBtn.MouseButton1Click:Connect(function()
+		Config[key] = not Config[key]
+		if callback then pcall(callback, Config[key]) end
+		TweenService:Create(toggleBtn, TweenInfo.new(0.2), {
+			BackgroundColor3 = Config[key] and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(40, 40, 50),
+		}):Play()
+		TweenService:Create(toggleDot, TweenInfo.new(0.2), {
+			Position = Config[key] and UDim2.new(1, -21, 0, 3) or UDim2.new(0, 3, 0, 3),
+		}):Play()
+	end)
+end
+
+createToggleSetting("Decompile",        "Decompile Scripts (.lua)",            "Decompiles bytecode into readable Lua source code.")
+createToggleSetting("UseMedalDecompiler", "Use Medal/Shiny (Localhost)",      "Sends bytecode to a local decompiler server on port 3000.")
+createToggleSetting("FallbackBytecode", "Save Bytecode on Error",        "Saves bytecode (.luac) only when decompilation fails.")
+createToggleSetting("RecreateHierarchy","Folder Tree",   "Mirrors the object tree — active in 1:1 mode.")
+createToggleSetting("CleanHeaders",     "Clean Decompiler Headers",     "Removes signatures and comments generated by the executor.")
+createToggleSetting("NetworkSpyActive", "Network Event Scanner",            "Listens to RemoteEvent and RemoteFunction.",
+	function(val)
+		if val and initializeNetworkSpy then initializeNetworkSpy() end
+	end
+)
+
+-- Speed Buttons
+local speedFrame = Instance.new("Frame")
+speedFrame.Size = UDim2.new(1, 0, 0, 40)
+speedFrame.BackgroundTransparency = 1
+speedFrame.Parent = SettingsTab
+
+local sTitle = Instance.new("TextLabel")
+sTitle.Size = UDim2.new(0.4, 0, 1, 0)
+sTitle.BackgroundTransparency = 1
+sTitle.Text = "Dump Speed:"
+sTitle.TextColor3 = Color3.fromRGB(230, 230, 240)
+sTitle.Font = Enum.Font.GothamBold
+sTitle.TextSize = 13
+sTitle.TextXAlignment = Enum.TextXAlignment.Left
+sTitle.Parent = speedFrame
+
+local function createSpeedBtn(mode, posX)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0, 60, 0, 26)
+	btn.Position = UDim2.new(1, posX, 0.5, -13)
+	btn.BackgroundColor3 = (Config.ThreadingSpeed == mode) and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(30, 30, 40)
+	btn.Text = mode
+	btn.TextColor3 = Color3.fromRGB(240, 240, 250)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 11
+	btn.Parent = speedFrame
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(150, 80, 255)
+	stroke.Thickness = 1
+	stroke.Transparency = (Config.ThreadingSpeed == mode) and 0.4 or 1
+	stroke.Parent = btn
+	btn.MouseEnter:Connect(function()
+		if Config.ThreadingSpeed ~= mode then
+			TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { BackgroundColor3 = Color3.fromRGB(38, 38, 50) }):Play()
+		end
+	end)
+	btn.MouseLeave:Connect(function()
+		if Config.ThreadingSpeed ~= mode then
+			TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { BackgroundColor3 = Color3.fromRGB(30, 30, 40) }):Play()
+		end
+	end)
+	return btn, stroke
+end
+
+local bSafe, sSafe = createSpeedBtn("Safe",   -65)
+local bMed,  sMed  = createSpeedBtn("Medium", -135)
+local bFast, sFast = createSpeedBtn("Fast",   -205)
+
+local function updateSpeedBtns()
+	local sel = Color3.fromRGB(130, 70, 255)
+	local def = Color3.fromRGB(30, 30, 40)
+	TweenService:Create(bSafe, TweenInfo.new(0.2), { BackgroundColor3 = (Config.ThreadingSpeed=="Safe")   and sel or def }):Play()
+	TweenService:Create(sSafe, TweenInfo.new(0.2), { Transparency = (Config.ThreadingSpeed=="Safe")   and 0.4 or 1 }):Play()
+	TweenService:Create(bMed,  TweenInfo.new(0.2), { BackgroundColor3 = (Config.ThreadingSpeed=="Medium") and sel or def }):Play()
+	TweenService:Create(sMed,  TweenInfo.new(0.2), { Transparency = (Config.ThreadingSpeed=="Medium") and 0.4 or 1 }):Play()
+	TweenService:Create(bFast, TweenInfo.new(0.2), { BackgroundColor3 = (Config.ThreadingSpeed=="Fast")   and sel or def }):Play()
+	TweenService:Create(sFast, TweenInfo.new(0.2), { Transparency = (Config.ThreadingSpeed=="Fast")   and 0.4 or 1 }):Play()
+end
+bSafe.MouseButton1Click:Connect(function() Config.ThreadingSpeed = "Safe";   updateSpeedBtns() end)
+bMed.MouseButton1Click:Connect(function()  Config.ThreadingSpeed = "Medium"; updateSpeedBtns() end)
+bFast.MouseButton1Click:Connect(function() Config.ThreadingSpeed = "Fast";   updateSpeedBtns() end)
+
+-- =================================================================
+-- FILTERS TAB COMPONENTS
+-- =================================================================
+local FilterScroll = Instance.new("ScrollingFrame")
+FilterScroll.Size = UDim2.new(1, 0, 1, 0)
+FilterScroll.BackgroundTransparency = 1
+FilterScroll.BorderSizePixel = 0
+FilterScroll.ScrollBarThickness = 4
+FilterScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+FilterScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+FilterScroll.Parent = FiltersTab
+
+local FilPad = Instance.new("UIPadding")
+FilPad.PaddingTop = UDim.new(0, 16)
+FilPad.PaddingLeft = UDim.new(0, 16)
+FilPad.PaddingRight = UDim.new(0, 16)
+FilPad.Parent = FilterScroll
+
+local FilList = Instance.new("UIListLayout")
+FilList.Padding = UDim.new(0, 12)
+FilList.Parent = FilterScroll
+
+FilList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	FilterScroll.CanvasSize = UDim2.new(0, 0, 0, FilList.AbsoluteContentSize.Y + 32)
+end)
+
+local function createFilterToggle(title, desc, getVal, setVal)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(1, 0, 0, 40)
+	frame.BackgroundTransparency = 1
+	frame.Parent = FilterScroll
+	local titleLbl = Instance.new("TextLabel")
+	titleLbl.Size = UDim2.new(0.8, 0, 0, 20)
+	titleLbl.BackgroundTransparency = 1
+	titleLbl.Text = title
+	titleLbl.TextColor3 = Color3.fromRGB(230, 230, 240)
+	titleLbl.Font = Enum.Font.GothamBold
+	titleLbl.TextSize = 13
+	titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+	titleLbl.Parent = frame
+	local descLbl = Instance.new("TextLabel")
+	descLbl.Size = UDim2.new(0.8, 0, 0, 18)
+	descLbl.Position = UDim2.new(0, 0, 0, 20)
+	descLbl.BackgroundTransparency = 1
+	descLbl.Text = desc
+	descLbl.TextColor3 = Color3.fromRGB(140, 140, 150)
+	descLbl.Font = Enum.Font.Gotham
+	descLbl.TextSize = 11
+	descLbl.TextXAlignment = Enum.TextXAlignment.Left
+	descLbl.Parent = frame
+	local toggleBtn = Instance.new("TextButton")
+	toggleBtn.Size = UDim2.new(0, 46, 0, 24)
+	toggleBtn.Position = UDim2.new(1, -48, 0, 8)
+	toggleBtn.BackgroundColor3 = getVal() and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(40, 40, 50)
+	toggleBtn.Text = ""
+	toggleBtn.Parent = frame
+	Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 12)
+	local toggleDot = Instance.new("Frame")
+	toggleDot.Size = UDim2.new(0, 18, 0, 18)
+	toggleDot.Position = getVal() and UDim2.new(1, -21, 0, 3) or UDim2.new(0, 3, 0, 3)
+	toggleDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	toggleDot.Parent = toggleBtn
+	Instance.new("UICorner", toggleDot).CornerRadius = UDim.new(0, 9)
+	toggleBtn.MouseButton1Click:Connect(function()
+		local newVal = not getVal()
+		setVal(newVal)
+		TweenService:Create(toggleBtn, TweenInfo.new(0.2), {
+			BackgroundColor3 = newVal and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(40, 40, 50),
+		}):Play()
+		TweenService:Create(toggleDot, TweenInfo.new(0.2), {
+			Position = newVal and UDim2.new(1, -21, 0, 3) or UDim2.new(0, 3, 0, 3),
+		}):Play()
+	end)
+end
+
+createFilterToggle("Threat & Backdoor Scanner", "Analyzes downloaded scripts for suspicious functions.",
+	function() return Config.ScanThreats end, function(v) Config.ScanThreats = v end)
+
+createFilterToggle("Code Keyword Filter", "Saves scripts only when they contain the searched phrase.",
+	function() return Config.KeywordFilterActive end, function(v) Config.KeywordFilterActive = v end)
+
+local KeywordBoxFrame = Instance.new("Frame")
+KeywordBoxFrame.Size = UDim2.new(1, 0, 0, 42)
+KeywordBoxFrame.BackgroundTransparency = 1
+KeywordBoxFrame.Parent = FilterScroll
+
+local KeywordBox = Instance.new("TextBox")
+KeywordBox.Size = UDim2.new(1, 0, 0, 32)
+KeywordBox.Position = UDim2.new(0, 0, 0, 5)
+KeywordBox.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+KeywordBox.PlaceholderText = "Enter a phrase to search in code (e.g. HttpService)..."
+KeywordBox.PlaceholderColor3 = Color3.fromRGB(100, 100, 110)
+KeywordBox.Text = Config.KeywordFilterText
+KeywordBox.TextColor3 = Color3.fromRGB(230, 230, 240)
+KeywordBox.Font = Enum.Font.Gotham
+KeywordBox.TextSize = 12
+KeywordBox.TextXAlignment = Enum.TextXAlignment.Left
+KeywordBox.Parent = KeywordBoxFrame
+Instance.new("UICorner", KeywordBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIPadding", KeywordBox).PaddingLeft = UDim.new(0, 10)
+KeywordBox:GetPropertyChangedSignal("Text"):Connect(function() Config.KeywordFilterText = KeywordBox.Text end)
+
+createFilterToggle("File Name Filter", "Dumps only scripts whose name contains the entered phrase.",
+	function() return Config.NameFilterActive end, function(v) Config.NameFilterActive = v end)
+
+local NameBoxFrame = Instance.new("Frame")
+NameBoxFrame.Size = UDim2.new(1, 0, 0, 42)
+NameBoxFrame.BackgroundTransparency = 1
+NameBoxFrame.Parent = FilterScroll
+
+local NameBox = Instance.new("TextBox")
+NameBox.Size = UDim2.new(1, 0, 0, 32)
+NameBox.Position = UDim2.new(0, 0, 0, 5)
+NameBox.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+NameBox.PlaceholderText = "Enter part of a script name (e.g. Handler, Network)..."
+NameBox.PlaceholderColor3 = Color3.fromRGB(100, 100, 110)
+NameBox.Text = Config.NameFilterText
+NameBox.TextColor3 = Color3.fromRGB(230, 230, 240)
+NameBox.Font = Enum.Font.Gotham
+NameBox.TextSize = 12
+NameBox.TextXAlignment = Enum.TextXAlignment.Left
+NameBox.Parent = NameBoxFrame
+Instance.new("UICorner", NameBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIPadding", NameBox).PaddingLeft = UDim.new(0, 10)
+NameBox:GetPropertyChangedSignal("Text"):Connect(function() Config.NameFilterText = NameBox.Text end)
+
+createFilterToggle("Enable Targeted Dump Mode", "Dumps only the script at the given path and its descendants.",
+	function() return Config.TargetedDumpActive end, function(v) Config.TargetedDumpActive = v end)
+
+local TargetedBoxFrame = Instance.new("Frame")
+TargetedBoxFrame.Size = UDim2.new(1, 0, 0, 42)
+TargetedBoxFrame.BackgroundTransparency = 1
+TargetedBoxFrame.Parent = FilterScroll
+
+local TargetedBox = Instance.new("TextBox")
+TargetedBox.Size = UDim2.new(1, 0, 0, 32)
+TargetedBox.Position = UDim2.new(0, 0, 0, 5)
+TargetedBox.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+TargetedBox.PlaceholderText = "Object path (e.g. game.ReplicatedStorage.WeaponSystem)..."
+TargetedBox.PlaceholderColor3 = Color3.fromRGB(100, 100, 110)
+TargetedBox.Text = Config.TargetedDumpPath
+TargetedBox.TextColor3 = Color3.fromRGB(230, 230, 240)
+TargetedBox.Font = Enum.Font.Gotham
+TargetedBox.TextSize = 12
+TargetedBox.TextXAlignment = Enum.TextXAlignment.Left
+TargetedBox.Parent = TargetedBoxFrame
+Instance.new("UICorner", TargetedBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIPadding", TargetedBox).PaddingLeft = UDim.new(0, 10)
+TargetedBox:GetPropertyChangedSignal("Text"):Connect(function() Config.TargetedDumpPath = TargetedBox.Text end)
+
+local SectionTitle = Instance.new("TextLabel")
+SectionTitle.Size = UDim2.new(1, 0, 0, 24)
+SectionTitle.BackgroundTransparency = 1
+SectionTitle.Text = "📁 Game Service Filtering (Service Toggles):"
+SectionTitle.TextColor3 = Color3.fromRGB(180, 120, 255)
+SectionTitle.Font = Enum.Font.GothamBold
+SectionTitle.TextSize = 13
+SectionTitle.TextXAlignment = Enum.TextXAlignment.Left
+SectionTitle.Parent = FilterScroll
+
+local ServiceGridFrame = Instance.new("Frame")
+ServiceGridFrame.Size = UDim2.new(1, 0, 0, 0)
+ServiceGridFrame.AutomaticSize = Enum.AutomaticSize.Y
+ServiceGridFrame.BackgroundTransparency = 1
+ServiceGridFrame.Parent = FilterScroll
+
+local GridLay = Instance.new("UIGridLayout")
+GridLay.CellSize = UDim2.new(0.48, 0, 0, 32)
+GridLay.CellPadding = UDim2.new(0.04, 0, 0, 8)
+GridLay.Parent = ServiceGridFrame
+
+GridLay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	ServiceGridFrame.Size = UDim2.new(1, 0, 0, GridLay.AbsoluteContentSize.Y)
+end)
+
+local function createServiceCheckbox(serviceName)
+	local sFrame = Instance.new("Frame")
+	sFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+	sFrame.Parent = ServiceGridFrame
+	Instance.new("UICorner", sFrame).CornerRadius = UDim.new(0, 6)
+	local sLabel = Instance.new("TextLabel")
+	sLabel.Size = UDim2.new(0.7, 0, 1, 0)
+	sLabel.Position = UDim2.new(0, 10, 0, 0)
+	sLabel.BackgroundTransparency = 1
+	sLabel.Text = serviceName
+	sLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+	sLabel.Font = Enum.Font.GothamBold
+	sLabel.TextSize = 11
+	sLabel.TextXAlignment = Enum.TextXAlignment.Left
+	sLabel.Parent = sFrame
+	local sBtn = Instance.new("TextButton")
+	sBtn.Size = UDim2.new(0, 20, 0, 20)
+	sBtn.Position = UDim2.new(1, -26, 0.5, -10)
+	sBtn.BackgroundColor3 = Config.Services[serviceName] and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(40, 40, 50)
+	sBtn.Text = Config.Services[serviceName] and "✓" or ""
+	sBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	sBtn.Font = Enum.Font.GothamBold
+	sBtn.TextSize = 12
+	sBtn.Parent = sFrame
+	Instance.new("UICorner", sBtn).CornerRadius = UDim.new(0, 4)
+	sBtn.MouseButton1Click:Connect(function()
+		Config.Services[serviceName] = not Config.Services[serviceName]
+		sBtn.BackgroundColor3 = Config.Services[serviceName] and Color3.fromRGB(130, 70, 255) or Color3.fromRGB(40, 40, 50)
+		sBtn.Text = Config.Services[serviceName] and "✓" or ""
+	end)
+end
+
+local availableServices = {
+	"Workspace","ReplicatedStorage","ReplicatedFirst","StarterGui",
+	"StarterPack","StarterPlayer","Chat","SoundService",
+	"Lighting","Players","Teams","MaterialService",
+}
+for _, sName in ipairs(availableServices) do
+	createServiceCheckbox(sName)
+end
+
+-- =================================================================
+-- LOGS TAB COMPONENTS
+-- =================================================================
+local LogPad = Instance.new("UIPadding")
+LogPad.PaddingTop   = UDim.new(0, 12)
+LogPad.PaddingLeft  = UDim.new(0, 16)
+LogPad.PaddingRight = UDim.new(0, 16)
+LogPad.Parent = LogsTab
+
+local SearchBox = Instance.new("TextBox")
+SearchBox.Size = UDim2.new(1, 0, 0, 32)
+SearchBox.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+SearchBox.PlaceholderText = "🔍 Filter logs..."
+SearchBox.PlaceholderColor3 = Color3.fromRGB(100, 100, 110)
+SearchBox.Text = ""
+SearchBox.TextColor3 = Color3.fromRGB(230, 230, 240)
+SearchBox.Font = Enum.Font.Gotham
+SearchBox.TextSize = 12
+SearchBox.TextXAlignment = Enum.TextXAlignment.Left
+SearchBox.Parent = LogsTab
+Instance.new("UICorner", SearchBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIPadding", SearchBox).PaddingLeft = UDim.new(0, 10)
+
+local LogScroll = Instance.new("ScrollingFrame")
+LogScroll.Size = UDim2.new(1, 0, 1, -48)
+LogScroll.Position = UDim2.new(0, 0, 0, 40)
+LogScroll.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+LogScroll.BorderSizePixel = 0
+LogScroll.ScrollBarThickness = 4
+LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+LogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+LogScroll.Parent = LogsTab
+Instance.new("UICorner", LogScroll).CornerRadius = UDim.new(0, 6)
+
+local LogList = Instance.new("UIListLayout")
+LogList.SortOrder = Enum.SortOrder.LayoutOrder
+LogList.Padding = UDim.new(0, 2)
+LogList.Parent = LogScroll
+
+LogList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	LogScroll.CanvasSize = UDim2.new(0, 0, 0, LogList.AbsoluteContentSize.Y + 32)
+end)
+
+local LogScrollPad = Instance.new("UIPadding")
+LogScrollPad.PaddingLeft = UDim.new(0, 8)
+LogScrollPad.PaddingTop  = UDim.new(0, 6)
+LogScrollPad.Parent = LogScroll
+
+-- =================================================================
+-- SYSTEM UTILITIES & FILE HELPERS
+-- =================================================================
+local total_lua   = 0
+local total_luac  = 0
+local total_skip  = 0
+local logCount    = 0
+local allLogLabels = {}
+
+local function addLog(msg, color)
+	color = color or Color3.fromRGB(170, 170, 170)
+	logCount += 1
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.new(1, -8, 0, 16)
+	l.Text = tostring(msg)
+	l.TextColor3 = color
+	l.Font = Enum.Font.Code
+	l.TextSize = 11
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	l.LayoutOrder = logCount
+	l.Parent = LogScroll
+	table.insert(allLogLabels, { label = l, text = string.lower(msg) })
+	if #allLogLabels > 500 then
+		local first = table.remove(allLogLabels, 1)
+		if first and first.label then first.label:Destroy() end
+	end
+	task.defer(function()
+		LogScroll.CanvasPosition = Vector2.new(0, math.huge)
+	end)
+end
+
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+	local q = string.lower(SearchBox.Text)
+	for _, item in ipairs(allLogLabels) do
+		if item.label then
+			item.label.Visible = (q == "" or string.find(item.text, q, 1, true) ~= nil)
+		end
+	end
+end)
+
+local function setProgress(text)
+	ProgressText.Text = "▸ " .. tostring(text)
+end
+
+local function updateStats()
+	LuaCountText.Text  = tostring(total_lua)
+	LuacCountText.Text = tostring(total_luac)
+	SkipCountText.Text = tostring(total_skip)
+end
+
+local function ensureDir(path)
+	if not isfolder(path) then
+		pcall(makefolder, path)
+	end
+end
+
+local function createFoldersForPath(fullPath)
+	local parts = string.split(fullPath, "/")
+	local current = parts[1]
+	for i = 2, #parts - 1 do
+		current = current .. "/" .. parts[i]
+		ensureDir(current)
+	end
+end
+
+local function getUniquePath(path, ext)
+	if not isfile(path .. ext) then return path .. ext end
+	local counter = 1
+	while isfile(path .. "_" .. tostring(counter) .. ext) do
+		counter += 1
+	end
+	return path .. "_" .. tostring(counter) .. ext
+end
+
+local function safeStr(s)
+	s = tostring(s or "unknown")
+	s = string.gsub(s, "[%c]", "")
+	s = string.gsub(s, "[^%w%.%-%_]", "_")
+	s = string.gsub(s, "^_+", "")
+	if s == "" or s == "_" or s == ".lua" or s == ".luac" or s == ".luau" then
+		s = "Script_" .. tostring(math.random(100000, 999999))
+	end
+	if #s > 100 then s = string.sub(s, 1, 100) end
+	return s
+end
+
+local function logToFile(fileName, content)
+	local current = ""
+	pcall(function()
+		if isfile(fileName) then current = readfile(fileName) or "" end
+	end)
+	pcall(writefile, fileName, current .. content .. "\n\n")
+end
+
+local function bcHash(bc)
+	if not bc or #bc == 0 then return nil end
+	return tostring(#bc) .. "_" .. string.sub(bc, 1, 64)
+end
+
+local function cleanSource(src)
+	if not Config.CleanHeaders then return src end
+	src = src:gsub("^%-%- Decompiled with[%s%S]-%\n%\n", "")
+	src = src:gsub("^%-%- Decompiled by[%s%S]-%\n%\n",   "")
+	src = src:gsub("^%-%- Decompiler[%s%S]-%\n%\n",      "")
+	return src
+end
+
+local function isUselessSrc(src)
+	if type(src) ~= "string" or #src == 0 then return true end
+	local stripped = string.gsub(src, "%s+", "")
+	if #stripped < 8 then return true end
+	if #stripped < 200 then
+		local lower = string.lower(stripped)
+		if string.find(lower, "failed", 1, true)
+			or string.find(lower, "unable", 1, true)
+			or string.find(lower, "error", 1, true)
+			or string.find(lower, "cannotdecompile", 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function unwrapProxy(obj)
+	if obj == nil then return nil end
+	local realObj = obj
+	local ok, mt = pcall(getrawmetatable, obj)
+	if ok and mt then
+		local ok2, real = pcall(function()
+			local indexFn = rawget(mt, "__index")
+			if type(indexFn) == "function" then
+				for i = 1, 30 do
+					local n, v = debug.getupvalue(indexFn, i)
+					if n == nil then break end
+					if type(v) == "table" and v.GetObject then
+						return v:GetObject()
+					end
+				end
+			end
+		end)
+		if ok2 and real and real ~= obj then realObj = real end
+	end
+	return realObj
+end
+
+-- =================================================================
+-- CORE CONSTANTS
+-- =================================================================
+local global_seen_bc = {}
+local lastYield = os.clock()
+
+local function checkYield()
+	local sp = ThreadSpeeds[Config.ThreadingSpeed] or ThreadSpeeds.Medium
+	if os.clock() - lastYield > 0.016 then
+		task.wait(sp.YieldTime)
+		lastYield = os.clock()
+	end
+end
+
+local ThreatKeywords = {
+	{ pattern = "loadstring",                   name = "Dynamic Execution (loadstring)" },
+	{ pattern = "getfenv",                       name = "Environment Access (getfenv)" },
+	{ pattern = "setfenv",                       name = "Environment Manipulation (setfenv)" },
+	{ pattern = "HttpService",                   name = "External Communication (HttpService)" },
+	{ pattern = "PostAsync",                     name = "Data Sending (PostAsync)" },
+	{ pattern = "GetAsync",                      name = "Data Fetching (GetAsync)" },
+	{ pattern = "DiscordApp",                    name = "Possible Webhook Reference" },
+	{ pattern = "MarketplaceService",            name = "Monetization Reference" },
+	{ pattern = "require%s*%(%s*%d+",            name = "Obfuscated/External Module Require" },
+}
+
+local function getLinePreview(src, pattern)
+	local ok, lines = pcall(string.split, src, "\n")
+	if not ok or not lines then return "Match found" end
+	for i, l in ipairs(lines) do
+		if string.find(l, pattern) then
+			return "Line " .. tostring(i) .. ": " .. string.sub(string.gsub(l, "^%s+", ""), 1, 120)
+		end
+	end
+	return "Match found"
+end
+
+-- =================================================================
+-- 3-PHASE ENGINE HELPERS
+-- =================================================================
+
+-- Get full 1:1 game path from instance using GetFullName()
+local function getFullGamePath(inst)
+	local ok, fn = pcall(function() return inst:GetFullName() end)
+	if not ok or not fn or fn == "" then return "" end
+	-- Remove "game." prefix → "ReplicatedStorage.Folder.Script"
+	fn = fn:gsub("^game%.", ""):gsub("^game$", "")
+	-- Split by dots and sanitize each segment
+	local parts = string.split(fn, ".")
+	local safeParts = {}
+	for _, p in ipairs(parts) do
+		local sp = safeStr(p)
+		if sp ~= "" then table.insert(safeParts, sp) end
+	end
+	if #safeParts == 0 then return "" end
+	return table.concat(safeParts, "/")
+end
+
+-- =================================================================
+-- PHASE 1: SCAN - Collect all unique scripts
+-- =================================================================
+local function runScanPhase()
+	local queue    = {}     -- { inst, bc, tag }
+	local seenPtr  = {}     -- [instance] = true (pointer dedup)
+	local scanTotal = 0
+
+	local function isScriptType(inst)
+		local ok, r = pcall(function()
+			return inst:IsA("LocalScript") or inst:IsA("ModuleScript") or inst:IsA("Script")
+		end)
+		return ok and r
+	end
+
+	local function tryAddToQueue(inst, tag)
+		if seenPtr[inst] then return end
+
+		-- Get bytecode for hash deduplication
+		local bc = ""
+		if getscriptbytecode then
+			local realI = unwrapProxy(inst) or inst
+			for _, target in ipairs({ realI, inst }) do
+				local ok, b = pcall(getscriptbytecode, target)
+				if ok and b and type(b) == "string" and #b > 4 then
+					bc = b
+					break
+				end
+			end
+		end
+
+		-- Bytecode hash dedup
+		if bc ~= "" then
+			local hash = bcHash(bc)
+			if hash and global_seen_bc[hash] then
+				total_skip += 1
+				updateStats()
+				return
+			end
+			if hash then global_seen_bc[hash] = true end
+		end
+
+		seenPtr[inst] = true
+		table.insert(queue, { inst = inst, bc = bc, tag = tag })
+		scanTotal += 1
+		setPhaseStatus("scan", scanTotal)
+	end
+
+	-- ── Metoda 1: getscripts() ──────────────────────────────────
+	addLog("── [M1] getscripts()", Color3.fromRGB(150, 80, 255))
+	if getscripts then
+		local ok, scripts = pcall(getscripts)
+		if ok and scripts then
+			for _, s in ipairs(scripts) do
+				if isScriptType(s) then tryAddToQueue(s, "getscripts") end
+				checkYield()
+			end
+			addLog(string.format("     → %d scripts", #scripts), Color3.fromRGB(100, 200, 255))
+		else
+			addLog("     [ERR] " .. tostring(scripts), Color3.fromRGB(220, 80, 80))
+		end
+	else
+		addLog("     [SKIP] unavailable", Color3.fromRGB(120, 120, 120))
+	end
+
+	-- ── Metoda 2: getloadedmodules() ───────────────────────────
+	addLog("── [M2] getloadedmodules()", Color3.fromRGB(150, 80, 255))
+	if getloadedmodules then
+		local ok, mods = pcall(getloadedmodules)
+		if ok and mods then
+			for _, m in ipairs(mods) do
+				if isScriptType(m) then tryAddToQueue(m, "loadedmodules") end
+				checkYield()
+			end
+			addLog(string.format("     → %d modules", #mods), Color3.fromRGB(100, 200, 255))
+		else
+			addLog("     [SKIP] no modules", Color3.fromRGB(120, 120, 120))
+		end
+	else
+		addLog("     [SKIP] unavailable", Color3.fromRGB(120, 120, 120))
+	end
+
+	-- ── Metoda 3: getinstances() ────────────────────────────────
+	addLog("── [M3] getinstances()", Color3.fromRGB(150, 80, 255))
+	if getinstances then
+		local ok, insts = pcall(getinstances)
+		if ok and insts then
+			local cnt = 0
+			for _, inst in ipairs(insts) do
+				if isScriptType(inst) then tryAddToQueue(inst, "getinstances"); cnt += 1 end
+				checkYield()
+			end
+			addLog(string.format("     → %d scripts", cnt), Color3.fromRGB(100, 200, 255))
+		else
+			addLog("     [SKIP] no instances", Color3.fromRGB(120, 120, 120))
+		end
+	else
+		addLog("     [SKIP] unavailable", Color3.fromRGB(120, 120, 120))
+	end
+
+	-- ── Metoda 4: getnilinstances() ─────────────────────────────
+	addLog("── [M4] getnilinstances()", Color3.fromRGB(150, 80, 255))
+	if getnilinstances then
+		local ok, nils = pcall(getnilinstances)
+		if ok and nils then
+			local cnt = 0
+			for _, inst in ipairs(nils) do
+				if isScriptType(inst) then tryAddToQueue(inst, "nilinstances"); cnt += 1 end
+				checkYield()
+			end
+			addLog(string.format("     → %d nil-scripts", cnt), Color3.fromRGB(100, 200, 255))
+		else
+			addLog("     [SKIP] no nil-instances", Color3.fromRGB(120, 120, 120))
+		end
+	else
+		addLog("     [SKIP] unavailable", Color3.fromRGB(120, 120, 120))
+	end
+
+	-- ── Method 5: GC - script instances ────────────────────────
+	addLog("── [M5] getgc() – script instances", Color3.fromRGB(150, 80, 255))
+	local okGC, gcData = pcall(getgc, true)
+	if okGC and gcData then
+		local cnt = 0
+		for _, v in next, gcData do
+			if type(v) == "userdata" then
+				local ok2, tn = pcall(typeof, v)
+				if ok2 and tn == "Instance" and isScriptType(v) then
+					tryAddToQueue(v, "gc_instances")
+					cnt += 1
+				end
+			end
+			if _ % 5000 == 0 then checkYield() end
+		end
+		addLog(string.format("     → %d scripts in GC", cnt), Color3.fromRGB(100, 200, 255))
+	else
+		addLog("     [SKIP] getgc() unavailable", Color3.fromRGB(120, 120, 120))
+	end
+
+	-- ── Metoda 6: Game Tree Walk (wszystkie serwisy) ─────────────
+	addLog("── [M6] Game Tree Walk", Color3.fromRGB(150, 80, 255))
+	local serviceNames = {
+		"Workspace","ReplicatedStorage","ReplicatedFirst","StarterGui",
+		"StarterPack","StarterPlayer","Teams","SoundService","Chat",
+		"Players","ServerScriptService","ServerStorage","Lighting","MaterialService",
+	}
+	for _, svcName in ipairs(serviceNames) do
+		if Config.Services[svcName] == false then continue end
+		local ok0, svc = pcall(function() return game:GetService(svcName) end)
+		if not ok0 or not svc then continue end
+		local okD, desc = pcall(function() return svc:GetDescendants() end)
+		if okD and desc then
+			local cnt = 0
+			for _, inst in ipairs(desc) do
+				if isScriptType(inst) then tryAddToQueue(inst, "gametree_" .. svcName); cnt += 1 end
+				checkYield()
+			end
+			if cnt > 0 then
+				addLog(string.format("     %s: %d scripts", svcName, cnt), Color3.fromRGB(100, 200, 255))
+			end
+		end
+		checkYield()
+	end
+
+	addLog(string.format("✓ Scanning: %d unique scripts collected.", #queue), Color3.fromRGB(80, 255, 140))
+	return queue
+end
+
+-- =================================================================
+-- PHASE 2: DECOMPILE - Decompile all collected scripts
+-- =================================================================
+local function runDecompilePhase(queue)
+	local results    = {}  -- { name, src, bc, gamePath, tag }
+	local gcClosures = {}  -- { name, src }
+	local seen_closure_key = {}
+	local doneCount  = 0
+
+	addLog(string.format("Decompiling %d scripts...", #queue), Color3.fromRGB(100, 200, 255))
+
+	for _, item in ipairs(queue) do
+		local inst     = item.inst
+		local bc       = item.bc
+		local realInst = unwrapProxy(inst) or inst
+
+		-- Get name
+		local name = ""
+		pcall(function() name = realInst.Name end)
+		if name == "" then pcall(function() name = inst.Name end) end
+		local baseName = safeStr(name)
+
+		-- Name filter
+		if Config.NameFilterActive and Config.NameFilterText ~= "" then
+			if not string.find(string.lower(baseName), string.lower(Config.NameFilterText), 1, true) then
+				total_skip += 1; updateStats()
+				doneCount += 1; setPhaseStatus("decompile", doneCount, #queue)
+				continue
+			end
+		end
+
+		-- Size filter
+		if bc ~= "" and #bc > Config.MaxFileSize then
+			addLog("[SKIP:SIZE] " .. baseName, Color3.fromRGB(240, 100, 100))
+			total_skip += 1; updateStats()
+			doneCount += 1; setPhaseStatus("decompile", doneCount, #queue)
+			continue
+		end
+
+		-- Get 1:1 game path via GetFullName
+		local gamePath = getFullGamePath(realInst)
+		if gamePath == "" then gamePath = getFullGamePath(inst) end
+
+		-- Decompile
+		local src = nil
+		local skipDueToFilter = false
+
+		if Config.Decompile then
+			if Config.UseMedalDecompiler and bc and #bc > 0 then
+				local http_req = request or http_request or (syn and syn.request) or (http and http.request)
+				if http_req then
+					local ok, res = pcall(http_req, {
+						Url = "http://127.0.0.1:3000/luau/decompile",
+						Method = "POST",
+						Body = bc,
+						Headers = { ["Content-Type"] = "application/octet-stream" }
+					})
+					if ok and res and res.StatusCode == 200 and res.Body and not isUselessSrc(res.Body) then
+						local dec = cleanSource(res.Body)
+						if Config.KeywordFilterActive and Config.KeywordFilterText ~= "" then
+							if not string.find(string.lower(dec), string.lower(Config.KeywordFilterText), 1, true) then
+								skipDueToFilter = true
+							end
+						end
+						if not skipDueToFilter then
+							src = dec
+						end
+					else
+						local errMsg = "Error"
+						if not ok then errMsg = tostring(res)
+						elseif res then errMsg = "HTTP " .. tostring(res.StatusCode) .. " " .. tostring(res.Body) end
+						addLog("[MEDAL ERR] " .. baseName .. " -> " .. string.sub(errMsg, 1, 60), Color3.fromRGB(240, 100, 100))
+						logToFile(OUT_DIR .. "/decompile_errors.log", "Name: " .. baseName .. "\nPath: " .. gamePath .. "\nMedal Error: " .. tostring(errMsg))
+					end
+				else
+					addLog("[MEDAL ERR] Brak funkcji HTTP (request)", Color3.fromRGB(240, 100, 100))
+				end
+			end
+
+			if not src and not skipDueToFilter and decompile then
+				for _, target in ipairs({ realInst, inst }) do
+					local ok, dec = pcall(decompile, target)
+					if ok and dec and not isUselessSrc(dec) then
+						dec = cleanSource(dec)
+						-- Keyword filter
+						if Config.KeywordFilterActive and Config.KeywordFilterText ~= "" then
+							if not string.find(string.lower(dec), string.lower(Config.KeywordFilterText), 1, true) then
+								skipDueToFilter = true
+								break
+							end
+						end
+						src = dec
+						break
+					elseif not ok and dec then
+						logToFile(OUT_DIR .. "/decompile_errors.log",
+							"Name: " .. baseName .. "\nPath: " .. gamePath .. "\nError: " .. tostring(dec))
+					end
+				end
+			end
+		end
+
+		if skipDueToFilter then
+			total_skip += 1; updateStats()
+			doneCount += 1; setPhaseStatus("decompile", doneCount, #queue)
+			continue
+		end
+
+		doneCount += 1
+		setPhaseStatus("decompile", doneCount, #queue)
+
+		if src or (Config.FallbackBytecode and bc ~= "") then
+			table.insert(results, {
+				name     = baseName,
+				src      = src,
+				bc       = bc,
+				gamePath = gamePath,
+				tag      = item.tag,
+			})
+		else
+			total_skip += 1
+			updateStats()
+		end
+
+		checkYield()
+	end
+
+	-- GC Closure scan (functions in memory, not bound to instances)
+	addLog("── GC Closure scan...", Color3.fromRGB(150, 80, 255))
+	local okGC, gcData = pcall(getgc, true)
+	if okGC and gcData and decompile then
+		local closureCnt = 0
+		for _, v in next, gcData do
+			if type(v) == "function" then
+				local info
+				pcall(function() info = debug.getinfo(v) end)
+				if info and info.source and not string.match(info.source, "^%[C%]") then
+					local key = info.source .. ":" .. tostring(info.linedefined or 0)
+					if not seen_closure_key[key] then
+						seen_closure_key[key] = true
+						local ok2, dec = pcall(decompile, v)
+						if ok2 and not isUselessSrc(dec) then
+							dec = cleanSource(dec)
+							local cleanSrc = safeStr(
+								string.match(string.gsub(info.source, "^[@=]", ""), "[^/\\]+$") or info.source
+							)
+							table.insert(gcClosures, {
+								name = cleanSrc .. "_L" .. tostring(info.linedefined or 0),
+								src  = dec,
+							})
+							closureCnt += 1
+						end
+					end
+				end
+			end
+			if _ % 5000 == 0 then checkYield() end
+		end
+		addLog(string.format("     → %d GC closures decompiled", closureCnt), Color3.fromRGB(100, 200, 255))
+	end
+
+	addLog(string.format("✓ Decompiling: %d results, %d GC closures.", #results, #gcClosures), Color3.fromRGB(80, 255, 140))
+	return results, gcClosures
+end
+
+-- =================================================================
+-- PHASE 3: WRITE - Save with exact 1:1 game tree structure
+-- =================================================================
+local function runWritePhase(results, gcClosures)
+	local treeBase = OUT_DIR .. "/game_tree_1to1"
+	ensureDir(OUT_DIR)
+	ensureDir(treeBase)
+
+	addLog(string.format("Writing %d scripts with 1:1 structure...", #results), Color3.fromRGB(100, 200, 255))
+
+	for i, item in ipairs(results) do
+		local name     = item.name
+		local src      = item.src
+		local bc       = item.bc
+		local gamePath = item.gamePath  -- e.g. "ReplicatedStorage/WeaponSystem/ClientHandler"
+		local tag      = item.tag or "unknown"
+
+		-- Build folder from gamePath
+		-- gamePath = "Service/Folder1/Folder2/ScriptName"
+		-- → folder = treeBase/Service/Folder1/Folder2/
+		-- → file   = treeBase/Service/Folder1/Folder2/ScriptName.lua
+		local folderPath
+
+		if gamePath ~= "" then
+			local parts = string.split(gamePath, "/")
+			if #parts > 1 then
+				local folderParts = {}
+				for j = 1, #parts - 1 do
+					table.insert(folderParts, parts[j])
+				end
+				folderPath = treeBase .. "/" .. table.concat(folderParts, "/")
+			else
+				-- Single-level (script at root of service)
+				folderPath = treeBase
+			end
+		else
+			-- Unknown path → misc folder tagged by scan source
+			folderPath = treeBase .. "/_misc/" .. safeStr(tag)
+		end
+
+		local writePath = folderPath .. "/" .. name
+
+		if src then
+			-- Threat scan
+			if Config.ScanThreats then
+				for _, threat in ipairs(ThreatKeywords) do
+					if string.find(src, threat.pattern) then
+						local preview = getLinePreview(src, threat.pattern)
+						logToFile(OUT_DIR .. "/scanned_threats.log", string.format(
+							"[POTENTIAL THREAT]\nScript: %s\nGamePath: %s\nType: %s\nPreview: %s",
+							name .. ".lua", gamePath, threat.name, preview
+						))
+					end
+				end
+			end
+
+			local finalPath = getUniquePath(writePath, ".lua")
+			pcall(createFoldersForPath, finalPath)
+			pcall(ensureDir, folderPath)
+			local wok = pcall(writefile, finalPath, src)
+			if wok then
+				local shortPath = gamePath ~= "" and gamePath or ("_misc/" .. tag)
+				if #shortPath > 55 then shortPath = "..." .. string.sub(shortPath, -52) end
+				addLog("[✓] " .. name .. " → " .. shortPath, Color3.fromRGB(80, 255, 140))
+				total_lua += 1
+				updateStats()
+			else
+				addLog("[ERR:WRITE] " .. name, Color3.fromRGB(220, 80, 80))
+				total_skip += 1
+				updateStats()
+			end
+		elseif Config.FallbackBytecode and bc ~= "" then
+			local finalPath = getUniquePath(writePath, ".luac")
+			pcall(createFoldersForPath, finalPath)
+			pcall(ensureDir, folderPath)
+			local wok = pcall(writefile, finalPath, bc)
+			if wok then
+				addLog("[BC] " .. name .. ".luac", Color3.fromRGB(160, 100, 255))
+				total_luac += 1
+				updateStats()
+			end
+		else
+			addLog("[FAIL] " .. name, Color3.fromRGB(220, 80, 80))
+			total_skip += 1
+			updateStats()
+		end
+
+		setPhaseStatus("write", i, #results)
+		checkYield()
+	end
+
+	-- Write GC closures to separate folder
+	if #gcClosures > 0 then
+		local gcBase = OUT_DIR .. "/gc_closures"
+		ensureDir(gcBase)
+		addLog(string.format("Writing %d GC closures...", #gcClosures), Color3.fromRGB(150, 100, 220))
+		for _, item in ipairs(gcClosures) do
+			local basePath = gcBase .. "/" .. item.name
+			local fname = getUniquePath(basePath, ".lua")
+			local wok = pcall(writefile, fname, item.src)
+			if wok then
+				addLog("[GC] " .. (string.match(fname, "[^/]+$") or item.name), Color3.fromRGB(150, 100, 220))
+				total_lua += 1
+				updateStats()
+			end
+			checkYield()
+		end
+	end
+end
+
+-- =================================================================
+-- PHASE 4: REMOTE SPY DUMPER (TOOL 2)
+-- =================================================================
+
+local remoteSpyData = {}
+local remoteInvocationCount = {}
+
+local function argumentsToHexDump(args)
+	local argStrings = {}
+	for i, arg in ipairs(args) do
+		table.insert(argStrings, tostring(arg))
+	end
+	local combined = "[" .. table.concat(argStrings, ",") .. "]"
+	local hex = ""
+	local hexLine = ""
+	for i = 1, #combined do
+		hexLine = hexLine .. string.format("%02X ", string.byte(combined, i))
+		if i % 16 == 0 then
+			hex = hex .. hexLine .. "\n"
+			hexLine = ""
+		end
+	end
+	if hexLine ~= "" then hex = hex .. hexLine end
+	return hex, combined
+end
+
+local function serializeArg(arg, depth)
+	depth = depth or 0
+	if depth > 5 then return "..." end
+	
+	if arg == nil then return "nil"
+	elseif type(arg) == "boolean" then return tostring(arg)
+	elseif type(arg) == "number" then return tostring(arg)
+	elseif type(arg) == "string" then return '"' .. arg .. '"'
+	elseif type(arg) == "table" then
+		local result = "{"
+		local count = 0
+		for k, v in pairs(arg) do
+			if count > 0 then result = result .. ", " end
+			if type(k) == "string" then
+				result = result .. k .. " = " .. serializeArg(v, depth + 1)
+			else
+				result = result .. "[" .. tostring(k) .. "] = " .. serializeArg(v, depth + 1)
+			end
+			count = count + 1
+			if count >= 15 then
+				result = result .. ", ..."
+				break
+			end
+		end
+		result = result .. "}"
+		return result
+	elseif typeof(arg) == "CFrame" then
+		local x, y, z = arg.X, arg.Y, arg.Z
+		return string.format("CFrame.new(%.2f, %.2f, %.2f)", x, y, z)
+	else
+		return tostring(typeof(arg)) .. ": " .. tostring(arg)
+	end
+end
+
+local function captureRemoteCall(remoteName, direction, method, args)
+	if not remoteInvocationCount[remoteName] then
+		remoteInvocationCount[remoteName] = 0
+		remoteSpyData[remoteName] = {
+			name = remoteName,
+			direction = direction,
+			method = method,
+			calls = {}
+		}
+	end
+	
+	remoteInvocationCount[remoteName] = remoteInvocationCount[remoteName] + 1
+	
+	local hex, combined = argumentsToHexDump(args)
+	
+	table.insert(remoteSpyData[remoteName].calls, {
+		timestamp = os.time(),
+		arguments = args,
+		hexDump = hex,
+		combined = combined
+	})
+end
+
+local function writeRemoteSpyFiles()
+	local remoteDir = OUT_DIR .. "/remotes_dumped"
+	ensureDir(remoteDir)
+	
+	local totalWritten = 0
+	
+	for remoteName, data in pairs(remoteSpyData) do
+		local invocations = remoteInvocationCount[remoteName] or 0
+		
+		local content = string.format(
+			"-- ============================================================================\n" ..
+			"-- REMOTE SPY DUMP - %s\n" ..
+			"-- Direction: %s | Method: %s | Total Invocations: %d\n" ..
+			"-- Generated: %s\n" ..
+			"-- ============================================================================\n\n",
+			remoteName,
+			data.direction,
+			data.method,
+			invocations,
+			os.date("%Y-%m-%d %H:%M:%S")
+		)
+		
+		for idx, call in ipairs(data.calls) do
+			content = content .. string.format(
+				"-- [CALL #%d] %s\n" ..
+				"-- Arguments (%d total):\n",
+				idx,
+				os.date("%H:%M:%S", call.timestamp),
+				#call.arguments
+			)
+			
+			for i, arg in ipairs(call.arguments) do
+				content = content .. string.format("--   [%d] (%s) %s\n", i, type(arg), serializeArg(arg))
+			end
+			
+			content = content .. "\n-- [HEX DUMP]:\n"
+			local hexLines = string.split(call.hexDump, "\n")
+			local offset = 0
+			for _, hexLine in ipairs(hexLines) do
+				if hexLine ~= "" then
+					content = content .. string.format("-- %08X  %s\n", offset, hexLine)
+					offset = offset + 16
+				end
+			end
+			
+			content = content .. "\nlocal Payload_" .. idx .. " = {\n"
+			for i, arg in ipairs(call.arguments) do
+				content = content .. string.format("    [%d] = %s,\n", i, serializeArg(arg))
+			end
+			content = content .. "}\n\n"
+			content = content .. string.rep("─", 70) .. "\n\n"
+		end
+		
+		local filePath = remoteDir .. "/" .. remoteName .. ".lua"
+		local uniquePath = getUniquePath(filePath, ".lua")
+		
+		local ok = pcall(function()
+			ensureDir(remoteDir)
+			writefile(uniquePath, content)
+		end)
+		
+		if ok then
+			addLog(string.format("[SPY] %s (%d calls)", remoteName, invocations), Color3.fromRGB(100, 200, 255))
+			totalWritten = totalWritten + 1
+		end
+		
+		checkYield()
+	end
+	
+	return totalWritten
+end
+
+local function hookRemoteCalls()
+	addLog("🔌 Hooking RemoteEvent & RemoteFunction...", Color3.fromRGB(150, 150, 255))
+	
+	if hookfunction then
+		pcall(function()
+			local remoteEvent = Instance.new("RemoteEvent")
+			if remoteEvent.FireServer then
+				local oldFireServer
+				oldFireServer = hookfunction(remoteEvent.FireServer, function(self, ...)
+					local remoteName = self.Name or "UnknownRemote"
+					local args = {...}
+					captureRemoteCall(remoteName, "CLIENT → SERVER", "FireServer", args)
+					return oldFireServer(self, ...)
+				end)
+			end
+		end)
+		
+		pcall(function()
+			local remoteFunc = Instance.new("RemoteFunction")
+			if remoteFunc.InvokeServer then
+				local oldInvokeServer
+				oldInvokeServer = hookfunction(remoteFunc.InvokeServer, function(self, ...)
+					local remoteName = self.Name or "UnknownRemote"
+					local args = {...}
+					captureRemoteCall(remoteName, "CLIENT → SERVER", "InvokeServer", args)
+					return oldInvokeServer(self, ...)
+				end)
+			end
+		end)
+		
+		addLog("[HOOK] RemoteEvent.FireServer + RemoteFunction.InvokeServer hooked", Color3.fromRGB(150, 200, 100))
+	else
+		addLog("[WARN] hookfunction not available - remote spy limited mode", Color3.fromRGB(255, 180, 80))
+	end
+end
+
+local function runRemoteSpyPhase()
+	setPhaseStatus("remote_spy", 0, 1)
+	addLog("", Color3.fromRGB(40, 40, 40))
+	addLog("╔══════════════════════════════════════╗", Color3.fromRGB(100, 180, 255))
+	addLog("║  📡 PHASE 4: REMOTE SPY (TOOL 2)     ║", Color3.fromRGB(100, 180, 255))
+	addLog("╚══════════════════════════════════════╝", Color3.fromRGB(100, 180, 255))
+	
+	setProgress("PHASE 4/4: Capturing remote traffic...")
+	markPhaseActive("remote_spy")
+	
+	hookRemoteCalls()
+	
+	addLog("⏳ Listening for remote calls (5 seconds)...", Color3.fromRGB(180, 150, 100))
+	for i = 5, 1, -1 do
+		task.wait(1)
+		addLog(string.format("   %ds remaining...", i), Color3.fromRGB(150, 150, 150))
+	end
+	
+	local remotesWritten = writeRemoteSpyFiles()
+	
+	markPhaseDone("remote_spy", remotesWritten)
+	addLog("", Color3.fromRGB(40, 40, 40))
+end
+
+-- =================================================================
+-- MAIN 4-PHASE DUMP EXECUTION
+-- =================================================================
+local function executeDump()
+	total_lua   = 0
+	total_luac  = 0
+	total_skip  = 0
+	global_seen_bc = {}
+	table.clear(allLogLabels)
+
+	for _, child in ipairs(LogScroll:GetChildren()) do
+		if child:IsA("TextLabel") then child:Destroy() end
+	end
+
+	updateStats()
+	resetPhaseUI()
+	lastYield = os.clock()
+
+	local startTime = os.clock()
+	addLog("=== SUPER DUMPER V5 – 4-PHASE SYSTEM (WITH TOOL 2) ===", Color3.fromRGB(150, 80, 255))
+	addLog(string.format(
+		"[SYS] decompile=%s | getscriptbytecode=%s | getscripts=%s | getinstances=%s | hookfunction=%s",
+		tostring(decompile ~= nil),
+		tostring(getscriptbytecode ~= nil),
+		tostring(getscripts ~= nil),
+		tostring(getinstances ~= nil),
+		tostring(hookfunction ~= nil)
+	), Color3.fromRGB(180, 180, 220))
+
+	ensureDir(OUT_DIR)
+
+	-- ══════════════════════════════════════════════════════════════
+	-- ETAP 1: SKANOWANIE
+	-- ══════════════════════════════════════════════════════════════
+	setProgress("PHASE 1/3: Scanning all sources...")
+	addLog("", Color3.fromRGB(40, 40, 40))
+	addLog("╔══════════════════════════════════════╗", Color3.fromRGB(150, 80, 255))
+	addLog("║  ⚡ PHASE 1: SCANNING (6 methods)     ║", Color3.fromRGB(150, 80, 255))
+	addLog("╚══════════════════════════════════════╝", Color3.fromRGB(150, 80, 255))
+	markPhaseActive("scan")
+	switchTab("Logs")
+
+	local queue = runScanPhase()
+
+	markPhaseDone("scan", #queue)
+	addLog("", Color3.fromRGB(40, 40, 40))
+
+	-- ══════════════════════════════════════════════════════════════
+	-- ETAP 2: DEKOMPILACJA
+	-- ══════════════════════════════════════════════════════════════
+	setProgress("PHASE 2/3: Decompiling " .. tostring(#queue) .. " scripts...")
+	addLog("╔══════════════════════════════════════╗", Color3.fromRGB(100, 180, 255))
+	addLog("║  🧪 PHASE 2: DECOMPILING              ║", Color3.fromRGB(100, 180, 255))
+	addLog("╚══════════════════════════════════════╝", Color3.fromRGB(100, 180, 255))
+	markPhaseActive("decompile")
+
+	local results, gcClosures = runDecompilePhase(queue)
+
+	markPhaseDone("decompile", #results)
+	addLog("", Color3.fromRGB(40, 40, 40))
+
+	-- ══════════════════════════════════════════════════════════════
+	-- ETAP 3: ZAPIS 1:1 STRUKTURA GRY
+	-- ══════════════════════════════════════════════════════════════
+	setProgress("PHASE 3/3: Recreating 1:1 structure...")
+	addLog("╔══════════════════════════════════════╗", Color3.fromRGB(80, 255, 140))
+	addLog("║  📁 PHASE 3: WRITING 1:1 STRUCTURE    ║", Color3.fromRGB(80, 255, 140))
+	addLog("╚══════════════════════════════════════╝", Color3.fromRGB(80, 255, 140))
+	markPhaseActive("write")
+
+	runWritePhase(results, gcClosures)
+
+	markPhaseDone("write", total_lua)
+
+	-- ══════════════════════════════════════════════════════════════
+	-- ETAP 4: REMOTE SPY
+	-- ══════════════════════════════════════════════════════════════
+	setProgress("PHASE 4/4: Capturing remote traffic...")
+	runRemoteSpyPhase()
+
+	-- ── PODSUMOWANIE ──────────────────────────────────────────────
+	local elapsed = string.format("%.2fs", os.clock() - startTime)
+	TimeElapsedText.Text = elapsed
+	setProgress("All 4 phases completed!")
+	addLog("", Color3.fromRGB(40, 40, 40))
+	addLog("════════════════════════════════════════", Color3.fromRGB(150, 80, 255))
+	addLog(string.format("✓ DUMP COMPLETED IN %s!", elapsed), Color3.fromRGB(80, 255, 140))
+	addLog(string.format("  Saved: %d .lua  |  %d .luac  |  %d skipped", total_lua, total_luac, total_skip), Color3.fromRGB(200, 200, 200))
+	addLog("  Scripts:  workspace/" .. OUT_DIR .. "/game_tree_1to1/", Color3.fromRGB(180, 180, 255))
+	addLog("  GC:       workspace/" .. OUT_DIR .. "/gc_closures/",    Color3.fromRGB(180, 180, 255))
+	addLog("  Remotes:  workspace/" .. OUT_DIR .. "/remotes_dumped/", Color3.fromRGB(100, 200, 255))
+	addLog("════════════════════════════════════════", Color3.fromRGB(150, 80, 255))
+end
+
+-- =================================================================
+-- ACTION CONTROLLER
+-- =================================================================
+local isDumping = false
+
+StartBtn.MouseButton1Click:Connect(function()
+	if isDumping then return end
+	isDumping = true
+	StartBtn.Text = "⏳ DUMPING... (4-PHASE, PLEASE WAIT)"
+	StartBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 40)
+
+	local startTime = os.clock()
+	local counterActive = true
+	task.spawn(function()
+		while counterActive do
+			TimeElapsedText.Text = string.format("%.1fs", os.clock() - startTime)
+			task.wait(0.1)
+		end
+	end)
+
+	task.spawn(function()
+		local ok, err = pcall(executeDump)
+		counterActive = false
+		if not ok then
+			addLog("CRITICAL ERROR: " .. tostring(err), Color3.fromRGB(255, 80, 80))
+			setProgress("A critical error occurred!")
+		end
+		isDumping = false
+		StartBtn.Text = "▶ START 4-PHASE DUMP (SCRIPTS + REMOTES)"
+		StartBtn.BackgroundColor3 = Color3.fromRGB(130, 70, 255)
+	end)
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+	SG:Destroy()
+	_G.SuperDumperGUI = nil
+end)
+
+-- =================================================================
+-- SYSTEM HOOKS (DYNAMIC NETWORK EVENT SPY)
+-- =================================================================
+local hasNetworkSpyHook = false
+local spyInitialized = false
+
+function initializeNetworkSpy()
+	if spyInitialized then return end
+	spyInitialized = true
+
+	pcall(function()
+		local remoteEvent = Instance.new("RemoteEvent")
+		if hookfunction and remoteEvent.FireServer then
+			local oldFireServer
+			oldFireServer = hookfunction(remoteEvent.FireServer, function(self, ...)
+				if Config.NetworkSpyActive then
+					local args = { ... }
+					task.spawn(function()
+						local argStrings = {}
+						for i, arg in ipairs(args) do
+							table.insert(argStrings, string.format("[%d] (%s) %s", i, type(arg), tostring(arg)))
+						end
+						local logMsg = string.format(
+							"[NETWORK EVENT] %s:FireServer()\nArguments:\n%s",
+							self:GetFullName(),
+							table.concat(argStrings, "\n")
+						)
+						logToFile(OUT_DIR .. "/network_remotes.log", logMsg)
+						addLog(string.format("📡 [EVENT] %s", self.Name), Color3.fromRGB(80, 220, 240))
+					end)
+				end
+				return oldFireServer(self, ...)
+			end)
+			hasNetworkSpyHook = true
+		end
+	end)
+
+	pcall(function()
+		local remoteFunc = Instance.new("RemoteFunction")
+		if hookfunction and remoteFunc.InvokeServer then
+			local oldInvokeServer
+			oldInvokeServer = hookfunction(remoteFunc.InvokeServer, function(self, ...)
+				if Config.NetworkSpyActive then
+					local args = { ... }
+					task.spawn(function()
+						local argStrings = {}
+						for i, arg in ipairs(args) do
+							table.insert(argStrings, string.format("[%d] (%s) %s", i, type(arg), tostring(arg)))
+						end
+						local logMsg = string.format(
+							"[NETWORK FUNCTION] %s:InvokeServer()\nArguments:\n%s",
+							self:GetFullName(),
+							table.concat(argStrings, "\n")
+						)
+						logToFile(OUT_DIR .. "/network_remotes.log", logMsg)
+						addLog(string.format("📡 [FUNC] %s", self.Name), Color3.fromRGB(240, 220, 80))
+					end)
+				end
+				return oldInvokeServer(self, ...)
+			end)
+			hasNetworkSpyHook = true
+		end
+	end)
+
+	if hasNetworkSpyHook then
+		addLog("[SYS] Network Remote Spy successfully activated.", Color3.fromRGB(80, 250, 200))
+	else
+		addLog("[SYS] Activation failed (no hookfunction in executor).", Color3.fromRGB(250, 100, 100))
+	end
+end
+
+addLog("Super Dumper Pro v5.0 (4-Phase + TOOL 2: Remote Spy) loaded.", Color3.fromRGB(150, 100, 255))
+addLog("[SYS] Phase 1: Scan (6 methods) | Phase 2: Decompile | Phase 3: Write 1:1 | Phase 4: Remote Spy", Color3.fromRGB(80, 200, 255))
+addLog("Configure settings or click START 4-PHASE DUMP.", Color3.fromRGB(160, 160, 170))
+updateStats()

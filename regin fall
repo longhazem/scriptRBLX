@@ -3,55 +3,87 @@ local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
-local Players = game:GetService("Players")
+local Players         = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local Lighting = game:GetService("Lighting")
-local Workspace = game:GetService("Workspace")
-local lp = Players.LocalPlayer
-local camera = workspace.CurrentCamera
-local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local RunService      = game:GetService("RunService")
+local Lighting        = game:GetService("Lighting")
+local Workspace       = game:GetService("Workspace")
+local lp              = Players.LocalPlayer
+local camera          = workspace.CurrentCamera
+local isMobile        = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
-local originalFogEnd = Lighting.FogEnd
+local originalFogEnd    = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
-local config = {
+-- ─── CONFIG ───────────────────────────────────────────────────────────────────
+
+local Config = {
+    -- Combat
     raycasting        = false,
     autoHit           = false,
-    infiniteAmmo      = false,
-    infiniteStamina   = false,
+    noRecoil          = false,
+    noSpread          = false,
+    -- Hitbox
+    hitboxExpander    = false,
+    hitboxSize        = 6,
+    -- Pickup ESP
     objectiveESP      = false,
     ammoESP           = false,
     armorESP          = false,
     medkitESP         = false,
     gearESP           = false,
     throwableESP      = false,
+    -- Entity ESP filters
     zombieESP         = false,
+    zombieBox         = true,
+    zombieHealth      = true,
+    zombieName        = true,
+    zombieDistance    = true,
     playerESP         = false,
-    hitboxExpander    = false,
-    hitboxSize        = 6,
-    nofog             = false,
-    fullbright        = false,
+    playerBox         = true,
+    playerHealth      = true,
+    playerName        = true,
+    playerDistance    = true,
+    -- ESP style (y chang BRM5)
+    UseBoxESP         = true,
+    UseHighlight      = false,
+    UseTracers        = false,
+    ShowNames         = true,
+    ShowDistance      = true,
+    ShowHealth        = true,
+    BoxStyle          = "Full",       -- "Full" | "Corner"
+    HealthBarSide     = "Left",       -- "Left" | "Right" | "Bottom"
+    UseHealthGradient = true,
+    BoxColor          = nil,          -- nil = dùng entity color
+    HealthBarColor    = Color3.new(0,1,0),
+    ZombieColor       = Color3.fromRGB(255, 60, 60),
+    PlayerColor       = Color3.fromRGB(0, 200, 255),
+    MaxDistance       = 3570,         -- studs (~1000m)
+    -- Utility
+    infiniteAmmo      = false,
+    infiniteStamina   = false,
     autoReload        = false,
     autoReloadInterval = 2,
-    noRecoil          = false,
-    noSpread          = false,
+    speedHack         = false,
+    speedHackValue    = 24,
+    -- World
+    nofog             = false,
+    fullbright        = false,
 }
 
-local target           = {enabled = true, position = nil}
-local highlightObjects = {}
-local expandedHitboxes = {}
-local trackedNPCs      = {}
-local trackedPickups   = {}
-local originalAmmoValues   = {}
+-- ─── STATE ────────────────────────────────────────────────────────────────────
+
+local target              = {enabled = true, position = nil}
+local highlightObjects    = {}
+local expandedHitboxes    = {}
+local trackedNPCs         = {}
+local trackedPickups      = {}
+local originalAmmoValues  = {}
 local originalStaminaValue = nil
+local originalWalkSpeed   = nil
+local drawingPool         = {}  -- [model] = drawing set (y chang BRM5 ESPElements)
 
 -- ─── NO RECOIL ────────────────────────────────────────────────────────────────
---
--- ConnectCameraRecoil  → ghi CFrame.Angles vào offsets_folder["camera_recoil"]
--- ConnectVisualRecoil  → shove spring vào offsets_folder["visual_recoil"]
--- Hook __newindex, intercept Value write trên hai CFrameValue đó → CFrame.new()
--- VisualRecoilBlur.NearIntensity → zero.
 
 local ZERO_CFRAME = CFrame.new()
 local recoilHook
@@ -59,10 +91,8 @@ local recoilHook
 local function installRecoilHook()
     if recoilHook then return end
     recoilHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
-        if config.noRecoil then
-            if key == "Value"
-            and typeof(value) == "CFrame"
-            and self:IsA("CFrameValue")
+        if Config.noRecoil then
+            if key == "Value" and typeof(value) == "CFrame" and self:IsA("CFrameValue")
             and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
                 return recoilHook(self, key, ZERO_CFRAME)
             end
@@ -73,267 +103,90 @@ local function installRecoilHook()
         return recoilHook(self, key, value)
     end))
 end
-
 installRecoilHook()
 
--- ─── HIGHLIGHT UTILS ──────────────────────────────────────────────────────────
+-- ─── PICKUP HIGHLIGHT UTILS ───────────────────────────────────────────────────
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
     pcall(function()
-        local existing = obj:FindFirstChild("TokaiHighlight")
-        if existing then existing:Destroy() end
-        local h = Instance.new("Highlight")
-        h.Name = "TokaiHighlight"
-        h.FillColor = color
-        h.OutlineColor = color
-        h.FillTransparency = transparency or 0.3
-        h.OutlineTransparency = 0
-        h.Parent = obj
-        highlightObjects[obj] = true
+        local h = obj:FindFirstChild("TokaiHL") or Instance.new("Highlight")
+        h.Name = "TokaiHL"
+        h.FillColor = color; h.OutlineColor = color
+        h.FillTransparency = transparency or 0.3; h.OutlineTransparency = 0
+        h.Parent = obj; highlightObjects[obj] = true
     end)
 end
 
 local function RemoveHighlight(obj)
     pcall(function()
-        local h = obj:FindFirstChild("TokaiHighlight")
+        local h = obj:FindFirstChild("TokaiHL")
         if h then h:Destroy() end
         highlightObjects[obj] = nil
     end)
 end
 
--- ─── HITBOX EXPANDER — EVENT-DRIVEN ───────────────────────────────────────────
+-- ─── HITBOX EXPANDER ──────────────────────────────────────────────────────────
 
 local function restoreHitbox(part)
-    local original = expandedHitboxes[part]
-    if original and part and part.Parent then
-        pcall(function()
-            part.Size = original.size
-            part.Transparency = original.transparency
-        end)
+    local orig = expandedHitboxes[part]
+    if orig and part and part.Parent then
+        pcall(function() part.Size = orig.size; part.Transparency = orig.transparency end)
     end
     expandedHitboxes[part] = nil
 end
 
 local function expandHitbox(part)
-    if not part or not part:IsA("BasePart") then return end
-    if part.Name ~= "Head" then return end
-    if not config.hitboxExpander then return end
+    if not part or not part:IsA("BasePart") or part.Name ~= "Head" then return end
+    if not Config.hitboxExpander then return end
     local model = part.Parent
-    if not model or not model:FindFirstChildWhichIsA("Humanoid") then return end
+    if not model or not model:FindFirstChild("Humanoid") then return end
     if Players:GetPlayerFromCharacter(model) ~= nil then return end
     pcall(function()
         if not expandedHitboxes[part] then
-            expandedHitboxes[part] = {
-                size = part.Size,
-                transparency = part.Transparency
-            }
+            expandedHitboxes[part] = {size = part.Size, transparency = part.Transparency}
         end
-        part.Size = Vector3.new(config.hitboxSize, config.hitboxSize, config.hitboxSize)
-        part.CanCollide = false
-        part.Transparency = 0.7
+        part.Size = Vector3.new(Config.hitboxSize, Config.hitboxSize, Config.hitboxSize)
+        part.CanCollide = false; part.Transparency = 0.7
     end)
 end
 
 local function cleanupNPC(npcModel)
     local tracked = trackedNPCs[npcModel]
     if not tracked then return end
-    for _, conn in ipairs(tracked.connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    for _, part in ipairs(tracked.parts) do
-        restoreHitbox(part)
-    end
-    RemoveHighlight(npcModel)
+    for _, conn in ipairs(tracked.connections) do pcall(function() conn:Disconnect() end) end
+    for _, part in ipairs(tracked.parts) do restoreHitbox(part) end
     trackedNPCs[npcModel] = nil
 end
 
 local function trackNPC(npcModel)
     if trackedNPCs[npcModel] then return end
-    local humanoid = npcModel:FindFirstChildWhichIsA("Humanoid")
+    local humanoid = npcModel:FindFirstChild("Humanoid")
     if not humanoid then return end
-
-    local connections = {}
-    local parts = {}
-
+    local connections, parts = {}, {}
     local head = npcModel:FindFirstChild("Head")
-    if head then
-        expandHitbox(head)
-        table.insert(parts, head)
-    end
-
-    local descConn = npcModel.DescendantAdded:Connect(function(desc)
+    if head then expandHitbox(head); table.insert(parts, head) end
+    local c1 = npcModel.DescendantAdded:Connect(function(desc)
         if desc:IsA("BasePart") and desc.Name == "Head" then
-            task.wait(0.05)
-            expandHitbox(desc)
-            table.insert(parts, desc)
+            task.wait(0.05); expandHitbox(desc); table.insert(parts, desc)
         end
     end)
-    table.insert(connections, descConn)
-
-    local diedConn = humanoid.Died:Connect(function()
-        task.wait(0.1)
-        cleanupNPC(npcModel)
+    local c2 = humanoid.Died:Connect(function()
+        task.wait(0.1); cleanupNPC(npcModel)
     end)
-    table.insert(connections, diedConn)
-
-    local removingConn = npcModel.AncestryChanged:Connect(function(_, parent)
-        if not parent then
-            cleanupNPC(npcModel)
-        end
+    local c3 = npcModel.AncestryChanged:Connect(function(_, parent)
+        if not parent then cleanupNPC(npcModel) end
     end)
-    table.insert(connections, removingConn)
-
+    table.insert(connections, c1); table.insert(connections, c2); table.insert(connections, c3)
     trackedNPCs[npcModel] = {connections = connections, parts = parts}
 end
 
 local function untrackAllNPCs()
-    for npcModel, _ in pairs(trackedNPCs) do
-        cleanupNPC(npcModel)
-    end
-    trackedNPCs = {}
-    expandedHitboxes = {}
+    for npc in pairs(trackedNPCs) do cleanupNPC(npc) end
+    trackedNPCs = {}; expandedHitboxes = {}
 end
 
-local function initHitboxExpander()
-    local enemyContainer = workspace.Game
-        and workspace.Game.Current
-        and workspace.Game.Current.Spawned
-        and workspace.Game.Current.Spawned.NPCs
-        and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
-    if not enemyContainer then return end
-
-    for _, npc in ipairs(enemyContainer:GetChildren()) do
-        if npc:IsA("Model") then trackNPC(npc) end
-    end
-
-    enemyContainer.ChildAdded:Connect(function(child)
-        if config.hitboxExpander and child:IsA("Model") then
-            task.wait(0.1)
-            trackNPC(child)
-        end
-    end)
-end
-
-local function watchForGameReady()
-    task.spawn(function()
-        while true do
-            local enemies = workspace.Game
-                and workspace.Game.Current
-                and workspace.Game.Current.Spawned
-                and workspace.Game.Current.Spawned.NPCs
-                and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
-            if enemies then
-                initHitboxExpander()
-                enemies.AncestryChanged:Wait()
-                untrackAllNPCs()
-            end
-            task.wait(1)
-        end
-    end)
-end
-
-watchForGameReady()
-
--- ─── PICKUP ESP ───────────────────────────────────────────────────────────────
-
-local PICKUP_CONFIG = {
-    mission_              = { key = "objectiveESP",  color = Color3.fromRGB(0, 255, 0),    prefix = true  },
-    scenery_phone_ringing = { key = "objectiveESP",  color = Color3.fromRGB(255, 255, 255), prefix = false },
-    pickup_ammo           = { key = "ammoESP",       color = Color3.fromRGB(255, 255, 0)   },
-    pickup_armor          = { key = "armorESP",      color = Color3.fromRGB(0, 0, 255)     },
-    pickup_medkit         = { key = "medkitESP",     color = Color3.fromRGB(255, 0, 0)     },
-    pickup_gear           = { key = "gearESP",       color = Color3.fromRGB(255, 165, 0)   },
-    pickup_throwable      = { key = "throwableESP",  color = Color3.fromRGB(180, 0, 255)   },
-}
-
-local function resolvePickupConfig(name)
-    for key, cfg in pairs(PICKUP_CONFIG) do
-        if cfg.prefix and name:sub(1, #key) == key then return cfg end
-    end
-    return PICKUP_CONFIG[name]
-end
-
-local function trackPickup(obj)
-    if trackedPickups[obj] then return end
-    local conn = obj.AncestryChanged:Connect(function(_, parent)
-        if not parent then
-            RemoveHighlight(obj)
-            if trackedPickups[obj] then
-                pcall(function() trackedPickups[obj]:Disconnect() end)
-                trackedPickups[obj] = nil
-            end
-        end
-    end)
-    trackedPickups[obj] = conn
-end
-
-local function UpdateObjectiveESP()
-    for obj, _ in pairs(highlightObjects) do
-        if obj and obj.Parent then
-            local cfg = resolvePickupConfig(obj.Name)
-            if cfg and not config[cfg.key] then RemoveHighlight(obj) end
-        end
-    end
-
-    local gameObjects = workspace.Game
-        and workspace.Game.Current
-        and workspace.Game.Current.Spawned
-        and workspace.Game.Current.Spawned.GameObjects
-    if not gameObjects then return end
-
-    for _, obj in ipairs(gameObjects:GetChildren()) do
-        local cfg = resolvePickupConfig(obj.Name)
-        if cfg and config[cfg.key] then
-            if not obj:FindFirstChild("TokaiHighlight") then
-                AddHighlight(obj, cfg.color, 0.3)
-                trackPickup(obj)
-            end
-        end
-    end
-end
-
--- ─── ENTITY ESP ───────────────────────────────────────────────────────────────
-
-local function UpdateESP()
-    for obj, _ in pairs(highlightObjects) do
-        if obj and obj.Parent and obj:FindFirstChildWhichIsA("Humanoid") then
-            local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
-            if isPlayer and not config.playerESP then RemoveHighlight(obj)
-            elseif not isPlayer and not config.zombieESP then RemoveHighlight(obj)
-            end
-        end
-    end
-
-    if config.playerESP then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= lp and player.Character and player.Character:FindFirstChildWhichIsA("Humanoid") then
-                if not player.Character:FindFirstChild("TokaiHighlight") then
-                    AddHighlight(player.Character, Color3.fromRGB(0, 255, 255), 0.3)
-                end
-            end
-        end
-    end
-
-    if config.zombieESP then
-        local enemyContainer = workspace.Game
-            and workspace.Game.Current
-            and workspace.Game.Current.Spawned
-            and workspace.Game.Current.Spawned.NPCs
-            and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
-        if enemyContainer then
-            for _, zombie in ipairs(enemyContainer:GetChildren()) do
-                if zombie:IsA("Model") and zombie:FindFirstChildWhichIsA("Humanoid") then
-                    if not zombie:FindFirstChild("TokaiHighlight") then
-                        AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
-                    end
-                end
-            end
-        end
-    end
-end
-
--- ─── SILENT AIM ───────────────────────────────────────────────────────────────
+-- ─── ENEMY CONTAINER ──────────────────────────────────────────────────────────
 
 local function getEnemyContainer()
     return workspace.Game
@@ -343,79 +196,362 @@ local function getEnemyContainer()
         and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
 end
 
-local function getClosestHead()
+local function initHitboxExpander()
     local container = getEnemyContainer()
-    if not container then return nil end
-    local referencePos
-    if isMobile then
-        local vp = camera.ViewportSize
-        referencePos = Vector2.new(vp.X / 2, vp.Y / 2)
-    else
-        referencePos = UserInputService:GetMouseLocation()
+    if not container then return end
+    for _, npc in ipairs(container:GetChildren()) do
+        if npc:IsA("Model") then trackNPC(npc) end
     end
-    local bestHeadPos, bestDist = nil, math.huge
-    for _, enemy in ipairs(container:GetChildren()) do
-        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-        if head then
-            local screenPoint, onScreen = camera:WorldToScreenPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - referencePos).Magnitude
-                if dist < bestDist then
-                    bestDist = dist
-                    bestHeadPos = head.Position
+    container.ChildAdded:Connect(function(child)
+        if Config.hitboxExpander and child:IsA("Model") then
+            task.wait(0.1); trackNPC(child)
+        end
+    end)
+end
+
+task.spawn(function()
+    while true do
+        local container = getEnemyContainer()
+        if container then
+            initHitboxExpander()
+            container.AncestryChanged:Wait()
+            untrackAllNPCs()
+        end
+        task.wait(1)
+    end
+end)
+
+-- ─── PICKUP ESP ───────────────────────────────────────────────────────────────
+
+local PICKUP_CONFIG = {
+    mission_              = {key="objectiveESP", color=Color3.fromRGB(0,255,0),   prefix=true},
+    scenery_phone_ringing = {key="objectiveESP", color=Color3.fromRGB(255,255,255)},
+    pickup_ammo           = {key="ammoESP",      color=Color3.fromRGB(255,255,0)},
+    pickup_armor          = {key="armorESP",     color=Color3.fromRGB(0,0,255)},
+    pickup_medkit         = {key="medkitESP",    color=Color3.fromRGB(255,0,0)},
+    pickup_gear           = {key="gearESP",      color=Color3.fromRGB(255,165,0)},
+    pickup_throwable      = {key="throwableESP", color=Color3.fromRGB(180,0,255)},
+}
+
+local function resolvePickup(name)
+    for k, cfg in pairs(PICKUP_CONFIG) do
+        if cfg.prefix and name:sub(1, #k) == k then return cfg end
+    end
+    return PICKUP_CONFIG[name]
+end
+
+local function trackPickup(obj)
+    if trackedPickups[obj] then return end
+    trackedPickups[obj] = obj.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            RemoveHighlight(obj)
+            if trackedPickups[obj] then pcall(function() trackedPickups[obj]:Disconnect() end) end
+            trackedPickups[obj] = nil
+        end
+    end)
+end
+
+local function UpdatePickupESP()
+    for obj in pairs(highlightObjects) do
+        if obj and obj.Parent then
+            local cfg = resolvePickup(obj.Name)
+            if cfg and not Config[cfg.key] then RemoveHighlight(obj) end
+        end
+    end
+    local gameObjects = workspace.Game and workspace.Game.Current
+        and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.GameObjects
+    if not gameObjects then return end
+    for _, obj in ipairs(gameObjects:GetChildren()) do
+        local cfg = resolvePickup(obj.Name)
+        if cfg and Config[cfg.key] and not obj:FindFirstChild("TokaiHL") then
+            AddHighlight(obj, cfg.color, 0.3); trackPickup(obj)
+        end
+    end
+end
+
+-- ─── DRAWING ESP (y chang BRM5) ───────────────────────────────────────────────
+
+local function CreateDrawingESP()
+    local esp = {
+        BoxOutline    = Drawing.new("Square"),
+        Box           = Drawing.new("Square"),
+        HealthBarOutline = Drawing.new("Square"),
+        HealthBar     = Drawing.new("Square"),
+        Name          = Drawing.new("Text"),
+        Distance      = Drawing.new("Text"),
+    }
+    esp.BoxOutline.Visible=false; esp.BoxOutline.Color=Color3.new(0,0,0); esp.BoxOutline.Thickness=3; esp.BoxOutline.Transparency=1; esp.BoxOutline.Filled=false; esp.BoxOutline.ZIndex=1
+    esp.Box.Visible=false; esp.Box.Color=Color3.new(1,1,1); esp.Box.Thickness=1; esp.Box.Transparency=1; esp.Box.Filled=false; esp.Box.ZIndex=2
+    esp.HealthBarOutline.Visible=false; esp.HealthBarOutline.Color=Color3.new(0,0,0); esp.HealthBarOutline.Thickness=1; esp.HealthBarOutline.Filled=true; esp.HealthBarOutline.Transparency=1; esp.HealthBarOutline.ZIndex=1
+    esp.HealthBar.Visible=false; esp.HealthBar.Color=Color3.new(0,1,0); esp.HealthBar.Thickness=1; esp.HealthBar.Filled=true; esp.HealthBar.ZIndex=2
+    esp.Name.Visible=false; esp.Name.Color=Color3.new(1,1,1); esp.Name.Size=13; esp.Name.Center=true; esp.Name.Outline=true; esp.Name.Font=2; esp.Name.ZIndex=3
+    esp.Distance.Visible=false; esp.Distance.Color=Color3.new(1,1,1); esp.Distance.Size=12; esp.Distance.Center=true; esp.Distance.Outline=true; esp.Distance.Font=2; esp.Distance.ZIndex=3
+    esp.Tracer = Drawing.new("Line"); esp.Tracer.Visible=false; esp.Tracer.Color=Color3.new(1,1,1); esp.Tracer.Thickness=1; esp.Tracer.Transparency=1
+    esp.Corners = {}
+    for i = 1, 8 do
+        local l = Drawing.new("Line"); l.Visible=false; l.Thickness=1; l.Color=Color3.new(1,1,1)
+        table.insert(esp.Corners, l)
+    end
+    return esp
+end
+
+local function SetAllVisible(d, visible)
+    local boxOn = visible and Config.UseBoxESP
+    pcall(function() d.Box.Visible=boxOn; d.BoxOutline.Visible=boxOn end)
+    pcall(function() d.Name.Visible=visible and Config.ShowNames end)
+    pcall(function() d.Distance.Visible=visible and Config.ShowDistance end)
+    local healthOn = visible and Config.ShowHealth
+    pcall(function() d.HealthBar.Visible=healthOn; d.HealthBarOutline.Visible=healthOn end)
+    pcall(function() d.Tracer.Visible=visible and Config.UseTracers end)
+    if not visible then
+        for _, l in ipairs(d.Corners) do pcall(function() l.Visible=false end) end
+    end
+end
+
+local function RemoveDrawingESP(d, highlight)
+    pcall(function() d.Box:Remove() end); pcall(function() d.BoxOutline:Remove() end)
+    pcall(function() d.Name:Remove() end); pcall(function() d.Distance:Remove() end)
+    pcall(function() d.HealthBar:Remove() end); pcall(function() d.HealthBarOutline:Remove() end)
+    pcall(function() d.Tracer:Remove() end)
+    for _, l in ipairs(d.Corners) do pcall(function() l:Remove() end) end
+    if highlight then pcall(function() highlight:Destroy() end) end
+end
+
+local function UpdateDrawingForModel(model, espData, entityColor, showBox, showHealth, showName, showDist)
+    local d = espData.Drawing
+    -- root: R6 dùng Torso, R15 dùng HumanoidRootPart
+    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
+    if not root then SetAllVisible(d, false); return end
+
+    local worldPos = root.Position
+    local dist = (camera.CFrame.Position - worldPos).Magnitude
+    if dist > Config.MaxDistance then SetAllVisible(d, false); return end
+
+    -- LOD skip như BRM5: xa > 1500 skip 3/4 frame, xa > 500 skip 1/2 frame
+    local fid = espData.FrameId or 0
+    espData.FrameId = fid + 1
+    if dist > 1500 and (fid % 4) ~= 0 then return end
+    if dist > 500  and (fid % 2) ~= 0 then return end
+
+    local screenPt, onScreen = camera:WorldToViewportPoint(worldPos)
+    if not onScreen then SetAllVisible(d, false); return end
+
+    local screenPos = Vector2.new(screenPt.X, screenPt.Y)
+
+    -- Highlight (xuyên tường)
+    if Config.UseHighlight then
+        if not espData.Highlight then
+            local h = Instance.new("Highlight")
+            h.FillColor = entityColor; h.OutlineColor = entityColor
+            h.FillTransparency = 0.6; h.OutlineTransparency = 0
+            pcall(function() h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop end)
+            h.Parent = model; espData.Highlight = h
+        end
+        espData.Highlight.FillColor = entityColor; espData.Highlight.OutlineColor = entityColor
+    else
+        if espData.Highlight then
+            pcall(function() espData.Highlight:Destroy() end); espData.Highlight = nil
+        end
+    end
+
+    -- box size (y chang BRM5)
+    local height = 6.5
+    local topPt    = camera:WorldToViewportPoint(worldPos + Vector3.new(0,  height*0.5, 0))
+    local bottomPt = camera:WorldToViewportPoint(worldPos - Vector3.new(0,  height*0.5, 0))
+    local boxHeight = math.abs(bottomPt.Y - topPt.Y)
+    if boxHeight < 4 then SetAllVisible(d, false); return end
+    local boxWidth = boxHeight * 0.6
+    local boxPosition = Vector2.new(screenPos.X - boxWidth*0.5, screenPos.Y - boxHeight*0.5)
+    local boxColor = Config.BoxColor or entityColor
+
+    -- box style (y chang BRM5: Full hoặc Corner)
+    if showBox and Config.UseBoxESP then
+        if Config.BoxStyle == "Corner" then
+            pcall(function() d.Box.Visible=false; d.BoxOutline.Visible=false end)
+            local cl = math.min(boxWidth, boxHeight) * 0.25
+            local corners = d.Corners
+            local bpX,bpY = boxPosition.X, boxPosition.Y
+            local rx, by = bpX+boxWidth, bpY+boxHeight
+            pcall(function()
+                corners[1].From=Vector2.new(bpX,bpY);  corners[1].To=Vector2.new(bpX+cl,bpY); corners[1].Color=boxColor; corners[1].Visible=true
+                corners[2].From=Vector2.new(bpX,bpY);  corners[2].To=Vector2.new(bpX,bpY+cl); corners[2].Color=boxColor; corners[2].Visible=true
+                corners[3].From=Vector2.new(rx,bpY);   corners[3].To=Vector2.new(rx-cl,bpY);  corners[3].Color=boxColor; corners[3].Visible=true
+                corners[4].From=Vector2.new(rx,bpY);   corners[4].To=Vector2.new(rx,bpY+cl);  corners[4].Color=boxColor; corners[4].Visible=true
+                corners[5].From=Vector2.new(bpX,by);   corners[5].To=Vector2.new(bpX+cl,by);  corners[5].Color=boxColor; corners[5].Visible=true
+                corners[6].From=Vector2.new(bpX,by);   corners[6].To=Vector2.new(bpX,by-cl);  corners[6].Color=boxColor; corners[6].Visible=true
+                corners[7].From=Vector2.new(rx,by);    corners[7].To=Vector2.new(rx-cl,by);   corners[7].Color=boxColor; corners[7].Visible=true
+                corners[8].From=Vector2.new(rx,by);    corners[8].To=Vector2.new(rx,by-cl);   corners[8].Color=boxColor; corners[8].Visible=true
+            end)
+        else
+            pcall(function()
+                if d.Corners[1].Visible then for _, l in ipairs(d.Corners) do l.Visible=false end end
+                d.BoxOutline.Size=Vector2.new(boxWidth,boxHeight); d.BoxOutline.Position=boxPosition; d.BoxOutline.Visible=true
+                d.Box.Size=Vector2.new(boxWidth,boxHeight); d.Box.Position=boxPosition; d.Box.Color=boxColor; d.Box.Visible=true
+            end)
+        end
+    else
+        pcall(function() d.Box.Visible=false; d.BoxOutline.Visible=false end)
+        for _, l in ipairs(d.Corners) do pcall(function() l.Visible=false end) end
+    end
+
+    -- name
+    if showName and Config.ShowNames then
+        pcall(function()
+            d.Name.Text = model.Name ~= "" and model.Name or "Enemy"
+            d.Name.Position = Vector2.new(screenPos.X, boxPosition.Y - 16)
+            d.Name.Color = entityColor; d.Name.Visible = true
+        end)
+    else pcall(function() d.Name.Visible=false end) end
+
+    -- distance
+    if showDist and Config.ShowDistance then
+        pcall(function()
+            local distY = boxPosition.Y + boxHeight + 2
+            if Config.HealthBarSide == "Bottom" then distY = distY + 6 end
+            d.Distance.Text = string.format("[%dm]", math.floor(dist * 0.28))
+            d.Distance.Position = Vector2.new(screenPos.X, distY)
+            d.Distance.Visible = true
+        end)
+    else pcall(function() d.Distance.Visible=false end) end
+
+    -- health bar (y chang BRM5: Left / Right / Bottom)
+    if showHealth and Config.ShowHealth then
+        pcall(function()
+            local humanoid = model:FindFirstChild("Humanoid")
+            local hValues  = humanoid and humanoid:FindFirstChild("Values")
+            local healthNV = hValues and hValues:FindFirstChild("Health")
+            local maxNV    = healthNV and healthNV:FindFirstChild("Max")
+            local pct = 1
+            if healthNV and maxNV and maxNV.Value > 0 then
+                pct = math.clamp(healthNV.Value / maxNV.Value, 0, 1)
+            elseif humanoid and humanoid.MaxHealth > 0 then
+                pct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+            end
+            local barColor = Config.UseHealthGradient and Color3.fromHSV(pct*0.33,1,1) or Config.HealthBarColor
+            local barSize, barPos, outlineSize, outlinePos
+            if Config.HealthBarSide == "Bottom" then
+                local barW = boxWidth * pct
+                barSize=Vector2.new(barW,4); barPos=Vector2.new(boxPosition.X,boxPosition.Y+boxHeight+2)
+                outlineSize=Vector2.new(boxWidth+2,6); outlinePos=Vector2.new(boxPosition.X-1,boxPosition.Y+boxHeight+1)
+            elseif Config.HealthBarSide == "Right" then
+                local barH = boxHeight * pct
+                barSize=Vector2.new(2,barH); barPos=Vector2.new(boxPosition.X+boxWidth+3,boxPosition.Y+(boxHeight-barH))
+                outlineSize=Vector2.new(4,boxHeight+2); outlinePos=Vector2.new(boxPosition.X+boxWidth+2,boxPosition.Y-1)
+            else -- Left
+                local barH = boxHeight * pct
+                barSize=Vector2.new(2,barH); barPos=Vector2.new(boxPosition.X-5,boxPosition.Y+(boxHeight-barH))
+                outlineSize=Vector2.new(4,boxHeight+2); outlinePos=Vector2.new(boxPosition.X-6,boxPosition.Y-1)
+            end
+            d.HealthBarOutline.Size=outlineSize; d.HealthBarOutline.Position=outlinePos; d.HealthBarOutline.Visible=true
+            d.HealthBar.Size=barSize; d.HealthBar.Position=barPos; d.HealthBar.Color=barColor; d.HealthBar.Visible=true
+        end)
+    else pcall(function() d.HealthBar.Visible=false; d.HealthBarOutline.Visible=false end) end
+
+    -- tracer (y chang BRM5)
+    if Config.UseTracers then
+        pcall(function()
+            local vp = camera.ViewportSize
+            d.Tracer.From=Vector2.new(vp.X*0.5,vp.Y)
+            d.Tracer.To=Vector2.new(screenPos.X,boxPosition.Y+boxHeight)
+            d.Tracer.Color=entityColor; d.Tracer.Visible=true
+        end)
+    else pcall(function() d.Tracer.Visible=false end) end
+end
+
+local function UpdateEntityESP()
+    local alive = {}
+
+    if Config.zombieESP then
+        local container = getEnemyContainer()
+        if container then
+            for _, zombie in ipairs(container:GetChildren()) do
+                if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
+                    alive[zombie] = true
+                    if not drawingPool[zombie] then
+                        drawingPool[zombie] = {Drawing = CreateDrawingESP(), Highlight = nil, FrameId = 0}
+                    end
+                    UpdateDrawingForModel(zombie, drawingPool[zombie], Config.ZombieColor,
+                        Config.zombieBox, Config.zombieHealth, Config.zombieName, Config.zombieDistance)
                 end
             end
         end
     end
-    return bestHeadPos
+
+    if Config.playerESP then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
+                local char = player.Character
+                alive[char] = true
+                if not drawingPool[char] then
+                    drawingPool[char] = {Drawing = CreateDrawingESP(), Highlight = nil, FrameId = 0}
+                end
+                UpdateDrawingForModel(char, drawingPool[char], Config.PlayerColor,
+                    Config.playerBox, Config.playerHealth, Config.playerName, Config.playerDistance)
+            end
+        end
+    end
+
+    -- cleanup stale
+    for model, espData in pairs(drawingPool) do
+        if not alive[model] then
+            RemoveDrawingESP(espData.Drawing, espData.Highlight)
+            drawingPool[model] = nil
+        end
+    end
+end
+
+-- ─── SILENT AIM ───────────────────────────────────────────────────────────────
+
+local function getClosestHead()
+    local container = getEnemyContainer()
+    if not container then return nil end
+    local referencePos = isMobile
+        and Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
+        or UserInputService:GetMouseLocation()
+    local bestPos, bestDist = nil, math.huge
+    for _, enemy in ipairs(container:GetChildren()) do
+        local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+        if head then
+            local sp, onScreen = camera:WorldToViewportPoint(head.Position)
+            if onScreen then
+                local d = (Vector2.new(sp.X, sp.Y) - referencePos).Magnitude
+                if d < bestDist then bestDist = d; bestPos = head.Position end
+            end
+        end
+    end
+    return bestPos
 end
 
 RunService.Heartbeat:Connect(function()
-    if config.raycasting and target.enabled then
+    if Config.raycasting and target.enabled then
         target.position = getClosestHead()
     else
         target.position = nil
     end
 end)
 
--- "Raycast" exact-match — no :lower() allocation every call
-local RAYCAST_METHOD = "Raycast"
+-- ─── NAMECALL HOOK (Silent Aim + No Spread) ───────────────────────────────────
 
+local RAYCAST_METHOD = "Raycast"
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    -- fast path: anything that isn't Workspace:Raycast exits in one compare
     if self ~= Workspace or getnamecallmethod() ~= RAYCAST_METHOD then
         return oldNamecall(self, ...)
     end
-
     local origin, dir, params = ...
-
-    -- only touch weapon raycasts — everything else untouched
     if not params or params.CollisionGroup ~= "raycast_npc_neutral" then
         return oldNamecall(self, ...)
     end
-
-    local doSpread = config.noSpread
-    local doSilent = config.raycasting and target.position ~= nil
-
-    if not doSpread and not doSilent then
-        return oldNamecall(self, ...)
-    end
-
-    -- NoSpread: game appends Vector3(rand, rand, rand) to LookVector*1000.
-    -- Snap back to camera LookVector * original magnitude — offset gone.
+    local doSpread = Config.noSpread
+    local doSilent = Config.raycasting and target.position ~= nil
+    if not doSpread and not doSilent then return oldNamecall(self, ...) end
     if doSpread then
         dir = camera.CFrame.LookVector * dir.Magnitude
     end
-
-    -- SilentAim runs after spread strip so both features compose cleanly.
     if doSilent then
         local toTarget = target.position - origin
-        if toTarget.Magnitude > 0.001 then
-            dir = toTarget.Unit * dir.Magnitude
-        end
+        if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
     end
-
     return oldNamecall(self, origin, dir, params)
 end))
 
@@ -439,11 +575,9 @@ local function getTargets()
     local container = getEnemyContainer()
     if not container then return results end
     for _, npc in ipairs(container:GetChildren()) do
-        if npc:IsA("Model") and npc:FindFirstChildWhichIsA("Humanoid") then
+        if npc:IsA("Model") and npc:FindFirstChild("Humanoid") then
             local part = npc:FindFirstChild("Torso") or npc:FindFirstChild("HumanoidRootPart")
-            if part then
-                table.insert(results, {model = npc, part = part})
-            end
+            if part then table.insert(results, {model=npc, part=part}) end
         end
     end
     return results
@@ -451,14 +585,14 @@ end
 
 task.spawn(function()
     while task.wait(0.2) do
-        if config.autoHit then
+        if Config.autoHit then
             local hitEvent = findRegisterHitEvent()
             if hitEvent then
                 local targets = getTargets()
                 if #targets > 0 then
                     local payload = {}
                     for _, t in ipairs(targets) do
-                        table.insert(payload, {amount = 1, target = t.model, is_friendly = false, part = t.part})
+                        table.insert(payload, {amount=1, target=t.model, is_friendly=false, part=t.part})
                     end
                     hitEvent:FireServer(payload, {})
                 end
@@ -467,7 +601,7 @@ task.spawn(function()
     end
 end)
 
--- ─── INFINITE AMMO & STAMINA ──────────────────────────────────────────────────
+-- ─── INFINITE AMMO & STAMINA (y chang script gốc) ────────────────────────────
 
 task.spawn(function()
     while task.wait(0.1) do
@@ -479,13 +613,12 @@ task.spawn(function()
                 if Values then
                     local Stamina = Values:FindFirstChild("Stamina")
                     if Stamina and Stamina:IsA("NumberValue") then
-                        if config.infiniteStamina then
+                        if Config.infiniteStamina then
                             if not originalStaminaValue then originalStaminaValue = Stamina.Value end
                             Stamina.Value = 99999
                         else
                             if originalStaminaValue and Stamina.Value == 99999 then
-                                Stamina.Value = originalStaminaValue
-                                originalStaminaValue = nil
+                                Stamina.Value = originalStaminaValue; originalStaminaValue = nil
                             end
                         end
                     end
@@ -498,7 +631,6 @@ task.spawn(function()
             if Backpack then
                 for _, v in ipairs(Backpack:GetChildren()) do table.insert(items, v) end
             end
-
             for _, item in ipairs(items) do
                 if item:IsA("Tool") then
                     local WeaponData = item:FindFirstChild("WeaponData")
@@ -507,16 +639,12 @@ task.spawn(function()
                         if Essentials then
                             local Ammo = Essentials:FindFirstChild("Ammo")
                             if Ammo and Ammo:IsA("NumberValue") then
-                                if config.infiniteAmmo then
-                                    if originalAmmoValues[item] == nil then
-                                        originalAmmoValues[item] = Ammo.Value
-                                    end
+                                if Config.infiniteAmmo then
+                                    if originalAmmoValues[item] == nil then originalAmmoValues[item] = Ammo.Value end
                                     Ammo.Value = 9999
                                 else
                                     if originalAmmoValues[item] ~= nil then
-                                        if Ammo.Value == 9999 then
-                                            Ammo.Value = originalAmmoValues[item]
-                                        end
+                                        if Ammo.Value == 9999 then Ammo.Value = originalAmmoValues[item] end
                                         originalAmmoValues[item] = nil
                                     end
                                 end
@@ -545,8 +673,8 @@ local function findReloadEvent()
 end
 
 task.spawn(function()
-    while task.wait(config.autoReloadInterval) do
-        if config.autoReload then
+    while task.wait(Config.autoReloadInterval) do
+        if Config.autoReload then
             pcall(function()
                 local re = findReloadEvent()
                 if re then re:FireServer(false) end
@@ -555,181 +683,214 @@ task.spawn(function()
     end
 end)
 
+-- ─── SPEED HACK ───────────────────────────────────────────────────────────────
+
+task.spawn(function()
+    while task.wait(0.1) do
+        local Character = lp.Character
+        if not Character then continue end
+        local Humanoid = Character:FindFirstChild("Humanoid")
+        if not Humanoid then continue end
+        local Values = Humanoid:FindFirstChild("Values")
+        if not Values then continue end
+        local MiscValues = Values:FindFirstChild("MiscValues")
+        if not MiscValues then continue end
+        local DefaultWalkSpeed = MiscValues:FindFirstChild("DefaultWalkSpeed")
+        if not DefaultWalkSpeed then continue end
+        if Config.speedHack then
+            if not originalWalkSpeed then originalWalkSpeed = DefaultWalkSpeed.Value end
+            DefaultWalkSpeed.Value = Config.speedHackValue
+        else
+            if originalWalkSpeed ~= nil then
+                DefaultWalkSpeed.Value = originalWalkSpeed; originalWalkSpeed = nil
+            end
+        end
+    end
+end)
+
 -- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
 RunService.Heartbeat:Connect(function()
-    if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
-    if config.fullbright then
-        Lighting.Brightness = 3
-        Lighting.GlobalShadows = false
+    if Config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
+    if Config.fullbright then
+        Lighting.Brightness = 3; Lighting.GlobalShadows = false
     else
-        Lighting.Brightness = originalBrightness
-        Lighting.GlobalShadows = true
+        Lighting.Brightness = originalBrightness; Lighting.GlobalShadows = true
     end
-    UpdateObjectiveESP()
-    UpdateESP()
+    UpdatePickupESP()
+    UpdateEntityESP()
 end)
 
--- ─── UI ───────────────────────────────────────────────────────────────────────
+-- ─── UI (BRM5 pattern: WrapSection → callback inline) ────────────────────────
 
-local Window = Library:CreateWindow({
-    Title = 'Tokai HUB - Reign Fall',
-    Center = true,
-    AutoShow = true,
-    TabPadding = 8,
-    MenuFadeTime = 0.2
-})
+local function WrapSection(Groupbox)
+    local S = {}
+    function S:AddToggle(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "T")
+        local t = Groupbox:AddToggle(Flag, {Text=tostring(Data.Name or Flag), Default=Data.Default or false})
+        if Data.Callback then t:OnChanged(Data.Callback) end
+        return t
+    end
+    function S:AddSlider(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "S")
+        local s = Groupbox:AddSlider(Flag, {Text=tostring(Data.Name or Flag), Default=Data.Default or 0, Min=Data.Min or 0, Max=Data.Max or 100, Rounding=Data.Rounding or 0, Suffix=Data.Suffix, Compact=Data.Compact or false})
+        if Data.Callback then s:OnChanged(Data.Callback) end
+        return s
+    end
+    function S:AddDropdown(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "D")
+        local d = Groupbox:AddDropdown(Flag, {Text=tostring(Data.Name or Flag), Values=Data.Values or {}, Default=Data.Default, Multi=false})
+        if Data.Callback then d:OnChanged(Data.Callback) end
+        return d
+    end
+    function S:AddColorPicker(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "C")
+        local label = Groupbox:AddLabel(tostring(Data.Name or Flag))
+        label:AddColorPicker(Flag, {Default=Data.Default or Color3.new(1,1,1)})
+        if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+    end
+    function S:AddButton(Data)
+        return Groupbox:AddButton(Data.Name or "Button", Data.Callback or function() end)
+    end
+    return S
+end
 
-local Tabs = {
-    Combat          = Window:AddTab('Combat'),
-    Visuals         = Window:AddTab('Visuals'),
-    Utility         = Window:AddTab('Utility'),
-    ['UI Settings'] = Window:AddTab('UI Settings'),
-}
+local function DrawSection(Tab, Name, Position)
+    if string.lower(Position or "left") == "right" then
+        return WrapSection(Tab:AddRightGroupbox(Name))
+    end
+    return WrapSection(Tab:AddLeftGroupbox(Name))
+end
 
-local CombatLeft   = Tabs.Combat:AddLeftGroupbox('Combat Features')
-local CombatRight  = Tabs.Combat:AddRightGroupbox('Hitbox')
-local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
-local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
-local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
-local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
+local Window = Library:CreateWindow({Title='Tokai HUB - Reign Fall', Center=true, AutoShow=true, TabPadding=8, MenuFadeTime=0.2})
+local T_Combat  = Window:AddTab('Combat')
+local T_Visuals = Window:AddTab('Visuals')
+local T_Utility = Window:AddTab('Utility')
+local T_Settings = Window:AddTab('UI Settings')
 
--- Combat left
-CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
-Toggles.SilentAim:OnChanged(function()
-    config.raycasting = Toggles.SilentAim.Value
-end)
+-- COMBAT
+local S_Aim = DrawSection(T_Combat, 'Aimbot', 'left')
+S_Aim:AddToggle({Name='Silent Aim',  Flag='SilentAim',  Default=false, Callback=function(v) Config.raycasting=v end})
+S_Aim:AddToggle({Name='Auto Hit',    Flag='AutoHit',    Default=false, Callback=function(v) Config.autoHit=v end})
+S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=function(v) Config.noRecoil=v end})
+S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
 
-CombatLeft:AddToggle('AutoHit', { Text = 'Auto Hit', Default = false })
-Toggles.AutoHit:OnChanged(function()
-    config.autoHit = Toggles.AutoHit.Value
-end)
-
-CombatLeft:AddToggle('NoRecoil', { Text = 'No Recoil', Default = false })
-Toggles.NoRecoil:OnChanged(function()
-    config.noRecoil = Toggles.NoRecoil.Value
-end)
-
-CombatLeft:AddToggle('NoSpread', { Text = 'No Spread', Default = false })
-Toggles.NoSpread:OnChanged(function()
-    config.noSpread = Toggles.NoSpread.Value
-end)
-
--- Combat right (hitbox)
-CombatRight:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
-Toggles.HitboxExpander:OnChanged(function()
-    config.hitboxExpander = Toggles.HitboxExpander.Value
-    if not config.hitboxExpander then
+local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
+S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
+    Config.hitboxExpander=v
+    if not v then
+        for _, tracked in pairs(trackedNPCs) do for _, part in ipairs(tracked.parts) do restoreHitbox(part) end end
+        expandedHitboxes={}
+    else
+        for _, tracked in pairs(trackedNPCs) do for _, part in ipairs(tracked.parts) do expandHitbox(part) end end
+    end
+end})
+S_Hitbox:AddSlider({Name='Hitbox Size', Flag='HitboxSize', Default=6, Min=1, Max=20, Rounding=1, Callback=function(v)
+    Config.hitboxSize=v
+    if Config.hitboxExpander then
         for _, tracked in pairs(trackedNPCs) do
             for _, part in ipairs(tracked.parts) do
-                restoreHitbox(part)
-            end
-        end
-        expandedHitboxes = {}
-    else
-        for _, tracked in pairs(trackedNPCs) do
-            for _, part in ipairs(tracked.parts) do
-                expandHitbox(part)
+                if part and part.Parent then pcall(function() part.Size=Vector3.new(v,v,v) end) end
             end
         end
     end
-end)
+end})
 
-CombatRight:AddSlider('HitboxSize', {
-    Text = 'Hitbox Size',
-    Default = 6,
-    Min = 1,
-    Max = 20,
-    Rounding = 1,
-    Compact = false,
-    Callback = function(Value)
-        config.hitboxSize = Value
-        if config.hitboxExpander then
-            for _, tracked in pairs(trackedNPCs) do
-                for _, part in ipairs(tracked.parts) do
-                    if part and part.Parent then
-                        pcall(function() part.Size = Vector3.new(Value, Value, Value) end)
-                    end
-                end
-            end
+-- VISUALS
+local S_Pickup = DrawSection(T_Visuals, 'Pickup ESP', 'left')
+S_Pickup:AddToggle({Name='Objective ESP', Flag='ObjectiveESP', Default=false, Callback=function(v) Config.objectiveESP=v end})
+S_Pickup:AddToggle({Name='Ammo ESP',      Flag='AmmoESP',      Default=false, Callback=function(v) Config.ammoESP=v end})
+S_Pickup:AddToggle({Name='Armor ESP',     Flag='ArmorESP',     Default=false, Callback=function(v) Config.armorESP=v end})
+S_Pickup:AddToggle({Name='Medkit ESP',    Flag='MedkitESP',    Default=false, Callback=function(v) Config.medkitESP=v end})
+S_Pickup:AddToggle({Name='Gear ESP',      Flag='GearESP',      Default=false, Callback=function(v) Config.gearESP=v end})
+S_Pickup:AddToggle({Name='Throwable ESP', Flag='ThrowableESP', Default=false, Callback=function(v) Config.throwableESP=v end})
+
+local S_ZombieESP = DrawSection(T_Visuals, 'Zombie ESP', 'left')
+S_ZombieESP:AddToggle({Name='Zombie ESP',    Flag='ZombieESP', Default=false, Callback=function(v)
+    Config.zombieESP=v
+    if not v then
+        for model, espData in pairs(drawingPool) do
+            if Players:GetPlayerFromCharacter(model)==nil then RemoveDrawingESP(espData.Drawing,espData.Highlight); drawingPool[model]=nil end
         end
     end
-})
+end})
+S_ZombieESP:AddToggle({Name='  └ Box',      Flag='ZombieBox',      Default=true,  Callback=function(v) Config.zombieBox=v end})
+S_ZombieESP:AddToggle({Name='  └ Health',   Flag='ZombieHealth',   Default=true,  Callback=function(v) Config.zombieHealth=v end})
+S_ZombieESP:AddToggle({Name='  └ Name',     Flag='ZombieName',     Default=true,  Callback=function(v) Config.zombieName=v end})
+S_ZombieESP:AddToggle({Name='  └ Distance', Flag='ZombieDistance', Default=true,  Callback=function(v) Config.zombieDistance=v end})
 
--- Visuals left
-VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
-Toggles.ObjectiveESP:OnChanged(function() config.objectiveESP = Toggles.ObjectiveESP.Value end)
-
-VisualsLeft:AddToggle('AmmoESP', { Text = 'Ammo ESP', Default = false })
-Toggles.AmmoESP:OnChanged(function() config.ammoESP = Toggles.AmmoESP.Value end)
-
-VisualsLeft:AddToggle('ArmorESP', { Text = 'Armor ESP', Default = false })
-Toggles.ArmorESP:OnChanged(function() config.armorESP = Toggles.ArmorESP.Value end)
-
-VisualsLeft:AddToggle('MedkitESP', { Text = 'Medkit ESP', Default = false })
-Toggles.MedkitESP:OnChanged(function() config.medkitESP = Toggles.MedkitESP.Value end)
-
-VisualsLeft:AddToggle('GearESP', { Text = 'Gear ESP', Default = false })
-Toggles.GearESP:OnChanged(function() config.gearESP = Toggles.GearESP.Value end)
-
-VisualsLeft:AddToggle('ThrowableESP', { Text = 'Throwable ESP', Default = false })
-Toggles.ThrowableESP:OnChanged(function() config.throwableESP = Toggles.ThrowableESP.Value end)
-
-VisualsLeft:AddToggle('ZombieESP', { Text = 'Zombie ESP', Default = false })
-Toggles.ZombieESP:OnChanged(function() config.zombieESP = Toggles.ZombieESP.Value end)
-
-VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
-Toggles.PlayerESP:OnChanged(function() config.playerESP = Toggles.PlayerESP.Value end)
-
--- Visuals right
-VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
-Toggles.Fullbright:OnChanged(function() config.fullbright = Toggles.Fullbright.Value end)
-
-VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
-Toggles.NoFog:OnChanged(function() config.nofog = Toggles.NoFog.Value end)
-
--- Utility left
-UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
-Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
-
-UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
-Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
-
--- Utility right
-UtilityRight:AddToggle('AutoReload', { Text = 'Auto Reload', Default = false })
-Toggles.AutoReload:OnChanged(function() config.autoReload = Toggles.AutoReload.Value end)
-
-UtilityRight:AddSlider('AutoReloadInterval', {
-    Text = 'Interval (s)',
-    Default = 2,
-    Min = 0.5,
-    Max = 10,
-    Rounding = 1,
-    Compact = false,
-    Callback = function(v)
-        config.autoReloadInterval = v
+local S_PlayerESP = DrawSection(T_Visuals, 'Player ESP', 'left')
+S_PlayerESP:AddToggle({Name='Player ESP',    Flag='PlayerESP', Default=false, Callback=function(v)
+    Config.playerESP=v
+    if not v then
+        for model, espData in pairs(drawingPool) do
+            if Players:GetPlayerFromCharacter(model)~=nil then RemoveDrawingESP(espData.Drawing,espData.Highlight); drawingPool[model]=nil end
+        end
     end
-})
+end})
+S_PlayerESP:AddToggle({Name='  └ Box',      Flag='PlayerBox',      Default=true,  Callback=function(v) Config.playerBox=v end})
+S_PlayerESP:AddToggle({Name='  └ Health',   Flag='PlayerHealth',   Default=true,  Callback=function(v) Config.playerHealth=v end})
+S_PlayerESP:AddToggle({Name='  └ Name',     Flag='PlayerName',     Default=true,  Callback=function(v) Config.playerName=v end})
+S_PlayerESP:AddToggle({Name='  └ Distance', Flag='PlayerDistance', Default=true,  Callback=function(v) Config.playerDistance=v end})
 
--- UI Settings
-local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
-MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
+local S_ESPCfg = DrawSection(T_Visuals, 'ESP Settings', 'right')
+S_ESPCfg:AddToggle({Name='Box ESP',         Flag='UseBox',      Default=true,  Callback=function(v) Config.UseBoxESP=v end})
+S_ESPCfg:AddToggle({Name='Highlight ESP',   Flag='UseHL',       Default=false, Callback=function(v) Config.UseHighlight=v end})
+S_ESPCfg:AddToggle({Name='Tracers',         Flag='UseTracers',  Default=false, Callback=function(v) Config.UseTracers=v end})
+S_ESPCfg:AddToggle({Name='Show Names',      Flag='ShowNames',   Default=true,  Callback=function(v) Config.ShowNames=v end})
+S_ESPCfg:AddToggle({Name='Show Distance',   Flag='ShowDist',    Default=true,  Callback=function(v) Config.ShowDistance=v end})
+S_ESPCfg:AddToggle({Name='Show Health',     Flag='ShowHealth',  Default=true,  Callback=function(v) Config.ShowHealth=v end})
+S_ESPCfg:AddToggle({Name='Health Gradient', Flag='HealthGrad',  Default=true,  Callback=function(v) Config.UseHealthGradient=v end})
+S_ESPCfg:AddDropdown({Name='Box Style',     Flag='BoxStyle',    Values={'Full','Corner'},         Default='Full',  Callback=function(v) Config.BoxStyle=v end})
+S_ESPCfg:AddDropdown({Name='Health Bar',    Flag='HealthSide',  Values={'Left','Right','Bottom'}, Default='Left',  Callback=function(v) Config.HealthBarSide=v end})
+S_ESPCfg:AddSlider({Name='Max Dist (m)',    Flag='MaxDist',     Default=1000, Min=25, Max=5000, Rounding=0, Callback=function(v) Config.MaxDistance=math.floor(v*3.57) end})
+
+local S_ESPColor = DrawSection(T_Visuals, 'ESP Colors', 'right')
+S_ESPColor:AddColorPicker({Name='Zombie Color', Flag='ZombieColor',  Default=Color3.fromRGB(255,60,60), Callback=function(v) Config.ZombieColor=v end})
+S_ESPColor:AddColorPicker({Name='Player Color', Flag='PlayerColor',  Default=Color3.fromRGB(0,200,255), Callback=function(v) Config.PlayerColor=v end})
+S_ESPColor:AddColorPicker({Name='Health Color', Flag='HealthColor',  Default=Color3.new(0,1,0),         Callback=function(v) Config.HealthBarColor=v end})
+S_ESPColor:AddToggle({Name='Override Box Color', Flag='BoxOverride', Default=false, Callback=function(v)
+    Config.BoxColor = v and (Options.BoxColor and Options.BoxColor.Value or Color3.new(1,1,1)) or nil
+end})
+S_ESPColor:AddColorPicker({Name='Box Color', Flag='BoxColor', Default=Color3.new(1,1,1), Callback=function(v)
+    if Options.BoxOverride and Options.BoxOverride.Value then Config.BoxColor=v end
+end})
+
+-- UTILITY
+local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
+S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
+
+local S_Char = DrawSection(T_Utility, 'Character', 'right')
+S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
+S_Char:AddToggle({Name='Speed Hack',          Flag='SpeedHack',  Default=false, Callback=function(v) Config.speedHack=v end})
+S_Char:AddSlider({Name='Speed',               Flag='SpeedVal',   Default=24, Min=8, Max=100, Rounding=1, Callback=function(v) Config.speedHackValue=v end})
+S_Char:AddToggle({Name='Auto Reload',         Flag='AutoReload', Default=false, Callback=function(v) Config.autoReload=v end})
+S_Char:AddSlider({Name='Reload Interval (s)', Flag='ReloadInt',  Default=2, Min=0.5, Max=10, Rounding=1, Callback=function(v) Config.autoReloadInterval=v end})
+S_Char:AddToggle({Name='Fullbright',          Flag='Fullbright', Default=false, Callback=function(v) Config.fullbright=v end})
+S_Char:AddToggle({Name='No Fog',              Flag='NoFog',      Default=false, Callback=function(v) Config.nofog=v end})
+
+-- UI SETTINGS
+local MenuGroup = T_Settings:AddLeftGroupbox('Menu')
+MenuGroup:AddButton({Text='Unload', Func=function() Library:Unload() end})
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 ThemeManager:SetFolder('TokaihHub')
 SaveManager:SetFolder('TokaihHub/reign-fall')
-SaveManager:BuildConfigSection(Tabs['UI Settings'])
-ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:BuildConfigSection(T_Settings)
+ThemeManager:ApplyToTab(T_Settings)
 SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
     untrackAllNPCs()
     for obj, conn in pairs(trackedPickups) do
-        pcall(function() conn:Disconnect() end)
-        RemoveHighlight(obj)
+        pcall(function() conn:Disconnect() end); RemoveHighlight(obj)
     end
     trackedPickups = {}
+    for _, espData in pairs(drawingPool) do
+        RemoveDrawingESP(espData.Drawing, espData.Highlight)
+    end
+    drawingPool = {}
     Library.Unloaded = true
 end)

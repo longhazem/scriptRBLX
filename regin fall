@@ -33,6 +33,7 @@ local Config = {
     medkitESP         = false,
     gearESP           = false,
     throwableESP      = false,
+    collectibleESP    = false,
     -- Entity ESP filters
     zombieESP         = false,
     zombieBox         = true,
@@ -61,6 +62,7 @@ local Config = {
     MaxDistance       = 3570,         -- studs (~1000m)
     -- Utility
     infiniteAmmo      = false,
+    customAmmoCount   = 9999,
     infiniteStamina   = false,
     autoReload        = false,
     autoReloadInterval = 2,
@@ -69,6 +71,9 @@ local Config = {
     -- World
     nofog             = false,
     fullbright        = false,
+    -- RPM
+    rpmEnabled        = false,
+    rpmValue          = 600,
 }
 
 -- ─── STATE ────────────────────────────────────────────────────────────────────
@@ -105,7 +110,39 @@ local function installRecoilHook()
 end
 installRecoilHook()
 
--- ─── PICKUP HIGHLIGHT UTILS ───────────────────────────────────────────────────
+-- ─── RPM HACK ─────────────────────────────────────────────────────────────────
+-- CoreConfig là folder được clone vào MAIN_CoreViewmodelController mỗi lần equip.
+-- LastFired NumberValue trong đó được game set = tick() sau mỗi shot.
+-- Ta tìm nó và set về tick() - delay tương ứng RPM trong một loop riêng.
+-- Không hook __newindex vì game set .Value trực tiếp không qua metamethod của ta.
+
+local function findLastFired()
+    local pg = lp:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local scripts = pg:FindFirstChild("Scripts")
+    if not scripts then return nil end
+    local game_folder = scripts:FindFirstChild("Game")
+    if not game_folder then return nil end
+    local mvc = game_folder:FindFirstChild("MAIN_CoreViewmodelController")
+    if not mvc then return nil end
+    local coreConfig = mvc:FindFirstChild("CoreConfig")
+    if not coreConfig then return nil end
+    return coreConfig:FindFirstChild("LastFired")
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.05)
+        if Config.rpmEnabled then
+            local lastFired = findLastFired()
+            if lastFired then
+                local delay = 60 / Config.rpmValue
+                -- force LastFired đủ xa trong quá khứ để cooldown check luôn pass
+                lastFired.Value = tick() - delay - 0.001
+            end
+        end
+    end
+end)
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
@@ -256,15 +293,42 @@ local function UpdatePickupESP()
         if obj and obj.Parent then
             local cfg = resolvePickup(obj.Name)
             if cfg and not Config[cfg.key] then RemoveHighlight(obj) end
+            -- collectible toggle off
+            if not Config.collectibleESP and obj:FindFirstChild("ObjectConfig") then
+                RemoveHighlight(obj)
+            end
         end
     end
     local gameObjects = workspace.Game and workspace.Game.Current
         and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.GameObjects
     if not gameObjects then return end
+
+    -- standard pickups (pickup_ammo, pickup_medkit, etc.)
     for _, obj in ipairs(gameObjects:GetChildren()) do
         local cfg = resolvePickup(obj.Name)
         if cfg and Config[cfg.key] and not obj:FindFirstChild("TokaiHL") then
             AddHighlight(obj, cfg.color, 0.3); trackPickup(obj)
+        end
+    end
+
+    -- collectible ESP — nằm trong subfolder "collectible", mỗi child là một collectible_pickup
+    -- display_name StringValue nằm trong ObjectConfig folder của mỗi object
+    if Config.collectibleESP then
+        local collectibleFolder = gameObjects:FindFirstChild("collectible")
+        if collectibleFolder then
+            for _, obj in ipairs(collectibleFolder:GetChildren()) do
+                if obj:IsA("Model") and not obj:FindFirstChild("TokaiHL") then
+                    -- lấy tên hiển thị từ ObjectConfig.display_name nếu có
+                    local displayName = "Collectible"
+                    local objCfg = obj:FindFirstChild("ObjectConfig")
+                    if objCfg then
+                        local dn = objCfg:FindFirstChild("display_name")
+                        if dn and dn.Value ~= "" then displayName = dn.Value end
+                    end
+                    AddHighlight(obj, Color3.fromRGB(255, 215, 0), 0.3)
+                    trackPickup(obj)
+                end
+            end
         end
     end
 end
@@ -535,24 +599,26 @@ end)
 local RAYCAST_METHOD = "Raycast"
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    if self ~= Workspace or getnamecallmethod() ~= RAYCAST_METHOD then
-        return oldNamecall(self, ...)
+    local method = getnamecallmethod()
+
+    -- Silent Aim + No Spread
+    if method == RAYCAST_METHOD and self == Workspace then
+        local origin, dir, params = ...
+        if params and params.CollisionGroup == "raycast_npc_neutral" then
+            local doSpread = Config.noSpread
+            local doSilent = Config.raycasting and target.position ~= nil
+            if doSpread or doSilent then
+                if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
+                if doSilent then
+                    local toTarget = target.position - origin
+                    if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
+                end
+                return oldNamecall(self, origin, dir, params)
+            end
+        end
     end
-    local origin, dir, params = ...
-    if not params or params.CollisionGroup ~= "raycast_npc_neutral" then
-        return oldNamecall(self, ...)
-    end
-    local doSpread = Config.noSpread
-    local doSilent = Config.raycasting and target.position ~= nil
-    if not doSpread and not doSilent then return oldNamecall(self, ...) end
-    if doSpread then
-        dir = camera.CFrame.LookVector * dir.Magnitude
-    end
-    if doSilent then
-        local toTarget = target.position - origin
-        if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
-    end
-    return oldNamecall(self, origin, dir, params)
+
+    return oldNamecall(self, ...)
 end))
 
 -- ─── AUTO HIT ────────────────────────────────────────────────────────────────
@@ -641,10 +707,10 @@ task.spawn(function()
                             if Ammo and Ammo:IsA("NumberValue") then
                                 if Config.infiniteAmmo then
                                     if originalAmmoValues[item] == nil then originalAmmoValues[item] = Ammo.Value end
-                                    Ammo.Value = 9999
+                                    Ammo.Value = Config.customAmmoCount
                                 else
                                     if originalAmmoValues[item] ~= nil then
-                                        if Ammo.Value == 9999 then Ammo.Value = originalAmmoValues[item] end
+                                        if Ammo.Value == Config.customAmmoCount then Ammo.Value = originalAmmoValues[item] end
                                         originalAmmoValues[item] = nil
                                     end
                                 end
@@ -775,6 +841,10 @@ S_Aim:AddToggle({Name='Auto Hit',    Flag='AutoHit',    Default=false, Callback=
 S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=function(v) Config.noRecoil=v end})
 S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
 
+local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
+S_GunMods:AddToggle({Name='RPM Hack', Flag='RPMEnabled', Default=false, Callback=function(v) Config.rpmEnabled=v end})
+S_GunMods:AddSlider({Name='RPM',      Flag='RPMValue',   Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
+
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
     Config.hitboxExpander=v
@@ -803,7 +873,15 @@ S_Pickup:AddToggle({Name='Ammo ESP',      Flag='AmmoESP',      Default=false, Ca
 S_Pickup:AddToggle({Name='Armor ESP',     Flag='ArmorESP',     Default=false, Callback=function(v) Config.armorESP=v end})
 S_Pickup:AddToggle({Name='Medkit ESP',    Flag='MedkitESP',    Default=false, Callback=function(v) Config.medkitESP=v end})
 S_Pickup:AddToggle({Name='Gear ESP',      Flag='GearESP',      Default=false, Callback=function(v) Config.gearESP=v end})
-S_Pickup:AddToggle({Name='Throwable ESP', Flag='ThrowableESP', Default=false, Callback=function(v) Config.throwableESP=v end})
+S_Pickup:AddToggle({Name='Throwable ESP',   Flag='ThrowableESP',   Default=false, Callback=function(v) Config.throwableESP=v end})
+S_Pickup:AddToggle({Name='Collectible ESP', Flag='CollectibleESP', Default=false, Callback=function(v)
+    Config.collectibleESP=v
+    if not v then
+        for obj in pairs(highlightObjects) do
+            if obj and obj.Parent and obj:FindFirstChild("ObjectConfig") then RemoveHighlight(obj) end
+        end
+    end
+end})
 
 local S_ZombieESP = DrawSection(T_Visuals, 'Zombie ESP', 'left')
 S_ZombieESP:AddToggle({Name='Zombie ESP',    Flag='ZombieESP', Default=false, Callback=function(v)
@@ -859,6 +937,7 @@ end})
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
 S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
+S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=9999, Min=1, Max=9999, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})

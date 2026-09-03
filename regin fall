@@ -62,7 +62,7 @@ local Config = {
     MaxDistance       = 3570,         -- studs (~1000m)
     -- Utility
     infiniteAmmo      = false,
-    customAmmoCount   = 9999,
+    customAmmoCount   = 300,
     infiniteStamina   = false,
     autoReload        = false,
     autoReloadInterval = 2,
@@ -681,9 +681,9 @@ task.spawn(function()
                     if Stamina and Stamina:IsA("NumberValue") then
                         if Config.infiniteStamina then
                             if not originalStaminaValue then originalStaminaValue = Stamina.Value end
-                            Stamina.Value = 99999
+                            Stamina.Value = 300
                         else
-                            if originalStaminaValue and Stamina.Value == 99999 then
+                            if originalStaminaValue and Stamina.Value == 300 then
                                 Stamina.Value = originalStaminaValue; originalStaminaValue = nil
                             end
                         end
@@ -937,7 +937,7 @@ end})
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
 S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
-S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=9999, Min=1, Max=9999, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
+S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})

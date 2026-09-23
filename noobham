@@ -1,0 +1,781 @@
+-- ============================================================
+--  Noob Mayhem (MTC) — TokaiHub UI
+--  Kill Aura + ESP + Combat + Player + Visual
+--  Weapons: Classic_Sword, Classic_Slingshot
+--  AC: antiglitched.lua, MobileAC.lua — interval safe at 0.12s+
+-- ============================================================
+
+local TokaiHub = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/Library.lua"
+))()
+
+local SaveManager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/SaveManager.lua"
+))()
+
+local ThemeManager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/longhazem/TKBLACKLIB/refs/heads/main/addons/ThemeManager.lua"
+))()
+
+-- ── SERVICES ────────────────────────────────────
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting         = game:GetService("Lighting")
+
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
+
+-- ── RUNTIME STATE ───────────────────────────────
+local State = {
+    -- Kill Aura
+    auraEnabled  = false,
+    auraRadius   = 20,
+    auraInterval = 0.12,
+    auraFace     = true,
+    auraTeam     = true,
+    auraPriority = "Nearest",
+    lastSwing    = 0,
+
+    -- ESP
+    espEnabled   = false,
+    espBoxColor  = Color3.fromRGB(255, 50, 50),
+    espMaxDist   = 500,
+    espBoxes     = true,
+    espNames     = true,
+    espHealth    = true,
+    espDistance  = true,
+    espObjects   = {},
+
+    -- Chams
+    chamsEnabled  = false,
+    chamsColor    = Color3.fromRGB(255, 110, 180),
+    chamsMaterial = Enum.Material.Neon,
+    chamsObjects  = {},   -- [Part] = original material/color
+
+    -- Player
+    wspeedEnabled = false,
+    wspeedValue   = 16,
+    jPowerEnabled = false,
+    jPowerValue   = 50,
+
+    -- Visual
+    fullbright    = false,
+    origBright    = Lighting.Brightness,
+    origShadows   = Lighting.GlobalShadows,
+    origClock     = Lighting.ClockTime,
+}
+
+-- ── UTILITY ─────────────────────────────────────
+local function getChar(p)  return p and p.Character end
+local function getRoot(c)  return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso")) end
+local function getHum(c)   return c and c:FindFirstChildOfClass("Humanoid") end
+
+local function isAlive(p)
+    local c = getChar(p)
+    if not c then return false end
+    local h = getHum(c)
+    return h and h.Health > 0
+end
+
+local function sameTeam(p)
+    if not State.auraTeam then return false end
+    return LocalPlayer.Team ~= nil and p.Team == LocalPlayer.Team
+end
+
+local function distTo(p)
+    local mc = getChar(LocalPlayer)
+    local tc = getChar(p)
+    if not mc or not tc then return math.huge end
+    local mr = getRoot(mc)
+    local tr = getRoot(tc)
+    if not mr or not tr then return math.huge end
+    return (mr.Position - tr.Position).Magnitude
+end
+
+-- ── TOOL UTILS ──────────────────────────────────
+local TOOL_PRIORITY = {"Classic_Sword", "Classic_Slingshot"}
+
+local function getEquippedTool()
+    local c = getChar(LocalPlayer)
+    if not c then return nil end
+    for _, name in ipairs(TOOL_PRIORITY) do
+        local t = c:FindFirstChild(name)
+        if t and t:IsA("Tool") then return t end
+    end
+    for _, obj in ipairs(c:GetChildren()) do
+        if obj:IsA("Tool") then return obj end
+    end
+end
+
+local function ensureTool()
+    local t = getEquippedTool()
+    if t then return t end
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if not bp then return nil end
+    for _, name in ipairs(TOOL_PRIORITY) do
+        local tool = bp:FindFirstChild(name)
+        if tool then
+            local c = getChar(LocalPlayer)
+            local h = getHum(c)
+            if h then h:EquipTool(tool) end
+            task.wait(0.05)
+            return getEquippedTool()
+        end
+    end
+end
+
+local function faceTarget(targetRoot)
+    local mc = getChar(LocalPlayer)
+    if not mc then return end
+    local mr = getRoot(mc)
+    if not mr then return end
+    local dir = (targetRoot.Position - mr.Position)
+    dir = Vector3.new(dir.X, 0, dir.Z).Unit
+    mr.CFrame = CFrame.new(mr.Position, mr.Position + dir)
+end
+
+local function swingTool(tool)
+    local remote = tool:FindFirstChild("Activate")
+    if remote and remote:IsA("RemoteEvent") then
+        remote:FireServer()
+    else
+        tool:Activate()
+    end
+end
+
+-- ── KILL AURA ───────────────────────────────────
+local function getTargets()
+    local out = {}
+    local mc  = getChar(LocalPlayer)
+    if not mc then return out end
+    local mr  = getRoot(mc)
+    if not mr then return out end
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        if sameTeam(p) then continue end
+        if not isAlive(p) then continue end
+        local d = distTo(p)
+        if d <= State.auraRadius then
+            table.insert(out, {player = p, dist = d})
+        end
+    end
+
+    if State.auraPriority == "Nearest" then
+        table.sort(out, function(a, b) return a.dist < b.dist end)
+    elseif State.auraPriority == "Lowest HP" then
+        table.sort(out, function(a, b)
+            local ha = getHum(getChar(a.player))
+            local hb = getHum(getChar(b.player))
+            return (ha and ha.Health or math.huge) < (hb and hb.Health or math.huge)
+        end)
+    elseif State.auraPriority == "Highest HP" then
+        table.sort(out, function(a, b)
+            local ha = getHum(getChar(a.player))
+            local hb = getHum(getChar(b.player))
+            return (ha and ha.Health or 0) > (hb and hb.Health or 0)
+        end)
+    elseif State.auraPriority == "Furthest" then
+        table.sort(out, function(a, b) return a.dist > b.dist end)
+    end
+
+    return out
+end
+
+local function killAuraTick()
+    if not State.auraEnabled then return end
+    local now = tick()
+    if now - State.lastSwing < State.auraInterval then return end
+
+    local mc = getChar(LocalPlayer)
+    if not mc then return end
+    local mh = getHum(mc)
+    if not mh or mh.Health <= 0 then return end
+
+    local targets = getTargets()
+    if #targets == 0 then return end
+
+    local tool = ensureTool()
+    if not tool then return end
+
+    local tc = getChar(targets[1].player)
+    local tr = getRoot(tc)
+    if not tr then return end
+
+    if State.auraFace then faceTarget(tr) end
+    swingTool(tool)
+    State.lastSwing = now
+end
+
+-- ── ESP ─────────────────────────────────────────
+local function removeESP(p)
+    local e = State.espObjects[p]
+    if not e then return end
+    pcall(function()
+        if e.billboard and e.billboard.Parent then e.billboard:Destroy() end
+        if e.highlight  and e.highlight.Parent  then e.highlight:Destroy()  end
+    end)
+    State.espObjects[p] = nil
+end
+
+local function buildESP(p)
+    if State.espObjects[p] then return end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name             = "MTC_ESP"
+    bb.AlwaysOnTop      = true
+    bb.Size             = UDim2.new(0, 200, 0, 50)
+    bb.StudsOffset      = Vector3.new(0, 3.2, 0)
+    bb.ResetOnSpawn     = false
+
+    local nameL = Instance.new("TextLabel")
+    nameL.Size                   = UDim2.new(1, 0, 0.5, 0)
+    nameL.BackgroundTransparency = 1
+    nameL.TextColor3             = Color3.fromRGB(255, 255, 255)
+    nameL.TextStrokeTransparency = 0
+    nameL.Font                   = Enum.Font.GothamBold
+    nameL.TextScaled             = true
+    nameL.Text                   = p.Name
+    nameL.Parent                 = bb
+
+    local hpL = Instance.new("TextLabel")
+    hpL.Size                   = UDim2.new(1, 0, 0.5, 0)
+    hpL.Position               = UDim2.new(0, 0, 0.5, 0)
+    hpL.BackgroundTransparency = 1
+    hpL.TextColor3             = Color3.fromRGB(80, 255, 80)
+    hpL.TextStrokeTransparency = 0
+    hpL.Font                   = Enum.Font.Gotham
+    hpL.TextScaled             = true
+    hpL.Text                   = "HP: ?"
+    hpL.Parent                 = bb
+
+    local hl = Instance.new("SelectionBox")
+    hl.Color3               = State.espBoxColor
+    hl.LineThickness        = 0.05
+    hl.SurfaceTransparency = 1
+    hl.SurfaceColor3       = State.espBoxColor
+
+    State.espObjects[p] = { billboard = bb, nameLabel = nameL, hpLabel = hpL, highlight = hl }
+end
+
+local function updateESP()
+    if not State.espEnabled then
+        for p in pairs(State.espObjects) do removeESP(p) end
+        return
+    end
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        local c  = getChar(p)
+        local h  = c and getHum(c)
+        local tr = c and getRoot(c)
+
+        if not c or not h or not tr or distTo(p) > State.espMaxDist then
+            removeESP(p)
+            continue
+        end
+
+        if not State.espObjects[p] then buildESP(p) end
+        local e = State.espObjects[p]
+        if not e then continue end
+
+        -- Reattach billboard
+        if e.billboard.Parent ~= tr then e.billboard.Parent = tr end
+
+        -- Reattach highlight
+        if e.highlight.Adornee ~= c then
+            e.highlight.Adornee = c
+            e.highlight.Parent  = c
+        end
+
+        -- Visibility toggles
+        e.highlight.Visible   = State.espBoxes
+        e.nameLabel.Visible   = State.espNames
+        e.hpLabel.Visible     = State.espHealth or State.espDistance
+
+        -- Name + distance
+        local dist = distTo(p)
+        local nameText = State.espNames and p.Name or ""
+        if State.espDistance then
+            nameText = nameText .. string.format(" [%.0f]", dist)
+        end
+        e.nameLabel.Text = nameText
+
+        -- HP text + color
+        if State.espHealth then
+            local hp    = math.floor(h.Health)
+            local maxhp = math.max(math.floor(h.MaxHealth), 1)
+            local ratio = math.clamp(h.Health / maxhp, 0, 1)
+            e.hpLabel.Text       = string.format("HP: %d/%d", hp, maxhp)
+            e.hpLabel.TextColor3 = Color3.fromRGB(
+                math.floor((1 - ratio) * 255),
+                math.floor(ratio * 255),
+                0
+            )
+        end
+
+        -- Box color sync
+        e.highlight.Color3 = State.espBoxColor
+    end
+
+    for p in pairs(State.espObjects) do
+        if not p or not p.Parent then removeESP(p) end
+    end
+end
+
+-- ── CHAMS ───────────────────────────────────────
+local MATERIAL_MAP = {
+    Neon          = Enum.Material.Neon,
+    Glass         = Enum.Material.Glass,
+    Foil          = Enum.Material.Foil,
+    SmoothPlastic = Enum.Material.SmoothPlastic,
+}
+
+local function applyChams(char)
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            if not State.chamsObjects[part] then
+                State.chamsObjects[part] = { mat = part.Material, col = part.Color }
+            end
+            part.Material = State.chamsMaterial
+            part.Color    = State.chamsColor
+        end
+    end
+end
+
+local function removeChams(char)
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local orig = State.chamsObjects[part]
+            if orig then
+                part.Material = orig.mat
+                part.Color    = orig.col
+                State.chamsObjects[part] = nil
+            end
+        end
+    end
+end
+
+local function updateChams()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        local c = getChar(p)
+        if not c then continue end
+        if State.chamsEnabled then
+            applyChams(c)
+        else
+            removeChams(c)
+        end
+    end
+end
+
+-- ── PLAYER STATS ────────────────────────────────
+local function applyWalkSpeed()
+    local c = getChar(LocalPlayer)
+    local h = c and getHum(c)
+    if not h then return end
+    h.WalkSpeed = State.wspeedEnabled and State.wspeedValue or 16
+end
+
+local function applyJumpPower()
+    local c = getChar(LocalPlayer)
+    local h = c and getHum(c)
+    if not h then return end
+    h.JumpPower = State.jPowerEnabled and State.jPowerValue or 50
+end
+
+-- ── WINDOW ──────────────────────────────────────
+local Window = TokaiHub:CreateWindow({
+    Title             = "MTC — Noob Mayhem",
+    Footer            = "v1.0.0",
+    ToggleKeybind     = Enum.KeyCode.RightControl,
+    Center            = true,
+    AutoShow          = true,
+    ShowCustomCursor  = true,
+    NotifySide        = "Right",
+    Resizable         = true,
+    MobileButtonsSide = "Left",
+})
+
+-- ── TABS ────────────────────────────────────────
+local Tabs = {
+    Combat = Window:AddTab("Combat",  "crosshair"),
+    Visual = Window:AddTab("Visual",  "eye"),
+    Player = Window:AddTab("Player",  "person"),
+    Config = Window:AddTab("Config",  "settings"),
+}
+
+-- ============================================================
+--  [Combat] Left — Kill Aura
+-- ============================================================
+local AuraBox = Tabs.Combat:AddLeftGroupbox("Kill Aura")
+
+AuraBox:AddToggle("KillAura", {
+    Text     = "Kill Aura",
+    Default  = false,
+    Tooltip  = "Auto-swing nearest enemy within radius",
+    Callback = function(v)
+        State.auraEnabled = v
+    end,
+})
+
+AuraBox:AddSlider("AuraRadius", {
+    Text     = "Radius",
+    Default  = 20,
+    Min      = 5,
+    Max      = 60,
+    Rounding = 0,
+    Suffix   = " studs",
+    Callback = function(v)
+        State.auraRadius = v
+    end,
+})
+
+AuraBox:AddSlider("AuraInterval", {
+    Text     = "Swing Interval",
+    Default  = 12,
+    Min      = 8,
+    Max      = 50,
+    Rounding = 0,
+    Suffix   = " / 100s",
+    Callback = function(v)
+        State.auraInterval = v / 100  -- 12 → 0.12s
+    end,
+})
+
+AuraBox:AddToggle("AuraFace", {
+    Text     = "Face Target",
+    Default  = true,
+    Tooltip  = "Rotate toward target before each swing",
+    Callback = function(v)
+        State.auraFace = v
+    end,
+})
+
+AuraBox:AddToggle("AuraTeamCheck", {
+    Text     = "Team Check",
+    Default  = true,
+    Tooltip  = "Skip teammates",
+    Callback = function(v)
+        State.auraTeam = v
+    end,
+})
+
+AuraBox:AddDropdown("AuraPriority", {
+    Text     = "Target Priority",
+    Values   = {"Nearest", "Lowest HP", "Highest HP", "Furthest"},
+    Default  = 1,
+    Callback = function(v)
+        State.auraPriority = v
+    end,
+})
+
+AuraBox:AddDivider()
+
+AuraBox:AddButton({
+    Text = "Equip Sword Now",
+    Func = function()
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        local t  = bp and bp:FindFirstChild("Classic_Sword")
+        if t then
+            local c = getChar(LocalPlayer)
+            local h = getHum(c)
+            if h then h:EquipTool(t) end
+        end
+    end,
+})
+
+-- ============================================================
+--  [Combat] Right — Target Info
+-- ============================================================
+local TargetBox = Tabs.Combat:AddRightGroupbox("Target")
+
+local targetLabel
+targetLabel = TargetBox:AddLabel("No target in range")
+
+task.spawn(function()
+    while task.wait(0.25) do
+        if State.auraEnabled then
+            local targets = getTargets()
+            if #targets > 0 then
+                local p  = targets[1].player
+                local c  = getChar(p)
+                local h  = getHum(c)
+                local hp = h and math.floor(h.Health) or 0
+                local mh = h and math.floor(h.MaxHealth) or 100
+                targetLabel:SetText(string.format(
+                    "Target: %s | HP: %d/%d | Dist: %.0f",
+                    p.Name, hp, mh, targets[1].dist
+                ))
+            else
+                targetLabel:SetText("No target in range")
+            end
+        else
+            targetLabel:SetText("Kill Aura disabled")
+        end
+    end
+end)
+
+-- ============================================================
+--  [Visual] Left Tabbox — ESP / Chams
+-- ============================================================
+local VisTabbox = Tabs.Visual:AddLeftTabbox("Visual")
+local ESPTab    = VisTabbox:AddTab("ESP")
+local ChamsTab  = VisTabbox:AddTab("Chams")
+
+-- ESP
+local ESPToggle = ESPTab:AddToggle("ESP", {
+    Text     = "ESP",
+    Default  = false,
+    Callback = function(v)
+        State.espEnabled = v
+        if not v then
+            for p in pairs(State.espObjects) do removeESP(p) end
+        end
+    end,
+})
+
+ESPToggle:AddColorPicker("ESPColor", {
+    Default      = Color3.fromRGB(255, 50, 50),
+    Title        = "Box Color",
+    Transparency = 0,
+    Callback     = function(v)
+        State.espBoxColor = v
+    end,
+})
+
+ESPTab:AddDropdown("ESPOptions", {
+    Text    = "Components",
+    Values  = {"Boxes", "Names", "Health", "Distance"},
+    Default = {"Boxes", "Names", "Health", "Distance"},
+    Multi   = true,
+    Callback = function(v)
+        State.espBoxes    = v["Boxes"]    or false
+        State.espNames    = v["Names"]    or false
+        State.espHealth   = v["Health"]   or false
+        State.espDistance = v["Distance"] or false
+    end,
+})
+
+ESPTab:AddSlider("ESPDist", {
+    Text     = "Max Distance",
+    Default  = 500,
+    Min      = 50,
+    Max      = 2000,
+    Rounding = 0,
+    Suffix   = " studs",
+    Callback = function(v)
+        State.espMaxDist = v
+    end,
+})
+
+-- Chams
+local ChamsToggle = ChamsTab:AddToggle("Chams", {
+    Text     = "Chams",
+    Default  = false,
+    Callback = function(v)
+        State.chamsEnabled = v
+        if not v then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer then
+                    local c = getChar(p)
+                    if c then removeChams(c) end
+                end
+            end
+        end
+    end,
+})
+
+ChamsToggle:AddColorPicker("ChamsColor", {
+    Default      = Color3.fromRGB(255, 110, 180),
+    Title        = "Chams Color",
+    Transparency = 0.3,
+    Callback     = function(v)
+        State.chamsColor = v
+    end,
+})
+
+ChamsTab:AddDropdown("ChamsMat", {
+    Text     = "Material",
+    Values   = {"Neon", "Glass", "Foil", "SmoothPlastic"},
+    Default  = 1,
+    Callback = function(v)
+        State.chamsMaterial = MATERIAL_MAP[v] or Enum.Material.Neon
+    end,
+})
+
+-- ============================================================
+--  [Visual] Right — World
+-- ============================================================
+local WorldBox = Tabs.Visual:AddRightGroupbox("World")
+
+WorldBox:AddToggle("Fullbright", {
+    Text     = "Fullbright",
+    Default  = false,
+    Callback = function(v)
+        State.fullbright              = v
+        Lighting.Brightness           = v and 2 or State.origBright
+        Lighting.GlobalShadows        = not v and State.origShadows or false
+    end,
+})
+
+WorldBox:AddSlider("TimeOfDay", {
+    Text     = "Time of Day",
+    Default  = math.floor(Lighting.ClockTime),
+    Min      = 0,
+    Max      = 24,
+    Rounding = 1,
+    Suffix   = "h",
+    Callback = function(v)
+        Lighting.ClockTime = v
+    end,
+})
+
+-- ============================================================
+--  [Player] Left — Movement
+-- ============================================================
+local MoveBox = Tabs.Player:AddLeftGroupbox("Movement")
+
+local WalkToggle = MoveBox:AddToggle("WalkSpeed", {
+    Text     = "Custom Walk Speed",
+    Default  = false,
+    Callback = function(v)
+        State.wspeedEnabled = v
+        applyWalkSpeed()
+    end,
+})
+
+MoveBox:AddSlider("WalkSpeedVal", {
+    Text     = "Speed",
+    Default  = 16,
+    Min      = 16,
+    Max      = 250,
+    Rounding = 0,
+    Callback = function(v)
+        State.wspeedValue = v
+        if State.wspeedEnabled then applyWalkSpeed() end
+    end,
+})
+
+local JumpToggle = MoveBox:AddToggle("JumpPower", {
+    Text     = "Custom Jump Power",
+    Default  = false,
+    Callback = function(v)
+        State.jPowerEnabled = v
+        applyJumpPower()
+    end,
+})
+
+MoveBox:AddSlider("JumpPowerVal", {
+    Text     = "Power",
+    Default  = 50,
+    Min      = 0,
+    Max      = 500,
+    Rounding = 0,
+    Callback = function(v)
+        State.jPowerValue = v
+        if State.jPowerEnabled then applyJumpPower() end
+    end,
+})
+
+-- ============================================================
+--  [Player] Right — Misc
+-- ============================================================
+local MiscBox = Tabs.Player:AddRightGroupbox("Misc")
+
+MiscBox:AddButton({
+    Text        = "Teleport to Spawn",
+    DoubleClick = false,
+    Func        = function()
+        local chr = getChar(LocalPlayer)
+        if chr then
+            local spawn = workspace:FindFirstChild("SpawnLocation")
+            if spawn then
+                chr:MoveTo(spawn.Position)
+            else
+                TokaiHub:Notify({ Title = "Error", Description = "SpawnLocation not found.", Time = 2 })
+            end
+        end
+    end,
+})
+
+MiscBox:AddButton({
+    Text        = "Kill Self",
+    Risky       = true,
+    DoubleClick = true,
+    Tooltip     = "Double-click to confirm",
+    Func        = function()
+        local c = getChar(LocalPlayer)
+        local h = getHum(c)
+        if h then h.Health = 0 end
+    end,
+})
+
+MiscBox:AddDivider()
+
+MiscBox:AddButton({
+    Text = "Reset Character",
+    Func = function()
+        local h = getHum(getChar(LocalPlayer))
+        if h then h:ChangeState(Enum.HumanoidStateType.Dead) end
+    end,
+})
+
+-- ── RESPAWN HOOKS ────────────────────────────────
+local function onCharAdded(char)
+    task.wait(1)
+    applyWalkSpeed()
+    applyJumpPower()
+end
+
+LocalPlayer.CharacterAdded:Connect(onCharAdded)
+
+Players.PlayerRemoving:Connect(function(p)
+    removeESP(p)
+    local c = getChar(p)
+    if c then removeChams(c) end
+end)
+
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function()
+        removeESP(p)
+    end)
+end)
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then
+        p.CharacterAdded:Connect(function()
+            removeESP(p)
+        end)
+    end
+end
+
+-- ── MAIN LOOPS ───────────────────────────────────
+RunService.Heartbeat:Connect(killAuraTick)
+RunService.RenderStepped:Connect(function()
+    updateESP()
+    updateChams()
+end)
+
+-- ── CONFIG / THEME ───────────────────────────────
+ThemeManager:SetLibrary(TokaiHub)
+SaveManager:SetLibrary(TokaiHub)
+
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+
+ThemeManager:SetFolder("MTC_TokaiHub")
+SaveManager:SetFolder("MTC_TokaiHub/Configs")
+
+ThemeManager:ApplyToTab(Tabs.Config)
+SaveManager:BuildConfigSection(Tabs.Config)
+
+SaveManager:LoadAutoloadConfig()
+
+-- ── NOTIFY ───────────────────────────────────────
+TokaiHub:Notify({
+    Title       = "MTC Loaded",
+    Description = "Right-Ctrl to toggle | Kill Aura → Combat tab",
+    Time        = 4,
+})

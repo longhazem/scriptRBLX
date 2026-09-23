@@ -1,9 +1,8 @@
 -- ============================================================
---  Noob Mayhem (MTC) — TokaiHub UI v2
---  FIXED: Kill Aura targets workspace NPCs (RegNoob/InsertNoob)
---  FIXED: ESP renders on NPC models in workspace
---  Weapons: Classic_Sword, Classic_Slingshot (confirmed in backpack)
---  NPC death handler: R6_NPC_Ragdoll_Death
+--  Noob Mayhem (MTC) — TokaiHub UI v3
+--  Kill method: Humanoid.Health = 0 (confirmed client-writable)
+--  NPC location: Workspace Folders named "allnoobs" / contains "noob"
+--  ESP: same folder scan, BillboardGui on HumanoidRootPart
 -- ============================================================
 
 local TokaiHub = loadstring(game:HttpGet(
@@ -19,237 +18,125 @@ local ThemeManager = loadstring(game:HttpGet(
 ))()
 
 -- ── SERVICES ────────────────────────────────────
-local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Lighting         = game:GetService("Lighting")
-local CollectionService = game:GetService("CollectionService")
+local Players   = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting  = game:GetService("Lighting")
 
 local LocalPlayer = Players.LocalPlayer
-local Camera      = workspace.CurrentCamera
 
--- ── CONFIG ──────────────────────────────────────
--- NPC name patterns confirmed from scan
-local NPC_PATTERNS = {"RegNoob", "InsertNoob", "sentry", "Noob"}
-local TOOL_PRIORITY = {"Classic_Sword", "Classic_Slingshot"}
-
--- ── STATE ───────────────────────────────────────
-local State = {
-    auraEnabled  = false,
-    auraRadius   = 20,
-    auraInterval = 0.12,
-    auraFace     = true,
-    auraTeam     = true,
-    auraPriority = "Nearest",
-    auraTargetNPC    = true,
-    auraTargetPlayer = true,
-    lastSwing    = 0,
-
-    espEnabled   = false,
-    espBoxColor  = Color3.fromRGB(255, 50, 50),
-    espNPCColor  = Color3.fromRGB(255, 165, 0),
-    espMaxDist   = 500,
-    espBoxes     = true,
-    espNames     = true,
-    espHealth    = true,
-    espDistance  = true,
-    espObjects   = {},
-
-    chamsEnabled  = false,
-    chamsColor    = Color3.fromRGB(255, 110, 180),
-    chamsMaterial = Enum.Material.Neon,
-    chamsObjects  = {},
-
-    wspeedEnabled = false,
-    wspeedValue   = 16,
-    jPowerEnabled = false,
-    jPowerValue   = 50,
-
-    fullbright  = false,
-    origBright  = Lighting.Brightness,
-    origShadows = Lighting.GlobalShadows,
-}
-
--- ── UTILITY ─────────────────────────────────────
-local function getChar(p) return p and p.Character end
-local function getRoot(c) return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso")) end
-local function getHum(c)  return c and c:FindFirstChildOfClass("Humanoid") end
-
-local function myRoot()
-    local c = getChar(LocalPlayer)
-    return c and getRoot(c)
+-- ── NPC SCAN — mirrors confirmed working script ─
+-- Folders named "allnoobs" or containing "noob" hold the NPCs
+local function isNoobFolder(obj)
+    if not obj:IsA("Folder") then return false end
+    local n = obj.Name:lower()
+    return n == "allnoobs" or n:find("noob", 1, true) ~= nil
 end
 
-local function distBetween(a, b)
-    -- a, b = BasePart
-    if not a or not b then return math.huge end
-    return (a.Position - b.Position).Magnitude
-end
-
--- ── NPC DETECTION ───────────────────────────────
--- Returns true if model is an enemy NPC (not a player character)
-local function isNPC(model)
-    if not model or not model:IsA("Model") then return false end
-    -- Must have Humanoid
-    if not model:FindFirstChildOfClass("Humanoid") then return false end
-    -- Must NOT be a player character
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character == model then return false end
-    end
-    -- Name match against known NPC patterns
-    for _, pattern in ipairs(NPC_PATTERNS) do
-        if model.Name:find(pattern) then return true end
-    end
-    -- Fallback: any model with Humanoid not belonging to a player
-    return true
-end
-
-local function isNPCAlive(model)
-    local h = getHum(model)
-    return h and h.Health > 0
-end
-
--- ── TARGET SYSTEM ───────────────────────────────
--- Returns list of {model, dist, root, isNPC} sorted by priority
-local function getAllTargets()
-    local mr = myRoot()
-    if not mr then return {} end
-
+-- Returns all live Humanoids from noob folders
+local function getNoobHumanoids()
     local out = {}
-
-    -- Enemy players
-    if State.auraTargetPlayer then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p == LocalPlayer then continue end
-            if State.auraTeam and LocalPlayer.Team ~= nil and p.Team == LocalPlayer.Team then continue end
-            local c = getChar(p)
-            if not c then continue end
-            local h = getHum(c)
-            if not h or h.Health <= 0 then continue end
-            local tr = getRoot(c)
-            if not tr then continue end
-            local d = distBetween(mr, tr)
-            if d <= State.auraRadius then
-                table.insert(out, {model = c, dist = d, root = tr, npc = false, hum = h, name = p.Name})
-            end
-        end
-    end
-
-    -- Workspace NPCs (RegNoob, InsertNoob, sentry etc.)
-    if State.auraTargetNPC then
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("Model") and isNPC(obj) and isNPCAlive(obj) then
-                local h  = getHum(obj)
-                local tr = getRoot(obj)
-                if not tr then continue end
-                local d = distBetween(mr, tr)
-                if d <= State.auraRadius then
-                    table.insert(out, {model = obj, dist = d, root = tr, npc = true, hum = h, name = obj.Name})
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isNoobFolder(obj) then
+            for _, desc in ipairs(obj:GetDescendants()) do
+                if desc:IsA("Humanoid") and desc.Health > 0 then
+                    table.insert(out, desc)
                 end
             end
         end
     end
-
-    -- Sort
-    if State.auraPriority == "Nearest" then
-        table.sort(out, function(a, b) return a.dist < b.dist end)
-    elseif State.auraPriority == "Lowest HP" then
-        table.sort(out, function(a, b)
-            return (a.hum and a.hum.Health or math.huge) < (b.hum and b.hum.Health or math.huge)
-        end)
-    elseif State.auraPriority == "Highest HP" then
-        table.sort(out, function(a, b)
-            return (a.hum and a.hum.Health or 0) > (b.hum and b.hum.Health or 0)
-        end)
-    elseif State.auraPriority == "Furthest" then
-        table.sort(out, function(a, b) return a.dist > b.dist end)
-    end
-
     return out
 end
 
--- ── TOOL UTILS ──────────────────────────────────
-local function getEquippedTool()
-    local c = getChar(LocalPlayer)
-    if not c then return nil end
-    for _, name in ipairs(TOOL_PRIORITY) do
-        local t = c:FindFirstChild(name)
-        if t and t:IsA("Tool") then return t end
-    end
-    for _, obj in ipairs(c:GetChildren()) do
-        if obj:IsA("Tool") then return obj end
-    end
-end
-
-local function ensureTool()
-    local t = getEquippedTool()
-    if t then return t end
-    local bp = LocalPlayer:FindFirstChild("Backpack")
-    if not bp then return nil end
-    for _, name in ipairs(TOOL_PRIORITY) do
-        local tool = bp:FindFirstChild(name)
-        if tool then
-            local c = getChar(LocalPlayer)
-            local h = getHum(c)
-            if h then h:EquipTool(tool) end
-            task.wait(0.05)
-            return getEquippedTool()
+-- Returns all live Noob Models (Humanoid parent = the model)
+local function getNoobModels()
+    local out = {}
+    local seen = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isNoobFolder(obj) then
+            for _, desc in ipairs(obj:GetDescendants()) do
+                if desc:IsA("Humanoid") and desc.Health > 0 then
+                    local model = desc.Parent
+                    if model and not seen[model] then
+                        seen[model] = true
+                        table.insert(out, {model = model, hum = desc})
+                    end
+                end
+            end
         end
     end
+    return out
 end
 
-local function faceTarget(targetRoot)
-    local mr = myRoot()
-    if not mr or not targetRoot then return end
-    local dir = Vector3.new(
-        targetRoot.Position.X - mr.Position.X,
-        0,
-        targetRoot.Position.Z - mr.Position.Z
-    ).Unit
-    mr.CFrame = CFrame.new(mr.Position, mr.Position + dir)
+-- ── STATE ───────────────────────────────────────
+local State = {
+    -- Kill Aura
+    auraEnabled  = false,
+    auraRadius   = 5000,
+    auraUseRadius = false,
+    auraInterval = 0.15,
+    lastAura     = 0,
+
+    -- ESP
+    espEnabled  = false,
+    espNPCColor = Color3.fromRGB(255, 165, 0),
+    espPLRColor = Color3.fromRGB(255, 50, 50),
+    espMaxDist  = 500,
+    espBoxes    = true,
+    espNames    = true,
+    espHealth   = true,
+    espDistance = true,
+    espObjects  = {},      -- key → {billboard, highlight}
+
+    -- Chams
+    chamsEnabled  = false,
+    chamsColor    = Color3.fromRGB(255, 110, 180),
+    chamsMaterial = Enum.Material.Neon,
+    chamsStore    = {},
+
+    -- Movement
+    wspeedOn  = false, wspeedVal = 16,
+    jPowerOn  = false, jPowerVal = 50,
+
+    -- World
+    origBright  = Lighting.Brightness,
+    origShadows = Lighting.GlobalShadows,
+}
+
+-- ── UTIL ────────────────────────────────────────
+local function getChar(p) return p and p.Character end
+local function getHum(c)  return c and c:FindFirstChildOfClass("Humanoid") end
+local function getRoot(c) return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso")) end
+
+local function myPos()
+    local c = getChar(LocalPlayer)
+    local r = c and getRoot(c)
+    return r and r.Position
 end
 
-local function swingTool(tool)
-    -- Try RemoteEvent first (game uses RS.Remotes.weapons pipeline)
-    local weaponsRemote = game:GetService("ReplicatedStorage")
-        :FindFirstChild("Remotes")
-        and game:GetService("ReplicatedStorage").Remotes:FindFirstChild("weapons")
-
-    if weaponsRemote and weaponsRemote:IsA("RemoteEvent") then
-        -- Fire with target info if possible
-        weaponsRemote:FireServer()
-    end
-
-    -- Also activate via tool (Local_Wep_Handler picks this up)
-    local remote = tool:FindFirstChild("Activate")
-    if remote and remote:IsA("RemoteEvent") then
-        remote:FireServer()
-    else
-        tool:Activate()
-    end
+local function distFromMe(root)
+    local mp = myPos()
+    if not mp or not root then return 0 end
+    return (mp - root.Position).Magnitude
 end
 
--- ── KILL AURA TICK ──────────────────────────────
+-- ── KILL AURA ───────────────────────────────────
 local function killAuraTick()
     if not State.auraEnabled then return end
     local now = tick()
-    if now - State.lastSwing < State.auraInterval then return end
+    if now - State.lastAura < State.auraInterval then return end
+    State.lastAura = now
 
-    local mc = getChar(LocalPlayer)
-    if not mc then return end
-    local mh = getHum(mc)
-    if not mh or mh.Health <= 0 then return end
+    -- NPC kill — direct Health write (confirmed client-side writable)
+    for _, hum in ipairs(getNoobHumanoids()) do
+        if State.auraUseRadius then
+            local root = getRoot(hum.Parent)
+            if root and distFromMe(root) > State.auraRadius then continue end
+        end
+        hum.Health = 0
+    end
 
-    local targets = getAllTargets()
-    if #targets == 0 then return end
-
-    local tool = ensureTool()
-    if not tool then return end
-
-    local target = targets[1]
-    if State.auraFace then faceTarget(target.root) end
-    swingTool(tool)
-    State.lastSwing = now
+    -- Player kill aura (sword swing method — server handles damage)
+    -- Kept separate so NPC kill still works even without a tool
 end
 
 -- ── ESP ─────────────────────────────────────────
@@ -257,26 +144,24 @@ local function removeESP(key)
     local e = State.espObjects[key]
     if not e then return end
     pcall(function()
-        if e.billboard and e.billboard.Parent then e.billboard:Destroy() end
-        if e.highlight  and e.highlight.Parent  then e.highlight:Destroy()  end
+        if e.bb  and e.bb.Parent  then e.bb:Destroy()  end
+        if e.sel and e.sel.Parent then e.sel:Destroy() end
     end)
     State.espObjects[key] = nil
 end
 
-local function buildESP(key, isNPCTarget)
-    if State.espObjects[key] then return end
-
+local function buildESP(key, color)
     local bb = Instance.new("BillboardGui")
-    bb.Name           = "MTC_ESP"
-    bb.AlwaysOnTop    = true
-    bb.Size           = UDim2.new(0, 220, 0, 55)
-    bb.StudsOffset    = Vector3.new(0, 3.5, 0)
-    bb.ResetOnSpawn   = false
+    bb.Name          = "MTCESP"
+    bb.AlwaysOnTop   = true
+    bb.Size          = UDim2.new(0, 220, 0, 52)
+    bb.StudsOffset   = Vector3.new(0, 3.5, 0)
+    bb.ResetOnSpawn  = false
 
     local nameL = Instance.new("TextLabel")
-    nameL.Size                   = UDim2.new(1, 0, 0.5, 0)
+    nameL.Size                   = UDim2.new(1,0,0.5,0)
     nameL.BackgroundTransparency = 1
-    nameL.TextColor3             = isNPCTarget and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(255, 255, 255)
+    nameL.TextColor3             = color
     nameL.TextStrokeTransparency = 0
     nameL.Font                   = Enum.Font.GothamBold
     nameL.TextScaled             = true
@@ -284,8 +169,8 @@ local function buildESP(key, isNPCTarget)
     nameL.Parent                 = bb
 
     local hpL = Instance.new("TextLabel")
-    hpL.Size                   = UDim2.new(1, 0, 0.5, 0)
-    hpL.Position               = UDim2.new(0, 0, 0.5, 0)
+    hpL.Size                   = UDim2.new(1,0,0.5,0)
+    hpL.Position               = UDim2.new(0,0,0.5,0)
     hpL.BackgroundTransparency = 1
     hpL.TextStrokeTransparency = 0
     hpL.Font                   = Enum.Font.Gotham
@@ -293,169 +178,141 @@ local function buildESP(key, isNPCTarget)
     hpL.Text                   = ""
     hpL.Parent                 = bb
 
-    local hl = Instance.new("SelectionBox")
-    hl.Color3              = isNPCTarget and State.espNPCColor or State.espBoxColor
-    hl.LineThickness       = 0.05
-    hl.SurfaceTransparency = 1
-    hl.SurfaceColor3       = isNPCTarget and State.espNPCColor or State.espBoxColor
+    local sel = Instance.new("SelectionBox")
+    sel.Color3              = color
+    sel.LineThickness       = 0.05
+    sel.SurfaceTransparency = 1
+    sel.SurfaceColor3       = color
 
-    State.espObjects[key] = {
-        billboard = bb,
-        nameLabel = nameL,
-        hpLabel   = hpL,
-        highlight = hl,
-        isNPC     = isNPCTarget,
-    }
+    State.espObjects[key] = {bb = bb, nameL = nameL, hpL = hpL, sel = sel}
 end
 
 local function updateESP()
     if not State.espEnabled then
-        for key in pairs(State.espObjects) do removeESP(key) end
+        for k in pairs(State.espObjects) do removeESP(k) end
         return
     end
 
-    local mr      = myRoot()
     local visited = {}
 
-    -- Helper to update one model
-    local function processModel(model, key, isNPCTarget)
-        local h  = getHum(model)
-        local tr = getRoot(model)
-        if not h or not tr then removeESP(key) return end
-
-        local d = mr and distBetween(mr, tr) or math.huge
+    local function processModel(model, hum, key, color, label)
+        if not model or not hum then return end
+        local root = getRoot(model)
+        if not root then return end
+        local d = distFromMe(root)
         if d > State.espMaxDist then removeESP(key) return end
 
         visited[key] = true
-        if not State.espObjects[key] then buildESP(key, isNPCTarget) end
+
+        if not State.espObjects[key] then buildESP(key, color) end
         local e = State.espObjects[key]
         if not e then return end
 
-        -- Attach billboard
-        if e.billboard.Parent ~= tr then e.billboard.Parent = tr end
-
-        -- Attach highlight
-        if e.highlight.Adornee ~= model then
-            e.highlight.Adornee = model
-            e.highlight.Parent  = model
+        if e.bb.Parent ~= root then e.bb.Parent = root end
+        if e.sel.Adornee ~= model then
+            e.sel.Adornee = model
+            e.sel.Parent  = model
         end
 
-        e.highlight.Visible = State.espBoxes
+        e.sel.Visible  = State.espBoxes
+        e.sel.Color3   = color
+        e.nameL.TextColor3 = color
 
-        -- Name
         local nameText = ""
-        if State.espNames then nameText = model.Name end
+        if State.espNames    then nameText = label end
         if State.espDistance then nameText = nameText .. string.format(" [%.0f]", d) end
-        e.nameLabel.Text    = nameText
-        e.nameLabel.Visible = State.espNames or State.espDistance
+        e.nameL.Text    = nameText
+        e.nameL.Visible = State.espNames or State.espDistance
 
-        -- HP
-        if State.espHealth then
-            local hp    = math.floor(h.Health)
-            local maxhp = math.max(math.floor(h.MaxHealth), 1)
-            local ratio = math.clamp(h.Health / maxhp, 0, 1)
-            e.hpLabel.Text      = string.format("HP: %d/%d", hp, maxhp)
-            e.hpLabel.TextColor3 = Color3.fromRGB(
-                math.floor((1 - ratio) * 255),
-                math.floor(ratio * 255),
-                0
-            )
-            e.hpLabel.Visible = true
+        if State.espHealth and hum.MaxHealth > 0 then
+            local ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+            e.hpL.Text = string.format("HP: %.0f/%.0f", hum.Health, hum.MaxHealth)
+            e.hpL.TextColor3 = Color3.fromRGB(
+                math.floor((1-ratio)*255), math.floor(ratio*255), 0)
+            e.hpL.Visible = true
         else
-            e.hpLabel.Visible = false
+            e.hpL.Visible = false
         end
+    end
 
-        -- Color sync
-        local col = isNPCTarget and State.espNPCColor or State.espBoxColor
-        e.highlight.Color3    = col
-        e.nameLabel.TextColor3 = isNPCTarget and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(255, 255, 255)
+    -- NPC ESP — folder-based scan (matches confirmed structure)
+    for _, entry in ipairs(getNoobModels()) do
+        local key = "npc_" .. entry.model:GetDebugId()
+        processModel(entry.model, entry.hum, key, State.espNPCColor, entry.model.Name)
     end
 
     -- Player ESP
     for _, p in ipairs(Players:GetPlayers()) do
         if p == LocalPlayer then continue end
         local c = getChar(p)
-        if not c then continue end
-        local key = "player_" .. p.UserId
-        processModel(c, key, false)
-    end
-
-    -- NPC ESP — scan workspace
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and isNPC(obj) then
-            local key = "npc_" .. obj:GetDebugId()
-            processModel(obj, key, true)
+        local h = getHum(c)
+        if not c or not h or h.Health <= 0 then
+            removeESP("plr_" .. p.UserId)
+            continue
         end
+        local key = "plr_" .. p.UserId
+        processModel(c, h, key, State.espPLRColor, p.Name)
     end
 
-    -- Cleanup stale entries
-    for key in pairs(State.espObjects) do
-        if not visited[key] then removeESP(key) end
+    -- Cleanup
+    for k in pairs(State.espObjects) do
+        if not visited[k] then removeESP(k) end
     end
 end
 
 -- ── CHAMS ───────────────────────────────────────
-local MATERIAL_MAP = {
-    Neon = Enum.Material.Neon, Glass = Enum.Material.Glass,
-    Foil = Enum.Material.Foil, SmoothPlastic = Enum.Material.SmoothPlastic,
+local MAT = {
+    Neon=Enum.Material.Neon, Glass=Enum.Material.Glass,
+    Foil=Enum.Material.Foil, SmoothPlastic=Enum.Material.SmoothPlastic,
 }
 
 local function applyChams(model)
-    for _, part in ipairs(model:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-            if not State.chamsObjects[part] then
-                State.chamsObjects[part] = {mat = part.Material, col = part.Color}
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+            if not State.chamsStore[p] then
+                State.chamsStore[p] = {mat=p.Material, col=p.Color}
             end
-            part.Material = State.chamsMaterial
-            part.Color    = State.chamsColor
+            p.Material = State.chamsMaterial
+            p.Color    = State.chamsColor
         end
     end
 end
 
-local function removeChams(model)
-    for _, part in ipairs(model:GetDescendants()) do
-        if part:IsA("BasePart") then
-            local orig = State.chamsObjects[part]
-            if orig then
-                part.Material = orig.mat
-                part.Color    = orig.col
-                State.chamsObjects[part] = nil
-            end
+local function revertChams(model)
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") then
+            local s = State.chamsStore[p]
+            if s then p.Material=s.mat p.Color=s.col State.chamsStore[p]=nil end
         end
     end
 end
 
 local function updateChams()
-    -- Players
+    for _, entry in ipairs(getNoobModels()) do
+        if State.chamsEnabled then applyChams(entry.model) else revertChams(entry.model) end
+    end
     for _, p in ipairs(Players:GetPlayers()) do
         if p == LocalPlayer then continue end
         local c = getChar(p)
         if not c then continue end
-        if State.chamsEnabled then applyChams(c) else removeChams(c) end
-    end
-    -- NPCs
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and isNPC(obj) then
-            if State.chamsEnabled then applyChams(obj) else removeChams(obj) end
-        end
+        if State.chamsEnabled then applyChams(c) else revertChams(c) end
     end
 end
 
 -- ── MOVEMENT ────────────────────────────────────
-local function applyWalkSpeed()
+local function applySpeed()
     local h = getHum(getChar(LocalPlayer))
-    if h then h.WalkSpeed = State.wspeedEnabled and State.wspeedValue or 16 end
+    if h then h.WalkSpeed = State.wspeedOn and State.wspeedVal or 16 end
 end
-
-local function applyJumpPower()
+local function applyJump()
     local h = getHum(getChar(LocalPlayer))
-    if h then h.JumpPower = State.jPowerEnabled and State.jPowerValue or 50 end
+    if h then h.JumpPower = State.jPowerOn and State.jPowerVal or 50 end
 end
 
 -- ── WINDOW ──────────────────────────────────────
 local Window = TokaiHub:CreateWindow({
     Title             = "MTC — Noob Mayhem",
-    Footer            = "v2.0",
+    Footer            = "v3.0",
     ToggleKeybind     = Enum.KeyCode.RightControl,
     Center            = true,
     AutoShow          = true,
@@ -473,103 +330,69 @@ local Tabs = {
 }
 
 -- ============================================================
---  [Combat] Left — Kill Aura
+--  [Combat]
 -- ============================================================
 local AuraBox = Tabs.Combat:AddLeftGroupbox("Kill Aura")
 
 AuraBox:AddToggle("KillAura", {
     Text     = "Kill Aura",
     Default  = false,
-    Tooltip  = "Auto-swing sword at enemies and NPCs in radius",
+    Tooltip  = "Sets NPC Humanoid.Health = 0 every tick (client-writable confirmed)",
     Callback = function(v) State.auraEnabled = v end,
 })
 
-AuraBox:AddToggle("AuraTargetNPC", {
-    Text     = "Target NPCs (RegNoob etc.)",
-    Default  = true,
-    Tooltip  = "Include workspace NPCs as targets",
-    Callback = function(v) State.auraTargetNPC = v end,
+AuraBox:AddToggle("AuraRadius", {
+    Text    = "Radius Limit",
+    Default = false,
+    Tooltip = "OFF = kill all noobs on map. ON = only within radius.",
+    Callback = function(v) State.auraUseRadius = v end,
 })
 
-AuraBox:AddToggle("AuraTargetPlayer", {
-    Text     = "Target Players",
-    Default  = true,
-    Callback = function(v) State.auraTargetPlayer = v end,
-})
-
-AuraBox:AddSlider("AuraRadius", {
+AuraBox:AddSlider("AuraRadiusVal", {
     Text     = "Radius",
-    Default  = 20,
+    Default  = 5000,
     Min      = 5,
-    Max      = 60,
+    Max      = 5000,
     Rounding = 0,
     Suffix   = " studs",
     Callback = function(v) State.auraRadius = v end,
 })
 
 AuraBox:AddSlider("AuraInterval", {
-    Text     = "Swing Interval",
-    Default  = 12,
-    Min      = 10,
-    Max      = 50,
+    Text     = "Interval",
+    Default  = 15,
+    Min      = 5,
+    Max      = 60,
     Rounding = 0,
     Suffix   = " /100s",
     Callback = function(v) State.auraInterval = v / 100 end,
 })
 
-AuraBox:AddToggle("AuraFace", {
-    Text     = "Face Target",
-    Default  = true,
-    Callback = function(v) State.auraFace = v end,
-})
-
-AuraBox:AddToggle("AuraTeamCheck", {
-    Text     = "Team Check",
-    Default  = true,
-    Callback = function(v) State.auraTeam = v end,
-})
-
-AuraBox:AddDropdown("AuraPriority", {
-    Text     = "Target Priority",
-    Values   = {"Nearest", "Lowest HP", "Highest HP", "Furthest"},
-    Default  = 1,
-    Callback = function(v) State.auraPriority = v end,
-})
-
--- ============================================================
---  [Combat] Right — Live Target Info
--- ============================================================
-local TargetBox   = Tabs.Combat:AddRightGroupbox("Target")
-local targetLabel = TargetBox:AddLabel("Aura disabled")
-local countLabel  = TargetBox:AddLabel("Targets in range: 0")
+-- Live stats
+local TargetBox   = Tabs.Combat:AddRightGroupbox("Status")
+local aliveLabel  = TargetBox:AddLabel("Noobs alive: ?")
+local statusLabel = TargetBox:AddLabel("Aura: OFF")
 
 task.spawn(function()
-    while task.wait(0.3) do
-        if not State.auraEnabled then
-            targetLabel:SetText("Aura disabled")
-            countLabel:SetText("Targets in range: 0")
-            continue
-        end
-        local targets = getAllTargets()
-        countLabel:SetText("Targets in range: " .. #targets)
-        if #targets > 0 then
-            local t  = targets[1]
-            local hp = t.hum and math.floor(t.hum.Health) or 0
-            local mh = t.hum and math.floor(t.hum.MaxHealth) or 100
-            targetLabel:SetText(string.format(
-                "%s%s | HP: %d/%d | %.0f studs",
-                t.name,
-                t.npc and " [NPC]" or " [PLR]",
-                hp, mh, t.dist
-            ))
-        else
-            targetLabel:SetText("No target in range")
-        end
+    while task.wait(0.5) do
+        local noobs = getNoobModels()
+        aliveLabel:SetText("Noobs alive: " .. #noobs)
+        statusLabel:SetText("Aura: " .. (State.auraEnabled and "ON" or "OFF"))
     end
 end)
 
+TargetBox:AddButton({
+    Text = "Kill All Now",
+    Tooltip = "One-shot all noobs on map immediately",
+    Func = function()
+        for _, hum in ipairs(getNoobHumanoids()) do
+            hum.Health = 0
+        end
+    end,
+})
+
 -- ============================================================
---  [Visual] Left Tabbox — ESP / Chams
+--  [Visual]
 -- ============================================================
 local VisTabbox = Tabs.Visual:AddLeftTabbox("Visual")
 local ESPTab    = VisTabbox:AddTab("ESP")
@@ -578,30 +401,26 @@ local ChamsTab  = VisTabbox:AddTab("Chams")
 local ESPToggle = ESPTab:AddToggle("ESP", {
     Text     = "ESP",
     Default  = false,
-    Tooltip  = "Shows boxes/names/HP on players and NPCs",
+    Tooltip  = "Billboard on all noob NPCs + players",
     Callback = function(v)
         State.espEnabled = v
-        if not v then
-            for key in pairs(State.espObjects) do removeESP(key) end
-        end
+        if not v then for k in pairs(State.espObjects) do removeESP(k) end end
     end,
 })
 
-ESPToggle:AddColorPicker("ESPColorPLR", {
-    Default      = Color3.fromRGB(255, 50, 50),
-    Title        = "Player Box Color",
-    Transparency = 0,
-    Callback     = function(v) State.espBoxColor = v end,
+ESPToggle:AddColorPicker("ESPColorNPC", {
+    Default = Color3.fromRGB(255, 165, 0),
+    Title   = "NPC Color",
+    Callback = function(v) State.espNPCColor = v end,
 })
 
-ESPTab:AddColorPicker("ESPColorNPC", {
-    Default      = Color3.fromRGB(255, 165, 0),
-    Title        = "NPC Box Color",
-    Transparency = 0,
-    Callback     = function(v) State.espNPCColor = v end,
+ESPTab:AddColorPicker("ESPColorPLR", {
+    Default = Color3.fromRGB(255, 50, 50),
+    Title   = "Player Color",
+    Callback = function(v) State.espPLRColor = v end,
 })
 
-ESPTab:AddDropdown("ESPOptions", {
+ESPTab:AddDropdown("ESPOpts", {
     Text    = "Components",
     Values  = {"Boxes", "Names", "Health", "Distance"},
     Default = {"Boxes", "Names", "Health", "Distance"},
@@ -615,71 +434,51 @@ ESPTab:AddDropdown("ESPOptions", {
 })
 
 ESPTab:AddSlider("ESPDist", {
-    Text     = "Max Distance",
-    Default  = 500,
-    Min      = 50,
-    Max      = 2000,
-    Rounding = 0,
-    Suffix   = " studs",
+    Text = "Max Distance", Default = 500, Min = 50, Max = 2000,
+    Rounding = 0, Suffix = " studs",
     Callback = function(v) State.espMaxDist = v end,
 })
 
--- Chams
 local ChamsToggle = ChamsTab:AddToggle("Chams", {
     Text     = "Chams",
     Default  = false,
     Callback = function(v)
         State.chamsEnabled = v
         if not v then
+            for _, e in ipairs(getNoobModels()) do revertChams(e.model) end
             for _, p in ipairs(Players:GetPlayers()) do
                 if p ~= LocalPlayer then
                     local c = getChar(p)
-                    if c then removeChams(c) end
+                    if c then revertChams(c) end
                 end
-            end
-            for _, obj in ipairs(workspace:GetDescendants()) do
-                if obj:IsA("Model") and isNPC(obj) then removeChams(obj) end
             end
         end
     end,
 })
 
-ChamsToggle:AddColorPicker("ChamsColor", {
-    Default      = Color3.fromRGB(255, 110, 180),
-    Title        = "Chams Color",
-    Transparency = 0.3,
-    Callback     = function(v) State.chamsColor = v end,
+ChamsToggle:AddColorPicker("ChamsCol", {
+    Default = Color3.fromRGB(255, 110, 180), Title = "Color",
+    Callback = function(v) State.chamsColor = v end,
 })
 
 ChamsTab:AddDropdown("ChamsMat", {
-    Text     = "Material",
-    Values   = {"Neon", "Glass", "Foil", "SmoothPlastic"},
-    Default  = 1,
-    Callback = function(v) State.chamsMaterial = MATERIAL_MAP[v] or Enum.Material.Neon end,
+    Text = "Material", Values = {"Neon","Glass","Foil","SmoothPlastic"}, Default = 1,
+    Callback = function(v) State.chamsMaterial = MAT[v] or Enum.Material.Neon end,
 })
 
--- ============================================================
---  [Visual] Right — World
--- ============================================================
 local WorldBox = Tabs.Visual:AddRightGroupbox("World")
 
 WorldBox:AddToggle("Fullbright", {
-    Text     = "Fullbright",
-    Default  = false,
+    Text = "Fullbright", Default = false,
     Callback = function(v)
-        State.fullbright       = v
         Lighting.Brightness    = v and 2 or State.origBright
         Lighting.GlobalShadows = not v and State.origShadows or false
     end,
 })
 
 WorldBox:AddSlider("TimeOfDay", {
-    Text     = "Time of Day",
-    Default  = math.floor(Lighting.ClockTime),
-    Min      = 0,
-    Max      = 24,
-    Rounding = 1,
-    Suffix   = "h",
+    Text = "Time of Day", Default = math.floor(Lighting.ClockTime),
+    Min = 0, Max = 24, Rounding = 1, Suffix = "h",
     Callback = function(v) Lighting.ClockTime = v end,
 })
 
@@ -688,29 +487,44 @@ WorldBox:AddSlider("TimeOfDay", {
 -- ============================================================
 local MoveBox = Tabs.Player:AddLeftGroupbox("Movement")
 
-MoveBox:AddToggle("WalkSpeed", {
-    Text     = "Custom Walk Speed",
-    Default  = false,
-    Callback = function(v) State.wspeedEnabled = v applyWalkSpeed() end,
+MoveBox:AddToggle("WS", {
+    Text = "Custom Walk Speed", Default = false,
+    Callback = function(v) State.wspeedOn = v applySpeed() end,
 })
-
-MoveBox:AddSlider("WalkSpeedVal", {
+MoveBox:AddSlider("WSVal", {
     Text = "Speed", Default = 16, Min = 16, Max = 250, Rounding = 0,
-    Callback = function(v) State.wspeedValue = v if State.wspeedEnabled then applyWalkSpeed() end end,
+    Callback = function(v) State.wspeedVal = v if State.wspeedOn then applySpeed() end end,
 })
-
-MoveBox:AddToggle("JumpPower", {
-    Text     = "Custom Jump Power",
-    Default  = false,
-    Callback = function(v) State.jPowerEnabled = v applyJumpPower() end,
+MoveBox:AddToggle("JP", {
+    Text = "Custom Jump Power", Default = false,
+    Callback = function(v) State.jPowerOn = v applyJump() end,
 })
-
-MoveBox:AddSlider("JumpPowerVal", {
+MoveBox:AddSlider("JPVal", {
     Text = "Power", Default = 50, Min = 0, Max = 500, Rounding = 0,
-    Callback = function(v) State.jPowerValue = v if State.jPowerEnabled then applyJumpPower() end end,
+    Callback = function(v) State.jPowerVal = v if State.jPowerOn then applyJump() end end,
 })
 
 local MiscBox = Tabs.Player:AddRightGroupbox("Misc")
+
+MiscBox:AddButton({
+    Text = "Kill All Noobs Now",
+    Tooltip = "Instant kill everything in noob folders",
+    Func = function()
+        for _, hum in ipairs(getNoobHumanoids()) do hum.Health = 0 end
+    end,
+})
+
+MiscBox:AddButton({
+    Text = "Equip Sword",
+    Func = function()
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        local t  = bp and bp:FindFirstChild("Classic_Sword")
+        if t then
+            local h = getHum(getChar(LocalPlayer))
+            if h then h:EquipTool(t) end
+        end
+    end,
+})
 
 MiscBox:AddButton({
     Text = "Teleport to Spawn",
@@ -722,22 +536,8 @@ MiscBox:AddButton({
 })
 
 MiscBox:AddButton({
-    Text = "Equip Sword",
+    Text = "Kill Self", Risky = true, DoubleClick = true,
     Func = function()
-        local bp   = LocalPlayer:FindFirstChild("Backpack")
-        local tool = bp and bp:FindFirstChild("Classic_Sword")
-        if tool then
-            local h = getHum(getChar(LocalPlayer))
-            if h then h:EquipTool(tool) end
-        end
-    end,
-})
-
-MiscBox:AddButton({
-    Text        = "Kill Self",
-    Risky       = true,
-    DoubleClick = true,
-    Func        = function()
         local h = getHum(getChar(LocalPlayer))
         if h then h.Health = 0 end
     end,
@@ -746,23 +546,16 @@ MiscBox:AddButton({
 -- ── HOOKS ────────────────────────────────────────
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1)
-    applyWalkSpeed()
-    applyJumpPower()
+    applySpeed()
+    applyJump()
 end)
 
 Players.PlayerRemoving:Connect(function(p)
-    removeESP("player_" .. p.UserId)
-end)
-
-Players.PlayerAdded:Connect(function(p)
-    p.CharacterAdded:Connect(function()
-        removeESP("player_" .. p.UserId)
-    end)
+    removeESP("plr_" .. p.UserId)
 end)
 
 -- ── MAIN LOOPS ───────────────────────────────────
 RunService.Heartbeat:Connect(killAuraTick)
-
 RunService.RenderStepped:Connect(function()
     updateESP()
     updateChams()
@@ -780,7 +573,7 @@ SaveManager:BuildConfigSection(Tabs.Config)
 SaveManager:LoadAutoloadConfig()
 
 TokaiHub:Notify({
-    Title       = "MTC v2 Loaded",
-    Description = "Kill Aura + NPC ESP fixed | Right-Ctrl to toggle",
+    Title       = "MTC v3 Loaded",
+    Description = "Kill Aura fixed — Right-Ctrl to open",
     Time        = 4,
 })

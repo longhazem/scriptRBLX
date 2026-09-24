@@ -1,7 +1,8 @@
 -- ============================================================
---  Noob Mayhem (MTC) — TokaiHub UI v4
---  Kill loop: mirrors confirmed working script exactly
---  while true do / task.wait(0.15) — không dùng Heartbeat
+--  Noob Mayhem (MTC) — TokaiHub UI v5
+--  FIX: NPC là Model trực tiếp trong workspace, KHÔNG trong folder
+--  Scan: workspace:GetDescendants() → IsA("Model") → có Humanoid → không phải player
+--  ESP: BillboardGui attach vào HumanoidRootPart của từng NPC
 -- ============================================================
 
 local TokaiHub = loadstring(game:HttpGet(
@@ -22,43 +23,48 @@ local Lighting   = game:GetService("Lighting")
 
 local LocalPlayer = Players.LocalPlayer
 
--- ── NPC FOLDER CHECK (copy từ script gốc hoạt động) ────────
-local function isNoobFolder(instance)
-    if not instance:IsA("Folder") then return false end
-    local name = instance.Name:lower()
-    return name == "allnoobs" or name:find("noob", 1, true) ~= nil
+-- ── NPC CHECK ───────────────────────────────────────────────
+-- NPC = Model có Humanoid, không phải character của player nào
+local playerChars = {}
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function(c) playerChars[c] = true end)
+    p.CharacterRemoving:Connect(function(c) playerChars[c] = nil end)
+end)
+for _, p in ipairs(Players:GetPlayers()) do
+    if p.Character then playerChars[p.Character] = true end
+    p.CharacterAdded:Connect(function(c) playerChars[c] = true end)
+    p.CharacterRemoving:Connect(function(c) playerChars[c] = nil end)
 end
 
--- ── KILL ALL NOOBS (copy y chang script gốc) ────────────────
-local function killNoobs()
-    for _, object in ipairs(workspace:GetDescendants()) do
-        if isNoobFolder(object) then
-            for _, descendant in ipairs(object:GetDescendants()) do
-                if descendant:IsA("Humanoid") then
-                    descendant.Health = 0
-                end
-            end
-        end
-    end
+local function isNPC(model)
+    if not model:IsA("Model") then return false end
+    if playerChars[model] then return false end
+    if model == LocalPlayer.Character then return false end
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
--- ── GET NOOB MODELS (cho ESP/counter) ───────────────────────
-local function getNoobModels()
-    local out, seen = {}, {}
-    for _, object in ipairs(workspace:GetDescendants()) do
-        if isNoobFolder(object) then
-            for _, desc in ipairs(object:GetDescendants()) do
-                if desc:IsA("Humanoid") and desc.Health > 0 then
-                    local model = desc.Parent
-                    if model and not seen[model] then
-                        seen[model] = true
-                        table.insert(out, {model = model, hum = desc})
-                    end
-                end
+-- ── GET NPCs ────────────────────────────────────────────────
+local function getNPCs()
+    local out = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isNPC(obj) then
+            local hum = obj:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                table.insert(out, {model = obj, hum = hum})
             end
         end
     end
     return out
+end
+
+-- Kill tất cả NPC
+local function killAllNPCs()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isNPC(obj) then
+            local hum = obj:FindFirstChildOfClass("Humanoid")
+            if hum then hum.Health = 0 end
+        end
+    end
 end
 
 -- ── STATE ───────────────────────────────────────────────────
@@ -76,15 +82,13 @@ local espHealth   = true
 local espDist     = true
 local espObjects  = {}
 
-local chamsEnabled  = false
-local chamsColor    = Color3.fromRGB(255, 110, 180)
-local chamsMat      = Enum.Material.Neon
-local chamsStore    = {}
+local chamsEnabled = false
+local chamsColor   = Color3.fromRGB(255, 110, 180)
+local chamsMat     = Enum.Material.Neon
+local chamsStore   = {}
 
-local wspeedOn  = false
-local wspeedVal = 16
-local jPowerOn  = false
-local jPowerVal = 50
+local wspeedOn  = false  local wspeedVal = 16
+local jPowerOn  = false  local jPowerVal = 50
 
 -- ── UTIL ────────────────────────────────────────────────────
 local function getChar(p) return p and p.Character end
@@ -96,33 +100,30 @@ local function myPos()
     local r = getRoot(getChar(LocalPlayer))
     return r and r.Position
 end
-local function distFromMe(root)
+local function distFromMe(pos)
     local mp = myPos()
-    if not mp or not root then return 0 end
-    return (mp - root.Position).Magnitude
+    if not mp then return 0 end
+    return (mp - pos).Magnitude
 end
 
--- ── KILL LOOP — đúng pattern script gốc ─────────────────────
+-- ── KILL LOOP ───────────────────────────────────────────────
 task.spawn(function()
     while true do
         if auraEnabled then
-            if auraUseRadius then
-                -- Chỉ kill trong radius
-                for _, object in ipairs(workspace:GetDescendants()) do
-                    if isNoobFolder(object) then
-                        for _, desc in ipairs(object:GetDescendants()) do
-                            if desc:IsA("Humanoid") and desc.Health > 0 then
-                                local root = getRoot(desc.Parent)
-                                if root and distFromMe(root) <= auraRadius then
-                                    desc.Health = 0
-                                end
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                if isNPC(obj) then
+                    local hum = obj:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        if auraUseRadius then
+                            local root = getRoot(obj)
+                            if root and distFromMe(root.Position) <= auraRadius then
+                                hum.Health = 0
                             end
+                        else
+                            hum.Health = 0
                         end
                     end
                 end
-            else
-                -- Kill toàn map — y chang script gốc
-                killNoobs()
             end
         end
         task.wait(0.15)
@@ -134,84 +135,109 @@ local function removeESP(key)
     local e = espObjects[key]
     if not e then return end
     pcall(function()
-        if e.bb  and e.bb.Parent  then e.bb:Destroy()  end
-        if e.sel and e.sel.Parent then e.sel:Destroy() end
+        if e.bb  then e.bb:Destroy()  end
+        if e.sel then e.sel:Destroy() end
     end)
     espObjects[key] = nil
 end
 
 local function buildESP(key, color)
     local bb = Instance.new("BillboardGui")
-    bb.Name        = "MTCESP"
-    bb.AlwaysOnTop = true
-    bb.Size        = UDim2.new(0, 220, 0, 52)
-    bb.StudsOffset = Vector3.new(0, 3.5, 0)
+    bb.Name         = "MTCESP"
+    bb.AlwaysOnTop  = true
+    bb.Size         = UDim2.new(0, 200, 0, 50)
+    bb.StudsOffset  = Vector3.new(0, 3.5, 0)
     bb.ResetOnSpawn = false
+    bb.ClipsDescendants = false
 
     local nameL = Instance.new("TextLabel")
-    nameL.Size = UDim2.new(1,0,0.5,0)
+    nameL.Name                   = "NameL"
+    nameL.Size                   = UDim2.new(1, 0, 0.5, 0)
+    nameL.Position               = UDim2.new(0, 0, 0, 0)
     nameL.BackgroundTransparency = 1
-    nameL.TextColor3 = color
+    nameL.TextColor3             = color
     nameL.TextStrokeTransparency = 0
-    nameL.Font = Enum.Font.GothamBold
-    nameL.TextScaled = true
-    nameL.Text = ""
-    nameL.Parent = bb
+    nameL.TextStrokeColor3       = Color3.new(0,0,0)
+    nameL.Font                   = Enum.Font.GothamBold
+    nameL.TextScaled             = true
+    nameL.ZIndex                 = 10
+    nameL.Text                   = ""
+    nameL.Parent                 = bb
 
     local hpL = Instance.new("TextLabel")
-    hpL.Size = UDim2.new(1,0,0.5,0)
-    hpL.Position = UDim2.new(0,0,0.5,0)
+    hpL.Name                   = "HpL"
+    hpL.Size                   = UDim2.new(1, 0, 0.5, 0)
+    hpL.Position               = UDim2.new(0, 0, 0.5, 0)
     hpL.BackgroundTransparency = 1
+    hpL.TextColor3             = Color3.fromRGB(80, 255, 80)
     hpL.TextStrokeTransparency = 0
-    hpL.Font = Enum.Font.Gotham
-    hpL.TextScaled = true
-    hpL.Text = ""
-    hpL.Parent = bb
+    hpL.TextStrokeColor3       = Color3.new(0,0,0)
+    hpL.Font                   = Enum.Font.Gotham
+    hpL.TextScaled             = true
+    hpL.ZIndex                 = 10
+    hpL.Text                   = ""
+    hpL.Parent                 = bb
 
     local sel = Instance.new("SelectionBox")
-    sel.Color3 = color
-    sel.LineThickness = 0.05
+    sel.Color3              = color
+    sel.LineThickness       = 0.06
     sel.SurfaceTransparency = 1
-    sel.SurfaceColor3 = color
+    sel.SurfaceColor3       = color
 
-    espObjects[key] = {bb=bb, nameL=nameL, hpL=hpL, sel=sel}
+    espObjects[key] = {bb = bb, nameL = nameL, hpL = hpL, sel = sel}
 end
 
 local function processESP(model, hum, key, color, label)
-    if not model or not hum then return end
+    if not model or not hum or hum.Health <= 0 then
+        removeESP(key)
+        return false
+    end
     local root = getRoot(model)
-    if not root then return end
-    if distFromMe(root) > espMaxDist then removeESP(key) return end
+    if not root then removeESP(key) return false end
+
+    local d = distFromMe(root.Position)
+    if d > espMaxDist then removeESP(key) return false end
 
     if not espObjects[key] then buildESP(key, color) end
     local e = espObjects[key]
-    if not e then return end
+    if not e then return false end
 
-    if e.bb.Parent ~= root   then e.bb.Parent   = root  end
+    -- Attach billboard vào HumanoidRootPart
+    if e.bb.Parent ~= root then
+        e.bb.Parent = root
+    end
+
+    -- Attach SelectionBox vào model
     if e.sel.Adornee ~= model then
         e.sel.Adornee = model
         e.sel.Parent  = model
     end
 
-    e.sel.Visible = espBoxes
-    e.sel.Color3  = color
+    e.sel.Visible      = espBoxes
+    e.sel.Color3       = color
+    e.sel.SurfaceColor3 = color
     e.nameL.TextColor3 = color
 
+    -- Name + distance
     local txt = ""
     if espNames then txt = label end
-    if espDist  then txt = txt .. string.format(" [%.0f]", distFromMe(root)) end
+    if espDist  then txt = txt .. string.format(" [%.0f]", d) end
     e.nameL.Text    = txt
-    e.nameL.Visible = espNames or espDist
+    e.nameL.Visible = (espNames or espDist) and txt ~= ""
 
+    -- HP
     if espHealth and hum.MaxHealth > 0 then
         local ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-        e.hpL.Text = string.format("HP: %.0f/%.0f", hum.Health, hum.MaxHealth)
+        e.hpL.Text       = string.format("HP %.0f/%.0f", hum.Health, hum.MaxHealth)
         e.hpL.TextColor3 = Color3.fromRGB(
-            math.floor((1-ratio)*255), math.floor(ratio*255), 0)
+            math.floor((1-ratio)*255),
+            math.floor(ratio*255), 0)
         e.hpL.Visible = true
     else
         e.hpL.Visible = false
     end
+
+    return true
 end
 
 local function updateESP()
@@ -222,27 +248,31 @@ local function updateESP()
 
     local visited = {}
 
-    -- NPC
-    for _, entry in ipairs(getNoobModels()) do
-        local key = "npc_" .. entry.model:GetDebugId()
-        processESP(entry.model, entry.hum, key, espNPCColor, entry.model.Name)
-        visited[key] = true
+    -- NPC ESP
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isNPC(obj) then
+            local hum = obj:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local key = "npc_" .. obj:GetDebugId()
+                if processESP(obj, hum, key, espNPCColor, obj.Name) then
+                    visited[key] = true
+                end
+            end
+        end
     end
 
-    -- Players
+    -- Player ESP
     for _, p in ipairs(Players:GetPlayers()) do
         if p == LocalPlayer then continue end
-        local c = getChar(p)
-        local h = getHum(c)
-        if not c or not h or h.Health <= 0 then
-            removeESP("plr_"..p.UserId)
-            continue
+        local c   = getChar(p)
+        local hum = getHum(c)
+        local key = "plr_" .. p.UserId
+        if processESP(c, hum, key, espPLRColor, p.Name) then
+            visited[key] = true
         end
-        local key = "plr_"..p.UserId
-        processESP(c, h, key, espPLRColor, p.Name)
-        visited[key] = true
     end
 
+    -- Cleanup
     for k in pairs(espObjects) do
         if not visited[k] then removeESP(k) end
     end
@@ -270,20 +300,27 @@ local function revertChams(model)
     for _, p in ipairs(model:GetDescendants()) do
         if p:IsA("BasePart") then
             local s = chamsStore[p]
-            if s then p.Material=s.mat p.Color=s.col chamsStore[p]=nil end
+            if s then
+                p.Material = s.mat
+                p.Color    = s.col
+                chamsStore[p] = nil
+            end
         end
     end
 end
 
 local function updateChams()
-    for _, entry in ipairs(getNoobModels()) do
-        if chamsEnabled then applyChams(entry.model) else revertChams(entry.model) end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isNPC(obj) then
+            if chamsEnabled then applyChams(obj) else revertChams(obj) end
+        end
     end
     for _, p in ipairs(Players:GetPlayers()) do
         if p == LocalPlayer then continue end
         local c = getChar(p)
-        if not c then continue end
-        if chamsEnabled then applyChams(c) else revertChams(c) end
+        if c then
+            if chamsEnabled then applyChams(c) else revertChams(c) end
+        end
     end
 end
 
@@ -300,7 +337,7 @@ end
 -- ── WINDOW ──────────────────────────────────────────────────
 local Window = TokaiHub:CreateWindow({
     Title             = "MTC — Noob Mayhem",
-    Footer            = "v4.0",
+    Footer            = "v5.0",
     ToggleKeybind     = Enum.KeyCode.RightControl,
     Center            = true,
     AutoShow          = true,
@@ -323,14 +360,14 @@ local AuraBox = Tabs.Combat:AddLeftGroupbox("Kill Aura")
 AuraBox:AddToggle("KillAura", {
     Text     = "Kill Aura",
     Default  = false,
-    Tooltip  = "Humanoid.Health = 0 mỗi 0.15s",
+    Tooltip  = "Humanoid.Health = 0 mỗi 0.15s trên tất cả NPC",
     Callback = function(v) auraEnabled = v end,
 })
 
 AuraBox:AddToggle("AuraRadiusToggle", {
-    Text    = "Giới hạn Radius",
-    Default = false,
-    Tooltip = "OFF = kill toàn map. ON = chỉ trong radius.",
+    Text     = "Giới hạn Radius",
+    Default  = false,
+    Tooltip  = "OFF = kill toàn map. ON = chỉ trong radius.",
     Callback = function(v) auraUseRadius = v end,
 })
 
@@ -345,22 +382,27 @@ AuraBox:AddSlider("AuraRadiusVal", {
 })
 
 local TargetBox  = Tabs.Combat:AddRightGroupbox("Status")
-local aliveLabel = TargetBox:AddLabel("Noobs alive: ?")
+local aliveLabel = TargetBox:AddLabel("NPCs: ?")
 local auraLabel  = TargetBox:AddLabel("Aura: OFF")
 
 task.spawn(function()
     while true do
-        local noobs = getNoobModels()
-        aliveLabel:SetText("Noobs alive: " .. #noobs)
+        local count = 0
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if isNPC(obj) then
+                local h = obj:FindFirstChildOfClass("Humanoid")
+                if h and h.Health > 0 then count += 1 end
+            end
+        end
+        aliveLabel:SetText("NPCs alive: " .. count)
         auraLabel:SetText("Aura: " .. (auraEnabled and "ON ✓" or "OFF"))
         task.wait(0.5)
     end
 end)
 
 TargetBox:AddButton({
-    Text    = "Kill All Ngay",
-    Tooltip = "One-shot toàn map",
-    Func    = function() killNoobs() end,
+    Text = "Kill All NPCs",
+    Func = killAllNPCs,
 })
 
 -- ── [Visual] ────────────────────────────────────────────────
@@ -395,14 +437,14 @@ ESPTab:AddDropdown("ESPOpts", {
     Default = {"Boxes", "Names", "Health", "Distance"},
     Multi   = true,
     Callback = function(v)
-        espBoxes = v["Boxes"]    or false
-        espNames = v["Names"]    or false
-        espHealth = v["Health"]  or false
-        espDist  = v["Distance"] or false
+        espBoxes  = v["Boxes"]    or false
+        espNames  = v["Names"]    or false
+        espHealth = v["Health"]   or false
+        espDist   = v["Distance"] or false
     end,
 })
 
-ESPTab:AddSlider("ESPDist", {
+ESPTab:AddSlider("ESPDistVal", {
     Text = "Max Distance", Default = 500, Min = 50, Max = 2000,
     Rounding = 0, Suffix = " studs",
     Callback = function(v) espMaxDist = v end,
@@ -413,7 +455,9 @@ local ChamsToggle = ChamsTab:AddToggle("Chams", {
     Callback = function(v)
         chamsEnabled = v
         if not v then
-            for _, e in ipairs(getNoobModels()) do revertChams(e.model) end
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                if isNPC(obj) then revertChams(obj) end
+            end
             for _, p in ipairs(Players:GetPlayers()) do
                 if p ~= LocalPlayer then
                     local c = getChar(p)
@@ -472,10 +516,7 @@ MoveBox:AddSlider("JPVal", {
 
 local MiscBox = Tabs.Player:AddRightGroupbox("Misc")
 
-MiscBox:AddButton({
-    Text = "Kill All Noobs",
-    Func = function() killNoobs() end,
-})
+MiscBox:AddButton({ Text = "Kill All NPCs", Func = killAllNPCs })
 
 MiscBox:AddButton({
     Text = "Equip Sword",
@@ -514,7 +555,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 Players.PlayerRemoving:Connect(function(p)
-    removeESP("plr_"..p.UserId)
+    removeESP("plr_" .. p.UserId)
 end)
 
 -- ── RENDER LOOP ─────────────────────────────────────────────
@@ -535,7 +576,7 @@ SaveManager:BuildConfigSection(Tabs.Config)
 SaveManager:LoadAutoloadConfig()
 
 TokaiHub:Notify({
-    Title       = "MTC v4 Loaded",
+    Title       = "MTC v5 Loaded",
     Description = "Right-Ctrl để toggle UI",
     Time        = 4,
 })

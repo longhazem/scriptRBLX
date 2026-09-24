@@ -134,47 +134,45 @@ end)
 local function removeESP(key)
     local e = espObjects[key]
     if not e then return end
-    pcall(function()
-        if e.bb  then e.bb:Destroy()  end
-        if e.sel then e.sel:Destroy() end
-    end)
+    pcall(function() e.bb:Destroy()  end)
+    pcall(function() e.sel:Destroy() end)
     espObjects[key] = nil
 end
 
 local function buildESP(key, color)
+    -- BillboardGui attach vào Adornee trực tiếp, không cần parent vào part
     local bb = Instance.new("BillboardGui")
-    bb.Name         = "MTCESP"
-    bb.AlwaysOnTop  = true
-    bb.Size         = UDim2.new(0, 200, 0, 50)
-    bb.StudsOffset  = Vector3.new(0, 3.5, 0)
-    bb.ResetOnSpawn = false
-    bb.ClipsDescendants = false
+    bb.Name              = "MTCESP"
+    bb.AlwaysOnTop       = true
+    bb.Size              = UDim2.new(6, 0, 1.5, 0)  -- SizeOffset.X tính bằng studs
+    bb.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+    bb.ResetOnSpawn      = false
+    bb.ClipsDescendants  = false
+    bb.LightInfluence    = 0
 
     local nameL = Instance.new("TextLabel")
     nameL.Name                   = "NameL"
-    nameL.Size                   = UDim2.new(1, 0, 0.5, 0)
+    nameL.Size                   = UDim2.new(1, 0, 0.55, 0)
     nameL.Position               = UDim2.new(0, 0, 0, 0)
     nameL.BackgroundTransparency = 1
     nameL.TextColor3             = color
     nameL.TextStrokeTransparency = 0
-    nameL.TextStrokeColor3       = Color3.new(0,0,0)
+    nameL.TextStrokeColor3       = Color3.new(0, 0, 0)
     nameL.Font                   = Enum.Font.GothamBold
-    nameL.TextScaled             = true
-    nameL.ZIndex                 = 10
+    nameL.TextSize               = 14   -- fixed size, không dùng TextScaled
     nameL.Text                   = ""
     nameL.Parent                 = bb
 
     local hpL = Instance.new("TextLabel")
     hpL.Name                   = "HpL"
-    hpL.Size                   = UDim2.new(1, 0, 0.5, 0)
-    hpL.Position               = UDim2.new(0, 0, 0.5, 0)
+    hpL.Size                   = UDim2.new(1, 0, 0.45, 0)
+    hpL.Position               = UDim2.new(0, 0, 0.55, 0)
     hpL.BackgroundTransparency = 1
     hpL.TextColor3             = Color3.fromRGB(80, 255, 80)
     hpL.TextStrokeTransparency = 0
-    hpL.TextStrokeColor3       = Color3.new(0,0,0)
+    hpL.TextStrokeColor3       = Color3.new(0, 0, 0)
     hpL.Font                   = Enum.Font.Gotham
-    hpL.TextScaled             = true
-    hpL.ZIndex                 = 10
+    hpL.TextSize               = 12
     hpL.Text                   = ""
     hpL.Parent                 = bb
 
@@ -202,37 +200,36 @@ local function processESP(model, hum, key, color, label)
     local e = espObjects[key]
     if not e then return false end
 
-    -- Attach billboard vào HumanoidRootPart
-    if e.bb.Parent ~= root then
-        e.bb.Parent = root
+    -- Adornee = root part, parent = CoreGui hoặc PlayerGui để không bị destroy
+    if e.bb.Adornee ~= root then
+        e.bb.Adornee = root
+        e.bb.Parent  = LocalPlayer.PlayerGui
     end
 
-    -- Attach SelectionBox vào model
+    -- SelectionBox bao model
     if e.sel.Adornee ~= model then
         e.sel.Adornee = model
-        e.sel.Parent  = model
+        e.sel.Parent  = workspace
     end
 
-    e.sel.Visible      = espBoxes
-    e.sel.Color3       = color
+    e.sel.Visible       = espBoxes
+    e.sel.Color3        = color
     e.sel.SurfaceColor3 = color
-    e.nameL.TextColor3 = color
+    e.nameL.TextColor3  = color
 
     -- Name + distance
     local txt = ""
     if espNames then txt = label end
     if espDist  then txt = txt .. string.format(" [%.0f]", d) end
     e.nameL.Text    = txt
-    e.nameL.Visible = (espNames or espDist) and txt ~= ""
+    e.nameL.Visible = espNames or espDist
 
     -- HP
     if espHealth and hum.MaxHealth > 0 then
         local ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-        e.hpL.Text       = string.format("HP %.0f/%.0f", hum.Health, hum.MaxHealth)
-        e.hpL.TextColor3 = Color3.fromRGB(
-            math.floor((1-ratio)*255),
-            math.floor(ratio*255), 0)
-        e.hpL.Visible = true
+        e.hpL.Text       = string.format("HP %d/%d", math.floor(hum.Health), math.floor(hum.MaxHealth))
+        e.hpL.TextColor3 = Color3.fromRGB(math.floor((1-ratio)*255), math.floor(ratio*255), 0)
+        e.hpL.Visible    = true
     else
         e.hpL.Visible = false
     end

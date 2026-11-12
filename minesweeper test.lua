@@ -818,11 +818,9 @@ function Core.solve(W, H, st, opts)
     return res
 end
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
-
 local TIME = { now = function() return os.clock() end }
 
 local CONFIG = {
@@ -834,19 +832,20 @@ local CONFIG = {
     WalkSpeed = 28,
     MaxWalkTiles = 12,
     WalkWaypointTimeout = 1.5,
+    Solve = false,
     SolverInterval = 0.03,
-    ESPInterval = 0.1,
-    Tick = 0.02,
-    BlockSeconds = 5,
     MaxGuessRisk = 1,
-    AutoFlag = false,
-    FlagDelay = 0.3,
-    FlagRange = 30,
+    BlockSeconds = 5,
     ShowMarks = true,
+    ShowHeat = true,
+    ShowGuess = true,
+    ESPInterval = 0.03,
     ShowDistance = 0,
     Opacity = 0.6,
-    ShowHeat = true,
-    Keys = { Rage = Enum.KeyCode.F8, Legit = Enum.KeyCode.F9, Stop = Enum.KeyCode.F10 },
+    AutoFlag = false,
+    FlagDelay = 0.05,
+    FlagRange = 30,
+    Tick = 0.02,
 }
 
 local COLOURS = {
@@ -865,6 +864,49 @@ local UNOPENED = {
 local EXCLUDED = { 1.0, 1.0, 0.49 }
 local DIRS4 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
 local DIRS8 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }
+
+local UI = {}
+local LIB = nil
+local recent, moveCount, errorCount, flagCount, noDetector = {}, 0, 0, 0, 0
+local lastError = nil
+local alive = true
+local board, fastRes, fullRes, shown = nil, nil, nil, nil
+local lastSig = nil
+local highlights = {}
+local flagged = {}
+local failures, blockedUntil = {}, {}
+local marksNote = "waiting for the board"
+local flagNote = "off"
+local nextESP, nextSolve, nextFlag = 0, 0, 0
+local colourSig = ""
+local lastSolveState = false
+
+local function notify(text, kind)
+    if LIB then
+        pcall(function()
+            LIB:Notify({ Title = "TokaiHub", Content = text, Type = kind, Duration = 2.5 })
+        end)
+        return
+    end
+    pcall(function()
+        StarterGui:SetCore("SendNotification", { Title = "TokaiHub", Text = text, Duration = 2.5 })
+    end)
+end
+
+local function noteMove(i, ok)
+    if ok then
+        moveCount = moveCount + 1
+    end
+    table.insert(recent, 1, { tile = i, ok = ok })
+    while #recent > 8 do
+        table.remove(recent)
+    end
+end
+
+local function rootPart()
+    local char = player.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
 
 local function colourIs(c, rgb)
     return math.abs(c.R - rgb[1]) < 0.05 and math.abs(c.G - rgb[2]) < 0.05 and math.abs(c.B - rgb[3]) < 0.05
@@ -1039,167 +1081,6 @@ local function totalMines()
     local info = ReplicatedStorage:FindFirstChild("Info")
     local mines = info and info:FindFirstChild("Mines")
     return mines and mines.Value or nil
-end
-
-local UI = {}
-local LIB = nil
-local recent, moveCount, errorCount, flagCount = {}, 0, 0, 0
-local lastError = nil
-local mode = "off"
-local alive = true
-local board, result = nil, nil
-local lastSig = nil
-local highlights = {}
-local flagged = {}
-local failures, blockedUntil = {}, {}
-local inputConn = nil
-local marksNote = "off"
-local nextESP, nextSolve, nextFlag = 0, 0, 0
-local colourSig = ""
-local MODE_LABEL = { off = "Off", rage = "Solve and move", legit = "Marks only" }
-local LABEL_MODE = { ["Off"] = "off", ["Solve and move"] = "rage", ["Marks only"] = "legit" }
-
-local function notify(text, kind)
-    if LIB then
-        pcall(function()
-            LIB:Notify({ Title = "TokaiHub", Content = text, Type = kind, Duration = 2.5 })
-        end)
-        return
-    end
-    pcall(function()
-        StarterGui:SetCore("SendNotification", { Title = "TokaiHub", Text = text, Duration = 2.5 })
-    end)
-end
-
-local function noteMove(i, ok)
-    if ok then
-        moveCount = moveCount + 1
-    end
-    table.insert(recent, 1, { tile = i, ok = ok })
-    while #recent > 8 do
-        table.remove(recent)
-    end
-end
-
-local function rootPart()
-    local char = player.Character
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-
-local function heatColour(p)
-    local lo, hi = COLOURS.lowRisk, COLOURS.highRisk
-    return Color3.fromRGB((lo.R + (hi.R - lo.R) * p) * 255, (lo.G + (hi.G - lo.G) * p) * 255, (lo.B + (hi.B - lo.B) * p) * 255)
-end
-
-local function touchesNumber(b, i)
-    local col = (i - 1) % b.W + 1
-    local row = math.floor((i - 1) / b.W) + 1
-    for _, d in ipairs(DIRS8) do
-        local nc, nr = col + d[1], row + d[2]
-        if nc >= 1 and nc <= b.W and nr >= 1 and nr <= b.H then
-            local j = (nr - 1) * b.W + nc
-            if b.open[j] and (b.value[j] or 0) > 0 then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function paint(tile, colour, transparency, key)
-    local rec = highlights[tile]
-    if colour == nil then
-        if rec then
-            pcall(function()
-                rec.inst:Destroy()
-            end)
-            highlights[tile] = nil
-        end
-        return
-    end
-    if not rec then
-        local inst = Instance.new("Highlight")
-        inst.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        inst.Adornee = tile
-        inst.Parent = tile
-        rec = { inst = inst, key = nil }
-        highlights[tile] = rec
-    end
-    if rec.key ~= key then
-        rec.key = key
-        rec.inst.FillColor = colour
-        rec.inst.OutlineColor = colour
-        rec.inst.FillTransparency = transparency
-        rec.inst.OutlineTransparency = 0.2
-    end
-end
-
-local function clearMarks()
-    for tile in pairs(highlights) do
-        paint(tile, nil)
-    end
-end
-
-local function refreshMarks(b, r)
-    local want = {}
-    local root = rootPart()
-    local transparency = 1 - CONFIG.Opacity
-    local function allowed(tile)
-        if CONFIG.ShowDistance <= 0 or not root then
-            return true
-        end
-        return (tile.Position - root.Position).Magnitude <= CONFIG.ShowDistance
-    end
-    local function put(i, kind, colour)
-        local tile = b.tileOf[i]
-        if tile and tile.Parent and allowed(tile) then
-            want[tile] = { kind = kind, colour = colour }
-        end
-    end
-    if CONFIG.ShowMarks then
-        if CONFIG.ShowHeat then
-            for i, p in pairs(r.probs) do
-                if p > 0 and p < 1 and b.exists[i] and not b.open[i] and not b.flag[i] and touchesNumber(b, i) then
-                    put(i, "risk", heatColour(p))
-                end
-            end
-        end
-        if r.guess and b.exists[r.guess] and not b.open[r.guess] then
-            put(r.guess, "guess", COLOURS.guess)
-        end
-        for _, i in ipairs(r.safe) do
-            put(i, "safe", COLOURS.safe)
-        end
-        for _, i in ipairs(r.mines) do
-            put(i, "mine", COLOURS.mine)
-        end
-    end
-    local counts = { safe = 0, mine = 0, guess = 0, risk = 0 }
-    for _, m in pairs(want) do
-        counts[m.kind] = counts[m.kind] + 1
-    end
-    for tile in pairs(highlights) do
-        if want[tile] == nil then
-            paint(tile, nil)
-        end
-    end
-    for tile, m in pairs(want) do
-        local c = m.colour
-        local key = string.format("%.3f,%.3f,%.3f,%.3f", c.R, c.G, c.B, transparency)
-        paint(tile, c, transparency, key)
-    end
-    local total = counts.safe + counts.mine + counts.guess + counts.risk
-    if not CONFIG.ShowMarks then
-        marksNote = "marks hidden"
-    elseif b.numbers == 0 and counts.guess > 0 then
-        marksNote = "no numbers yet: the yellow tile is the first guess"
-    elseif b.numbers == 0 then
-        marksNote = "no numbers yet: open one tile first"
-    elseif total == 0 then
-        marksNote = "numbers read, nothing to mark"
-    else
-        marksNote = string.format("%d safe, %d mine, %d guess, %d risk", counts.safe, counts.mine, counts.guess, counts.risk)
-    end
 end
 
 local function tileOpen(part, kind)
@@ -1406,12 +1287,134 @@ local function act(b, r)
     return 0
 end
 
+local function heatColour(p)
+    local lo, hi = COLOURS.lowRisk, COLOURS.highRisk
+    return Color3.fromRGB((lo.R + (hi.R - lo.R) * p) * 255, (lo.G + (hi.G - lo.G) * p) * 255, (lo.B + (hi.B - lo.B) * p) * 255)
+end
+
+local function touchesNumber(b, i)
+    local col = (i - 1) % b.W + 1
+    local row = math.floor((i - 1) / b.W) + 1
+    for _, d in ipairs(DIRS8) do
+        local nc, nr = col + d[1], row + d[2]
+        if nc >= 1 and nc <= b.W and nr >= 1 and nr <= b.H then
+            local j = (nr - 1) * b.W + nc
+            if b.open[j] and (b.value[j] or 0) > 0 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function paint(tile, colour, transparency, key)
+    local rec = highlights[tile]
+    if colour == nil then
+        if rec then
+            pcall(function()
+                rec.inst:Destroy()
+            end)
+            highlights[tile] = nil
+        end
+        return
+    end
+    if not rec then
+        local inst = Instance.new("Highlight")
+        inst.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        inst.Adornee = tile
+        inst.Parent = tile
+        rec = { inst = inst, key = nil }
+        highlights[tile] = rec
+    end
+    if rec.key ~= key then
+        rec.key = key
+        rec.inst.FillColor = colour
+        rec.inst.OutlineColor = colour
+        rec.inst.FillTransparency = transparency
+        rec.inst.OutlineTransparency = 0.2
+    end
+end
+
+local function clearMarks()
+    for tile in pairs(highlights) do
+        paint(tile, nil)
+    end
+end
+
+local function refreshMarks(b, r)
+    local want = {}
+    local root = rootPart()
+    local transparency = 1 - CONFIG.Opacity
+    local function allowed(tile)
+        if CONFIG.ShowDistance <= 0 or not root then
+            return true
+        end
+        return (tile.Position - root.Position).Magnitude <= CONFIG.ShowDistance
+    end
+    local function put(i, kind, colour)
+        local tile = b.tileOf[i]
+        if tile and tile.Parent and allowed(tile) then
+            want[tile] = { kind = kind, colour = colour }
+        end
+    end
+    if CONFIG.ShowMarks then
+        if CONFIG.ShowHeat and r.probs then
+            for i, p in pairs(r.probs) do
+                if p > 0 and p < 1 and b.exists[i] and not b.open[i] and not b.flag[i] and touchesNumber(b, i) then
+                    put(i, "risk", heatColour(p))
+                end
+            end
+        end
+        if CONFIG.ShowGuess and r.guess and b.exists[r.guess] and not b.open[r.guess] then
+            put(r.guess, "guess", COLOURS.guess)
+        end
+        for _, i in ipairs(r.safe) do
+            put(i, "safe", COLOURS.safe)
+        end
+        for _, i in ipairs(r.mines) do
+            put(i, "mine", COLOURS.mine)
+        end
+    end
+    local counts = { safe = 0, mine = 0, guess = 0, risk = 0 }
+    for _, m in pairs(want) do
+        counts[m.kind] = counts[m.kind] + 1
+    end
+    for tile in pairs(highlights) do
+        if want[tile] == nil then
+            paint(tile, nil)
+        end
+    end
+    for tile, m in pairs(want) do
+        local c = m.colour
+        local key = string.format("%.3f,%.3f,%.3f,%.3f", c.R, c.G, c.B, transparency)
+        paint(tile, c, transparency, key)
+    end
+    local total = counts.safe + counts.mine + counts.guess + counts.risk
+    if not CONFIG.ShowMarks then
+        marksNote = "marks off"
+    elseif b.numbers == 0 and counts.guess > 0 then
+        marksNote = "no numbers yet: the yellow tile is the first guess"
+    elseif b.numbers == 0 then
+        marksNote = "no numbers yet: open one tile first"
+    elseif total == 0 then
+        marksNote = "numbers read, nothing to mark"
+    else
+        marksNote = string.format("%d safe, %d mine, %d guess, %d risk", counts.safe, counts.mine, counts.guess, counts.risk)
+    end
+end
+
 local function flagNext(b, r)
+    if not CONFIG.AutoFlag then
+        flagNote = "off"
+        return false
+    end
     if type(fireclickdetector) ~= "function" then
+        flagNote = "fireclickdetector is not available in this executor"
         return false
     end
     local root = rootPart()
     if not root then
+        flagNote = "no character"
         return false
     end
     local best, bestD = nil, math.huge
@@ -1425,49 +1428,109 @@ local function flagNext(b, r)
         end
     end
     if not best then
+        if #r.mines == 0 then
+            flagNote = "no certain mines yet"
+        else
+            flagNote = "certain mines are out of range or already flagged"
+        end
         return false
     end
     flagged[best] = true
     local cd = best:FindFirstChildWhichIsA("ClickDetector", true)
     if not cd then
+        noDetector = noDetector + 1
+        flagNote = "no ClickDetector on the tile (" .. noDetector .. " so far)"
         return false
     end
     fireclickdetector(cd)
     flagCount = flagCount + 1
+    flagNote = "flagging"
     return true
 end
 
+local function reportError(r)
+    if r and r.error and r.error ~= lastError then
+        lastError = r.error
+        errorCount = errorCount + 1
+        notify("numbers do not fit: " .. r.error, "Error")
+    end
+end
+
+local function solveBoard(b, mode)
+    local st = { open = b.open, value = b.value, flag = b.flag, exists = b.exists }
+    local total = totalMines()
+    local r = Core.solve(b.W, b.H, st, { totalMines = total, mode = mode })
+    if r.error and total then
+        local r2 = Core.solve(b.W, b.H, st, { mode = mode })
+        if not r2.error then
+            r2.totalIgnored = true
+            return r2
+        end
+    end
+    return r
+end
+
+local function modeName()
+    if CONFIG.Solve then
+        return "rage"
+    end
+    if CONFIG.ShowMarks then
+        return "legit"
+    end
+    return "off"
+end
+
 local function status()
-    local safe = result and #result.safe or 0
-    local mines = result and #result.mines or 0
-    local ms = (result and result.stats and result.stats.seconds or 0) * 1000
-    return string.format("mode %s | move %s | safe %d | mines %d | solve %.1f ms", mode, CONFIG.Movement, safe, mines, ms)
+    local safe = shown and #shown.safe or 0
+    local mines = shown and #shown.mines or 0
+    local ms = (shown and shown.stats and shown.stats.seconds or 0) * 1000
+    return string.format("mode %s | move %s | safe %d | mines %d | solve %.1f ms", modeName(), CONFIG.Movement, safe, mines, ms)
 end
 
 local function setMode(m)
-    mode = m
-    if UI.mode and type(UI.mode.Set) == "function" then
+    if UI.solve and type(UI.solve.Set) == "function" then
         pcall(function()
-            UI.mode:Set(MODE_LABEL[m], true)
+            UI.solve:Set(m == "rage", true)
         end)
     end
+    if UI.showMarks and type(UI.showMarks.Set) == "function" then
+        pcall(function()
+            UI.showMarks:Set(m ~= "off", true)
+        end)
+    end
+    CONFIG.Solve = m == "rage"
+    CONFIG.ShowMarks = m ~= "off"
+    lastSolveState = CONFIG.Solve
     nextESP, nextSolve, nextFlag = 0, 0, 0
     if m == "off" then
         clearMarks()
-        lastSig, result = nil, nil
-        marksNote = "off"
+        lastSig, fastRes, fullRes, shown = nil, nil, nil, nil
+        marksNote = "marks off"
     end
-    notify("solver " .. MODE_LABEL[m], m == "rage" and "Success" or "Warning")
 end
 
 local function syncUI()
     if not UI.ready then
         return
     end
-    local m = LABEL_MODE[UI.mode:Get()]
-    if m and m ~= mode then
-        setMode(m)
+    local solve = UI.solve:Get() == true
+    if solve ~= lastSolveState then
+        lastSolveState = solve
+        nextSolve = 0
+        notify(solve and "auto solve on" or "auto solve off", solve and "Success" or "Warning")
     end
+    CONFIG.Solve = solve
+    CONFIG.ShowMarks = UI.showMarks:Get() == true
+    CONFIG.ShowHeat = UI.showHeat:Get() == true
+    CONFIG.ShowGuess = UI.showGuess:Get() == true
+    CONFIG.AutoFlag = UI.autoFlag:Get() == true
+    CONFIG.FlagDelay = UI.flagDelay:Get()
+    CONFIG.FlagRange = UI.flagRange:Get()
+    CONFIG.ESPInterval = UI.espScan:Get() / 1000
+    CONFIG.SolverInterval = UI.solverScan:Get() / 1000
+    CONFIG.MaxGuessRisk = UI.guessRisk:Get() / 100
+    CONFIG.ShowDistance = UI.showDistance:Get()
+    CONFIG.Opacity = UI.opacity:Get() / 100
     local teleport = UI.movement:Get() ~= "Walk"
     CONFIG.Movement = teleport and "hop" or "walk"
     CONFIG.HopWait = UI.tpSpeed:Get() / 1000
@@ -1476,16 +1539,6 @@ local function syncUI()
     CONFIG.WalkSpeed = UI.walkSpeed:Get()
     CONFIG.MaxWalkTiles = math.floor(UI.maxWalk:Get())
     CONFIG.WalkWaypointTimeout = UI.walkTimeout:Get() / 1000
-    CONFIG.SolverInterval = UI.solverScan:Get() / 1000
-    CONFIG.MaxGuessRisk = UI.guessRisk:Get() / 100
-    CONFIG.AutoFlag = UI.autoFlag:Get() == true
-    CONFIG.FlagDelay = UI.flagDelay:Get()
-    CONFIG.FlagRange = UI.flagRange:Get()
-    CONFIG.ShowMarks = UI.showMarks:Get() == true
-    CONFIG.ShowHeat = UI.showHeat:Get() == true
-    CONFIG.ESPInterval = UI.espScan:Get() / 1000
-    CONFIG.ShowDistance = UI.showDistance:Get()
-    CONFIG.Opacity = UI.opacity:Get() / 100
     local cs = { UI.colSafe:Get(), UI.colMine:Get(), UI.colGuess:Get(), UI.colLow:Get(), UI.colHigh:Get() }
     COLOURS.safe, COLOURS.mine, COLOURS.guess = cs[1], cs[2], cs[3]
     COLOURS.lowRisk, COLOURS.highRisk = cs[4], cs[5]
@@ -1506,39 +1559,31 @@ local function syncUI()
     UI.walkTimeout:SetVisible(not teleport)
 end
 
-local function solveBoard(b)
-    local st = { open = b.open, value = b.value, flag = b.flag, exists = b.exists }
-    local total = totalMines()
-    local r = Core.solve(b.W, b.H, st, { totalMines = total })
-    if r.error and total then
-        local r2 = Core.solve(b.W, b.H, st, {})
-        if not r2.error then
-            r2.totalIgnored = true
-            return r2
-        end
-    end
-    return r
-end
-
 local function tickOnce(force)
     syncUI()
-    if mode == "off" then
+    if not CONFIG.ShowMarks then
         clearMarks()
-        lastSig, result, board = nil, nil, nil
-        marksNote = "off"
-        return
     end
     local now = TIME.now()
-    local doMarks = force or now >= nextESP
-    local doSolve = mode == "rage" and (force or now >= nextSolve)
-    local doFlag = CONFIG.AutoFlag and (force or now >= nextFlag)
+    local wantSolve = CONFIG.Solve
+    local wantMarks = CONFIG.ShowMarks
+    local wantFlag = CONFIG.AutoFlag
+    if not (wantSolve or wantMarks or wantFlag) then
+        lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
+        marksNote = "marks off"
+        flagNote = "off"
+        return
+    end
+    local doMarks = wantMarks and (force or now >= nextESP)
+    local doSolve = wantSolve and (force or now >= nextSolve)
+    local doFlag = wantFlag and (force or now >= nextFlag)
     if not (doMarks or doSolve or doFlag) then
         return
     end
     local b, err = readBoard()
     if not b then
         clearMarks()
-        result, board, lastSig = nil, nil, nil
+        lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
         marksNote = err or "no tiles found"
         if err and not string.find(err, "no tiles", 1, true) and err ~= lastError then
             lastError = err
@@ -1551,50 +1596,69 @@ local function tickOnce(force)
         return
     end
     board = b
+    if b.numbers == 0 then
+        flagged = {}
+    end
     if b.sig ~= lastSig then
         lastSig = b.sig
-        result = solveBoard(b)
-        if result.error and result.error ~= lastError then
-            lastError = result.error
-            errorCount = errorCount + 1
-            notify("numbers do not fit: " .. result.error, "Error")
-        end
+        fastRes = solveBoard(b, "basic")
+        fullRes = nil
+        reportError(fastRes)
     end
-    if not result or result.error then
+    if not fastRes or fastRes.error then
         clearMarks()
-        marksNote = result and ("solver error: " .. result.error) or "no result"
+        shown = nil
+        marksNote = fastRes and ("solver error: " .. fastRes.error) or "no result"
         nextESP = now + CONFIG.ESPInterval
+        nextSolve = now + CONFIG.SolverInterval
+        nextFlag = now + CONFIG.FlagDelay
         return
     end
+    shown = fullRes or fastRes
     if doMarks then
-        refreshMarks(b, result)
+        refreshMarks(b, shown)
         nextESP = now + CONFIG.ESPInterval
     end
+    if doFlag then
+        flagNext(b, fastRes)
+        nextFlag = now + CONFIG.FlagDelay
+    end
+    local moved = 0
     if doSolve then
         if currentRound() then
-            local moved = act(b, result)
-            nextSolve = now + ((moved > 0) and 0 or CONFIG.SolverInterval)
-        else
-            nextSolve = now + CONFIG.SolverInterval
+            moved = act(b, fastRes)
         end
+        nextSolve = now + ((moved > 0) and 0 or CONFIG.SolverInterval)
     end
-    if doFlag then
-        flagNext(b, result)
-        nextFlag = now + CONFIG.FlagDelay
+    local wantFull = (doMarks and (CONFIG.ShowHeat or CONFIG.ShowGuess)) or (doSolve and currentRound())
+    if wantFull and moved == 0 then
+        if not fullRes then
+            task.wait()
+            fullRes = solveBoard(b, "full")
+            reportError(fullRes)
+            if fullRes.error then
+                fullRes = nil
+            end
+        end
+        if fullRes then
+            shown = fullRes
+            if doMarks then
+                refreshMarks(b, fullRes)
+            end
+            if doSolve and currentRound() then
+                act(b, fullRes)
+            end
+        end
     end
 end
 
 local function stop()
     alive = false
-    mode = "off"
-    if inputConn then
-        pcall(function()
-            inputConn:Disconnect()
-        end)
-    end
+    CONFIG.Solve = false
+    CONFIG.AutoFlag = false
     clearMarks()
-    result, board, lastSig = nil, nil, nil
-    marksNote = "off"
+    lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
+    marksNote = "stopped"
 end
 
 task.spawn(function()
@@ -1627,8 +1691,11 @@ genv.MS2 = {
     note = function()
         return marksNote
     end,
+    flagNote = function()
+        return flagNote
+    end,
 }
-notify("solver ready: F8 solve and move, F9 marks only, F10 stop")
+notify("TokaiHub ready: Auto solve is in the Solver tab")
 local LIB_PATH = "HawkTokaiLib/Source.luau"
 local LIB_URL = "https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau"
 
@@ -1673,18 +1740,14 @@ local function buildUI(lib)
     end)
 
     local Solver = Window:CreateTab({ Name = "Solver", Icon = "crosshair" })
-    local Run = Solver:CreateSubTab({ Name = "Run" })
-    local Mode = Run:AddLeftGroupbox({ Name = "Mode", Icon = "zap" })
-    UI.mode = Mode:CreateDropdown({
-        Name = "Mode",
-        Options = { MODE_LABEL.off, MODE_LABEL.rage, MODE_LABEL.legit },
-        CurrentOption = MODE_LABEL.off,
-        AllowNone = false,
-        Callback = function(option)
-            setMode(LABEL_MODE[option] or "off")
-        end,
+    local Solve = Solver:CreateSubTab({ Name = "Solve" })
+    local Auto = Solve:AddLeftGroupbox({ Name = "Auto solve", Icon = "zap" })
+    UI.solve = Auto:CreateToggle({
+        Name = "Auto solve",
+        Desc = "moves onto certain safe tiles, then the best guess",
+        CurrentValue = false,
     })
-    UI.solverScan = Mode:CreateSlider({
+    UI.solverScan = Auto:CreateSlider({
         Name = "Solver scan speed",
         Desc = "how often the solver reads the board and acts",
         Range = { 0, 400 },
@@ -1693,8 +1756,8 @@ local function buildUI(lib)
         CurrentValue = 30,
         Flag = "MS2_SolverScan",
     })
-    local Guess = Run:AddRightGroupbox({ Name = "Guess", Icon = "crosshair" })
-    UI.guessRisk = Guess:CreateSlider({
+    local Guessing = Solve:AddRightGroupbox({ Name = "Guessing", Icon = "crosshair" })
+    UI.guessRisk = Guessing:CreateSlider({
         Name = "Max guess risk",
         Desc = "a guess is only taken at or below this mine chance",
         Range = { 0, 100 },
@@ -1764,27 +1827,27 @@ local function buildUI(lib)
         Flag = "MS2_WalkTimeout",
     })
 
-    local Flags = Solver:CreateSubTab({ Name = "Flags" })
-    local Auto = Flags:AddLeftGroupbox({ Name = "Auto flag", Icon = "flag" })
-    UI.autoFlag = Auto:CreateToggle({
+    local Flags = Window:CreateTab({ Name = "Flags", Icon = "flag" })
+    local Auto2 = Flags:AddLeftGroupbox({ Name = "Auto flag", Icon = "flag" })
+    UI.autoFlag = Auto2:CreateToggle({
         Name = "Auto flag mines",
-        Desc = "clicks certain mines with fireclickdetector",
+        Desc = "clicks certain mines, works without auto solve",
         CurrentValue = false,
     })
-    UI.flagDelay = Auto:CreateSlider({
+    UI.flagDelay = Auto2:CreateSlider({
         Name = "Flag delay",
         Desc = "seconds between two flags",
         Range = { 0.05, 10 },
         Increment = 0.05,
         Suffix = " s",
-        CurrentValue = 0.3,
+        CurrentValue = 0.05,
         Flag = "MS2_FlagDelay",
     })
     local Reach = Flags:AddRightGroupbox({ Name = "Reach", Icon = "crosshair" })
     UI.flagRange = Reach:CreateSlider({
         Name = "Flag range",
-        Desc = "ClickDetector reach is 32 studs by default",
-        Range = { 5, 32 },
+        Desc = "studs from your character",
+        Range = { 1, 30 },
         Increment = 1,
         Suffix = " studs",
         CurrentValue = 30,
@@ -1794,10 +1857,19 @@ local function buildUI(lib)
     local ESP = Window:CreateTab({ Name = "ESP", Icon = "eye" })
     local Marks = ESP:CreateSubTab({ Name = "Marks" })
     local Show = Marks:AddLeftGroupbox({ Name = "Show", Icon = "layout-grid" })
-    UI.showMarks = Show:CreateToggle({ Name = "Show marks", CurrentValue = true })
+    UI.showMarks = Show:CreateToggle({
+        Name = "Show marks",
+        Desc = "runs on its own, no mode to pick",
+        CurrentValue = true,
+    })
     UI.showHeat = Show:CreateToggle({
         Name = "Risk heat",
         Desc = "colours unknown tiles next to numbers by mine chance",
+        CurrentValue = true,
+    })
+    UI.showGuess = Show:CreateToggle({
+        Name = "Best guess",
+        Desc = "marks the tile the solver would guess",
         CurrentValue = true,
     })
     UI.espScan = Show:CreateSlider({
@@ -1805,7 +1877,7 @@ local function buildUI(lib)
         Range = { 30, 1000 },
         Increment = 10,
         Suffix = " ms",
-        CurrentValue = 100,
+        CurrentValue = 30,
         Flag = "MS2_ESPScan",
     })
     local Look = Marks:AddRightGroupbox({ Name = "Distance and opacity", Icon = "sliders-horizontal" })
@@ -1835,46 +1907,17 @@ local function buildUI(lib)
     UI.colLow = Heat:CreateColorPicker({ Name = "Low risk", Color = COLOURS.lowRisk, Flag = "MS2_ColLow" })
     UI.colHigh = Heat:CreateColorPicker({ Name = "High risk", Color = COLOURS.highRisk, Flag = "MS2_ColHigh" })
 
-    local Controls = Window:CreateTab({ Name = "Controls", Icon = "sliders-horizontal" })
-    local Keys = Controls:AddLeftGroupbox({ Name = "Keys", Icon = "mouse-pointer-click" })
-    Keys:CreateKeybind({
-        Name = "Solve and move",
-        CurrentKeybind = "F8",
-        Flag = "MS2_KeyRage",
-        Callback = function()
-            setMode(mode == "rage" and "off" or "rage")
-        end,
-    })
-    Keys:CreateKeybind({
-        Name = "Marks only",
-        CurrentKeybind = "F9",
-        Flag = "MS2_KeyLegit",
-        Callback = function()
-            setMode(mode == "legit" and "off" or "legit")
-        end,
-    })
-    Keys:CreateKeybind({
-        Name = "Stop",
-        CurrentKeybind = "F10",
-        Flag = "MS2_KeyStop",
-        Callback = function()
-            setMode("off")
-        end,
-    })
-
     local Status = Window:CreateTab({ Name = "Status", Icon = "activity" })
     local Session = Status:AddLeftGroupbox({ Name = "Solver", Icon = "timer" })
     Session:CreateStatus({
-        Name = "Mode",
+        Name = "Auto solve",
         Pin = true,
         UpdateRate = 0.25,
         Update = function()
-            if mode == "rage" then
-                return MODE_LABEL.rage, "Success"
-            elseif mode == "legit" then
-                return MODE_LABEL.legit, "Accent"
+            if CONFIG.Solve then
+                return "on", "Success"
             end
-            return MODE_LABEL.off, "Warning"
+            return "off", "Warning"
         end,
     })
     Session:CreateStatus({
@@ -1902,7 +1945,7 @@ local function buildUI(lib)
         Pin = true,
         UpdateRate = 0.25,
         Update = function()
-            return result and #result.safe or 0
+            return shown and #shown.safe or 0
         end,
     })
     Session:CreateStatus({
@@ -1910,7 +1953,7 @@ local function buildUI(lib)
         Style = "Stat",
         UpdateRate = 0.25,
         Update = function()
-            return result and #result.mines or 0
+            return shown and #shown.mines or 0
         end,
     })
     Session:CreateStatus({
@@ -1918,7 +1961,7 @@ local function buildUI(lib)
         Style = "Row",
         UpdateRate = 0.5,
         Update = function()
-            local ms = result and result.stats and result.stats.seconds * 1000 or 0
+            local ms = shown and shown.stats and shown.stats.seconds * 1000 or 0
             return string.format("%.1f ms", ms)
         end,
     })
@@ -1940,6 +1983,14 @@ local function buildUI(lib)
         UpdateRate = 0.5,
         Update = function()
             return CONFIG.Movement == "walk" and "walk" or "teleport"
+        end,
+    })
+    Health:CreateStatus({
+        Name = "Flag state",
+        Style = "Row",
+        UpdateRate = 0.5,
+        Update = function()
+            return flagNote
         end,
     })
     Health:CreateStatus({
@@ -1971,10 +2022,10 @@ local function buildUI(lib)
         Style = "Badge",
         UpdateRate = 0.5,
         Update = function()
-            if not result or not result.stats then
+            if not shown or not shown.stats then
                 return "none", "Warning"
             end
-            if result.stats.exact then
+            if shown.stats.exact then
                 return "Exact", "Success"
             end
             return "Estimated", "Warning"
@@ -2043,23 +2094,8 @@ if LIBRARY then
     if not okUI then
         warn("[TokaiHub] ui failed: " .. tostring(uiErr))
     end
-end
-
-if not UI.ready then
-    warn("[TokaiHub] no ui, the hotkeys still work")
-    UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed or not alive then
-            return
-        end
-        local key = input.KeyCode
-        if key == CONFIG.Keys.Rage then
-            setMode(mode == "rage" and "off" or "rage")
-        elseif key == CONFIG.Keys.Legit then
-            setMode(mode == "legit" and "off" or "legit")
-        elseif key == CONFIG.Keys.Stop then
-            setMode("off")
-        end
-    end)
+else
+    warn("[TokaiHub] HawkTokaiLib could not be loaded, the solver runs with its defaults")
 end
 
 genv.MS2.ui = UI

@@ -1497,13 +1497,114 @@ local function refreshMarks(b, r)
     end
 end
 
+-- AUTO FLAG
+-- a flag is a Model under the tile part. the flag is placed with PlaceFlag and the key the game
+-- client holds, so no ClickDetector is needed. a tile with a flag model is never fired at again,
+-- and a flag that went missing has no model, so it is placed again after the gap
+local FLAG = { gap = 3, maxFires = 6, key = nil, keyAt = -math.huge, lastFire = {}, fires = {} }
+
+local function hasServerFlag(part)
+    if not part then
+        return false
+    end
+    for _, child in ipairs(part:GetChildren()) do
+        if child:IsA("Model") then
+            return true
+        end
+    end
+    return false
+end
+
+local function scanUpvaluesForKey(func, depth)
+    if depth > 3 then
+        return nil
+    end
+    local ok, ups = pcall(debug.getupvalues, func)
+    if not ok or type(ups) ~= "table" then
+        return nil
+    end
+    for _, v in pairs(ups) do
+        if type(v) == "string" and #v >= 10 and tonumber(v) then
+            return v
+        elseif type(v) == "number" and v > 1000 then
+            return tostring(v)
+        elseif type(v) == "function" then
+            local nested = scanUpvaluesForKey(v, depth + 1)
+            if nested then
+                return nested
+            end
+        end
+    end
+    return nil
+end
+
+local function findFlagKey()
+    local salasana = workspace:FindFirstChild("Salasana")
+    if salasana and salasana:IsA("ValueObject") and salasana.Value ~= 0 then
+        return tostring(salasana.Value)
+    end
+    -- the game's MouseControl keeps the key as an upvalue of its own functions
+    if type(getgc) == "function" and type(debug.getupvalues) == "function" then
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "function" then
+                local okI, info = pcall(debug.info, v, "s")
+                if okI and type(info) == "string" and info:find("MouseControl") then
+                    local okU, ups = pcall(debug.getupvalues, v)
+                    if okU and type(ups) == "table" then
+                        local hasRemote, key = false, nil
+                        for _, uv in pairs(ups) do
+                            if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
+                                hasRemote = true
+                            elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) then
+                                key = uv
+                            elseif type(uv) == "number" and uv > 1000 then
+                                key = tostring(uv)
+                            end
+                        end
+                        if hasRemote and key then
+                            return key
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if type(getconnections) == "function" then
+        local mouse = player:GetMouse()
+        for _, event in ipairs({ mouse.Button1Down, mouse.Button2Down }) do
+            for _, conn in ipairs(getconnections(event)) do
+                if conn.Function then
+                    local key = scanUpvaluesForKey(conn.Function, 0)
+                    if key then
+                        return key
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getFlagKey()
+    if FLAG.key then
+        return FLAG.key
+    end
+    local now = tick()
+    if now - FLAG.keyAt < 5 then
+        return nil
+    end
+    FLAG.keyAt = now
+    FLAG.key = findFlagKey()
+    return FLAG.key
+end
+
 local function flagNext(b, r)
     if not CONFIG.AutoFlag then
         flagNote = "off"
         return false
     end
-    if type(fireclickdetector) ~= "function" then
-        flagNote = "fireclickdetector is not available in this executor"
+    if not currentRound() then
+        flagNote = "no round running"
         return false
     end
     local root = rootPart()
@@ -1511,34 +1612,54 @@ local function flagNext(b, r)
         flagNote = "no character"
         return false
     end
+    local events = ReplicatedStorage:FindFirstChild("Events")
+    local flagEvents = events and events:FindFirstChild("FlagEvents")
+    local placeFlag = flagEvents and flagEvents:FindFirstChild("PlaceFlag")
+    if not placeFlag then
+        flagNote = "PlaceFlag remote not found"
+        return false
+    end
+    local key = getFlagKey()
+    if not key then
+        flagNote = "flag key not found, this executor cannot place flags"
+        return false
+    end
+    local now = tick()
     local best, bestD = nil, math.huge
+    local waiting, capped = 0, 0
     for _, i in ipairs(r.mines) do
         local tile = b.tileOf[i]
-        if tile and tile.Parent and not flagged[tile] then
-            local d = (tile.Position - root.Position).Magnitude
-            if d <= CONFIG.FlagRange and d < bestD then
-                best, bestD = tile, d
+        if tile and tile.Parent and not hasServerFlag(tile) then
+            local last = FLAG.lastFire[tile]
+            if (FLAG.fires[tile] or 0) >= FLAG.maxFires then
+                capped = capped + 1
+            elseif last and now - last < FLAG.gap then
+                waiting = waiting + 1
+            else
+                local d = (tile.Position - root.Position).Magnitude
+                if d <= CONFIG.FlagRange and d < bestD then
+                    best, bestD = tile, d
+                end
             end
         end
     end
     if not best then
         if #r.mines == 0 then
             flagNote = "no certain mines yet"
+        elseif waiting > 0 then
+            flagNote = waiting .. " flag(s) waiting for the server"
+        elseif capped > 0 then
+            flagNote = capped .. " tile(s) hit the flag limit"
         else
             flagNote = "certain mines are out of range or already flagged"
         end
         return false
     end
-    flagged[best] = true
-    local cd = best:FindFirstChildWhichIsA("ClickDetector", true)
-    if not cd then
-        noDetector = noDetector + 1
-        flagNote = "no ClickDetector on the tile (" .. noDetector .. " so far)"
-        return false
-    end
-    fireclickdetector(cd)
+    FLAG.lastFire[best] = now
+    FLAG.fires[best] = (FLAG.fires[best] or 0) + 1
+    placeFlag:FireServer(best, key, true)
     flagCount = flagCount + 1
-    flagNote = "flagging"
+    flagNote = "flag sent"
     return true
 end
 
@@ -1694,6 +1815,7 @@ local function tickOnce(force)
     board = b
     if b.numbers == 0 then
         flagged = {}
+        FLAG.key, FLAG.lastFire, FLAG.fires = nil, {}, {}
     end
     if b.sig ~= lastSig then
         lastSig = b.sig

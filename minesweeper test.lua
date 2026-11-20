@@ -1520,7 +1520,7 @@ end
 -- a flag is a Model under the tile part. the flag is placed with PlaceFlag and the key the game
 -- client holds, so no ClickDetector is needed. a tile with a flag model is never fired at again,
 -- and a flag that went missing has no model, so it is placed again after the gap
-local FLAG = { gap = 3, regap = 0.3, maxFires = 20, key = nil, keyAt = -math.huge, sent = {}, board = nil, result = nil, at = 0 }
+local FLAG = { gap = 3, regap = 0.05, maxFires = 20, key = nil, keyAt = -math.huge, sent = {}, wanted = {} }
 
 local function scanUpvaluesForKey(func, depth)
     if depth > 3 then
@@ -1605,15 +1605,7 @@ local function getFlagKey()
     return FLAG.key
 end
 
-local function flagNext(b, r)
-    if not CONFIG.AutoFlag then
-        flagNote = "off"
-        return false
-    end
-    if manualPause then
-        flagNote = "paused (F8)"
-        return false
-    end
+local function flagNext()
     if not currentRound() then
         flagNote = "no round running"
         return false
@@ -1636,8 +1628,8 @@ local function flagNext(b, r)
         return false
     end
     local now = tick()
-    -- follow the tiles we fired at: a model that shows up means the server has the flag,
-    -- and a model that goes away after that means the flag was removed
+    -- live check of the tiles we fired at: a model that shows up means the server has the flag,
+    -- a model that goes away after that means the flag was removed
     for tile, rec in pairs(FLAG.sent) do
         if not tile.Parent then
             FLAG.sent[tile] = nil
@@ -1650,9 +1642,10 @@ local function flagNext(b, r)
     end
     local best, bestD = nil, math.huge
     local waiting, capped = 0, 0
-    for _, i in ipairs(r.mines) do
-        local tile = b.tileOf[i]
-        if tile and tile.Parent and not hasServerFlag(tile) then
+    for tile in pairs(FLAG.wanted) do
+        if not tile.Parent then
+            FLAG.wanted[tile] = nil
+        elseif not hasServerFlag(tile) then
             local rec = FLAG.sent[tile]
             local ready = true
             if rec then
@@ -1660,10 +1653,8 @@ local function flagNext(b, r)
                     ready = false
                     capped = capped + 1
                 elseif rec.seen then
-                    -- it was placed and is gone now: place it again after a short wait
                     ready = now - (rec.lostAt or now) >= FLAG.regap
                 else
-                    -- fired but not showing yet: wait, a late flag would be taken off by a second click
                     ready = now - rec.t >= FLAG.gap
                     if not ready then
                         waiting = waiting + 1
@@ -1679,7 +1670,7 @@ local function flagNext(b, r)
         end
     end
     if not best then
-        if #r.mines == 0 then
+        if next(FLAG.wanted) == nil then
             flagNote = "no certain mines yet"
         elseif waiting > 0 then
             flagNote = waiting .. " flag(s) waiting for the server"
@@ -1852,7 +1843,7 @@ local function tickOnce(force)
     board = b
     if b.numbers == 0 then
         flagged = {}
-        FLAG.key, FLAG.sent = nil, {}
+        FLAG.key, FLAG.sent, FLAG.wanted = nil, {}, {}
     end
     if b.sig ~= lastSig then
         lastSig = b.sig
@@ -1902,7 +1893,12 @@ local function tickOnce(force)
         end
     end
     if CONFIG.AutoFlag then
-        FLAG.board, FLAG.result, FLAG.at = b, shown or fastRes, tick()
+        for _, i in ipairs((shown or fastRes).mines) do
+            local tile = b.tileOf[i]
+            if tile then
+                FLAG.wanted[tile] = true
+            end
+        end
     end
 end
 
@@ -2092,11 +2088,16 @@ task.spawn(function()
     end
 end)
 
--- flags run on their own loop, so a long hop batch in the solver does not hold them back
+-- flags run on their own loop and use the mines the solver has already found,
+-- so a long hop batch in the solver does not hold them back
 task.spawn(function()
     while alive do
-        if CONFIG.AutoFlag and FLAG.result and tick() - FLAG.at < 0.5 then
-            local okF, errF = pcall(flagNext, FLAG.board, FLAG.result)
+        if not CONFIG.AutoFlag then
+            flagNote = "off"
+        elseif manualPause then
+            flagNote = "paused (F8)"
+        else
+            local okF, errF = pcall(flagNext)
             if not okF then
                 flagNote = "error: " .. tostring(errF)
             end

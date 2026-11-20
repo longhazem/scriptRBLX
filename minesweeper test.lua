@@ -954,9 +954,25 @@ local function numberOnTile(part)
     return nil
 end
 
+local function hasServerFlag(part)
+    if not part then
+        return false
+    end
+    for _, child in ipairs(part:GetChildren()) do
+        if child:IsA("Model") then
+            return true
+        end
+    end
+    return false
+end
+
 local function classifyFlagTile(part)
     local gui = part:FindFirstChild("NumberGui")
     if not gui then
+        -- a flag placed by PlaceFlag is a model under the tile
+        if hasServerFlag(part) then
+            return "mine"
+        end
         return "unopened"
     end
     local label = gui:FindFirstChild("TextLabel")
@@ -1468,6 +1484,9 @@ local function refreshMarks(b, r)
         for _, i in ipairs(r.mines) do
             put(i, "mine", COLOURS.mine)
         end
+        for i in pairs(b.flag) do
+            put(i, "mine", COLOURS.mine)
+        end
     end
     local counts = { safe = 0, mine = 0, guess = 0, risk = 0 }
     for _, m in pairs(want) do
@@ -1501,19 +1520,7 @@ end
 -- a flag is a Model under the tile part. the flag is placed with PlaceFlag and the key the game
 -- client holds, so no ClickDetector is needed. a tile with a flag model is never fired at again,
 -- and a flag that went missing has no model, so it is placed again after the gap
-local FLAG = { gap = 3, maxFires = 6, key = nil, keyAt = -math.huge, lastFire = {}, fires = {} }
-
-local function hasServerFlag(part)
-    if not part then
-        return false
-    end
-    for _, child in ipairs(part:GetChildren()) do
-        if child:IsA("Model") then
-            return true
-        end
-    end
-    return false
-end
+local FLAG = { gap = 3, regap = 0.3, maxFires = 20, key = nil, keyAt = -math.huge, sent = {}, board = nil, result = nil, at = 0 }
 
 local function scanUpvaluesForKey(func, depth)
     if depth > 3 then
@@ -1603,6 +1610,10 @@ local function flagNext(b, r)
         flagNote = "off"
         return false
     end
+    if manualPause then
+        flagNote = "paused (F8)"
+        return false
+    end
     if not currentRound() then
         flagNote = "no round running"
         return false
@@ -1625,17 +1636,41 @@ local function flagNext(b, r)
         return false
     end
     local now = tick()
+    -- follow the tiles we fired at: a model that shows up means the server has the flag,
+    -- and a model that goes away after that means the flag was removed
+    for tile, rec in pairs(FLAG.sent) do
+        if not tile.Parent then
+            FLAG.sent[tile] = nil
+        elseif hasServerFlag(tile) then
+            rec.seen = true
+            rec.lostAt = nil
+        elseif rec.seen then
+            rec.lostAt = rec.lostAt or now
+        end
+    end
     local best, bestD = nil, math.huge
     local waiting, capped = 0, 0
     for _, i in ipairs(r.mines) do
         local tile = b.tileOf[i]
         if tile and tile.Parent and not hasServerFlag(tile) then
-            local last = FLAG.lastFire[tile]
-            if (FLAG.fires[tile] or 0) >= FLAG.maxFires then
-                capped = capped + 1
-            elseif last and now - last < FLAG.gap then
-                waiting = waiting + 1
-            else
+            local rec = FLAG.sent[tile]
+            local ready = true
+            if rec then
+                if rec.fires >= FLAG.maxFires then
+                    ready = false
+                    capped = capped + 1
+                elseif rec.seen then
+                    -- it was placed and is gone now: place it again after a short wait
+                    ready = now - (rec.lostAt or now) >= FLAG.regap
+                else
+                    -- fired but not showing yet: wait, a late flag would be taken off by a second click
+                    ready = now - rec.t >= FLAG.gap
+                    if not ready then
+                        waiting = waiting + 1
+                    end
+                end
+            end
+            if ready then
                 local d = (tile.Position - root.Position).Magnitude
                 if d <= CONFIG.FlagRange and d < bestD then
                     best, bestD = tile, d
@@ -1655,8 +1690,10 @@ local function flagNext(b, r)
         end
         return false
     end
-    FLAG.lastFire[best] = now
-    FLAG.fires[best] = (FLAG.fires[best] or 0) + 1
+    local rec = FLAG.sent[best] or { fires = 0 }
+    rec.fires = rec.fires + 1
+    rec.t, rec.seen, rec.lostAt = now, false, nil
+    FLAG.sent[best] = rec
     placeFlag:FireServer(best, key, true)
     flagCount = flagCount + 1
     flagNote = "flag sent"
@@ -1815,7 +1852,7 @@ local function tickOnce(force)
     board = b
     if b.numbers == 0 then
         flagged = {}
-        FLAG.key, FLAG.lastFire, FLAG.fires = nil, {}, {}
+        FLAG.key, FLAG.sent = nil, {}
     end
     if b.sig ~= lastSig then
         lastSig = b.sig
@@ -1864,9 +1901,8 @@ local function tickOnce(force)
             end
         end
     end
-    if doFlag then
-        flagNext(b, shown or fastRes)
-        nextFlag = now + CONFIG.FlagDelay
+    if CONFIG.AutoFlag then
+        FLAG.board, FLAG.result, FLAG.at = b, shown or fastRes, tick()
     end
 end
 
@@ -2056,6 +2092,19 @@ task.spawn(function()
     end
 end)
 
+-- flags run on their own loop, so a long hop batch in the solver does not hold them back
+task.spawn(function()
+    while alive do
+        if CONFIG.AutoFlag and FLAG.result and tick() - FLAG.at < 0.5 then
+            local okF, errF = pcall(flagNext, FLAG.board, FLAG.result)
+            if not okF then
+                flagNote = "error: " .. tostring(errF)
+            end
+        end
+        task.wait(math.max(CONFIG.FlagDelay, 0.02))
+    end
+end)
+
 genv.MS2_STOP = stop
 genv.MS2 = {
     config = CONFIG,
@@ -2216,7 +2265,7 @@ local function buildUI(lib)
     })
     UI.flagDelay = Auto2:CreateSlider({
         Name = "Flag delay",
-        Desc = "seconds between two flags",
+        Desc = "seconds between two flag checks",
         Range = { 0.05, 10 },
         Increment = 0.05,
         Suffix = " s",

@@ -846,6 +846,8 @@ local CONFIG = {
     FlagDelay = 0.05,
     FlagRange = 30,
     Tick = 0.02,
+    HalloweenMode = "Off",
+    HalloweenDelay = 0,
 }
 
 local COLOURS = {
@@ -892,6 +894,17 @@ local function notify(text, kind)
         StarterGui:SetCore("SendNotification", { Title = "TokaiHub", Text = text, Duration = 2.5 })
     end)
 end
+
+local UserInputService = game:GetService("UserInputService")
+local PAUSE_KEY = Enum.KeyCode.F8 -- pauses solve, auto flag and Halloween answers; marks keep running
+local manualPause = false
+local pauseConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or input.KeyCode ~= PAUSE_KEY then
+        return
+    end
+    manualPause = not manualPause
+    notify(manualPause and "paused (F8 to resume)" or "resumed", manualPause and "Warning" or "Success")
+end)
 
 local function noteMove(i, ok)
     if ok then
@@ -971,18 +984,40 @@ local function classifyColourTile(part)
     return nil
 end
 
-local candidates = { list = {}, at = -math.huge }
+local candidates = { set = {}, list = {}, dirty = true, scanned = false, at = 0 }
+local function isTile(d)
+    return d.Name == "Part" and d:IsA("BasePart")
+end
+local tileConn = workspace.DescendantAdded:Connect(function(d)
+    if isTile(d) then
+        candidates.set[d] = true
+        candidates.dirty = true
+    end
+end)
 local function colourCandidates()
-    local age = TIME.now() - candidates.at
-    if age > 2 or (age > 0.5 and #candidates.list == 0) then
-        candidates.at = TIME.now()
-        local list = {}
+    local now = TIME.now()
+    if not candidates.scanned or now - candidates.at > 10 then
+        -- one full scan every 10 s catches anything the listener missed
+        candidates.scanned = true
+        candidates.at = now
         for _, d in ipairs(workspace:GetDescendants()) do
-            if d:IsA("BasePart") and d.Name == "Part" then
+            if isTile(d) then
+                candidates.set[d] = true
+            end
+        end
+        candidates.dirty = true
+    end
+    if candidates.dirty then
+        local list = {}
+        for d in pairs(candidates.set) do
+            if d.Parent and d:IsDescendantOf(workspace) then
                 list[#list + 1] = d
+            else
+                candidates.set[d] = nil
             end
         end
         candidates.list = list
+        candidates.dirty = false
     end
     return candidates.list
 end
@@ -1523,6 +1558,8 @@ local function syncUI()
     CONFIG.ShowMarks = UI.showMarks:Get() == true
     CONFIG.ShowHeat = UI.showHeat:Get() == true
     CONFIG.ShowGuess = UI.showGuess:Get() == true
+    CONFIG.HalloweenMode = UI.halloween and UI.halloween:Get() or "Off"
+    CONFIG.HalloweenDelay = UI.halloweenDelay and UI.halloweenDelay:Get() or 0
     CONFIG.AutoFlag = UI.autoFlag:Get() == true
     CONFIG.FlagDelay = UI.flagDelay:Get()
     CONFIG.FlagRange = UI.flagRange:Get()
@@ -1565,9 +1602,9 @@ local function tickOnce(force)
         clearMarks()
     end
     local now = TIME.now()
-    local wantSolve = CONFIG.Solve
+    local wantSolve = CONFIG.Solve and not manualPause
     local wantMarks = CONFIG.ShowMarks
-    local wantFlag = CONFIG.AutoFlag
+    local wantFlag = CONFIG.AutoFlag and not manualPause
     if not (wantSolve or wantMarks or wantFlag) then
         lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
         marksNote = "marks off"
@@ -1654,11 +1691,162 @@ end
 
 local function stop()
     alive = false
+    if tileConn then
+        tileConn:Disconnect()
+        tileConn = nil
+    end
+    if pauseConn then
+        pauseConn:Disconnect()
+        pauseConn = nil
+    end
     CONFIG.Solve = false
     CONFIG.AutoFlag = false
+    CONFIG.HalloweenMode = "Off"
     clearMarks()
     lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
     marksNote = "stopped"
+end
+
+local halloweenNote = "off"
+local halloweenCount = 0
+local answeredPopup = nil   -- popup we already answered, cleared when it closes
+local popupSeen = nil       -- when the open popup was first seen
+local popupRef = nil        -- cached Vote frame, rescanned only when it is gone
+local nextHalloween = 0
+
+-- the popup rests on screen near Y = 0.5 and the roll tween moves it to Y = 1.7,
+-- so "open" means visible and above that line. Yes never hides the frame, so Visible alone is not enough.
+local function popupOpen(vote)
+    local node = vote
+    while node and node ~= player do
+        if node:IsA("LayerCollector") and not node.Enabled then
+            return false
+        end
+        if node:IsA("GuiObject") and not node.Visible then
+            return false
+        end
+        node = node.Parent
+    end
+    return vote.Position.Y.Scale < 1.2
+end
+
+local function findPopup()
+    if popupRef and popupRef.Parent then
+        return popupRef
+    end
+    popupRef = nil
+    local pg = player:FindFirstChildOfClass("PlayerGui")
+    if not pg then
+        return nil
+    end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d.Name == "Vote" and d:IsA("GuiObject") and d:FindFirstChild("Yes", true) and d:FindFirstChild("No", true) then
+            popupRef = d
+            return d
+        end
+    end
+    return nil
+end
+
+-- firesignal runs the same handler a click would. without it: No just hides the popup
+-- (what its handler does anyway), Yes goes straight to the RemoteEvent that sits next to the popup.
+local function answerPopup(vote, wantYes)
+    local holder = vote:FindFirstChild(wantYes and "Yes" or "No", true)
+    local btn = holder and holder:FindFirstChildWhichIsA("TextButton", true)
+    if btn and type(firesignal) == "function" then
+        firesignal(btn.Activated)
+        return true
+    end
+    if not wantYes then
+        vote.Visible = false
+        return true
+    end
+    local remote = vote.Parent and vote.Parent:FindFirstChild("RemoteEvent")
+    if remote and remote:IsA("RemoteEvent") then
+        remote:FireServer()
+        return true
+    end
+    return false
+end
+
+local function tickHalloween()
+    local mode = CONFIG.HalloweenMode
+    if not mode or mode == "Off" then
+        halloweenNote, answeredPopup, popupSeen = "off", nil, nil
+        return
+    end
+    if manualPause then
+        halloweenNote = "paused (F8)"
+        return
+    end
+    local now = TIME.now()
+    if now < nextHalloween then
+        return
+    end
+    nextHalloween = now + 0.1
+    local vote = findPopup()
+    if not vote then
+        halloweenNote, popupSeen = "no vote popup in PlayerGui yet", nil
+        nextHalloween = now + 0.5
+        return
+    end
+    if not popupOpen(vote) then
+        answeredPopup, popupSeen = nil, nil
+        halloweenNote = "waiting for a vote"
+        return
+    end
+    if answeredPopup == vote then
+        return
+    end
+    popupSeen = popupSeen or now
+    local wait = (CONFIG.HalloweenDelay or 0) / 1000
+    if now - popupSeen < wait then
+        halloweenNote = string.format("answering in %.1f s", wait - (now - popupSeen))
+        return
+    end
+    local wantYes = mode == "Yes"
+    if answerPopup(vote, wantYes) then
+        answeredPopup = vote
+        halloweenCount = halloweenCount + 1
+        halloweenNote = wantYes and "voted yes" or "vetoed"
+    else
+        halloweenNote = "cannot answer: no firesignal and no RemoteEvent next to the popup"
+    end
+end
+
+-- round stats: a round is the stretch where Info.GameRunning is not false
+local roundStats = { rounds = 0, last = nil, fastest = nil }
+local roundNow = { running = nil, started = 0, moves = 0, flags = 0 }
+local function markRoundStart()
+    roundNow.started = tick()
+    roundNow.moves = moveCount
+    roundNow.flags = flagCount
+end
+local function trackRound()
+    local running = currentRound()
+    if roundNow.running == nil then
+        roundNow.running = running
+        markRoundStart()
+        return
+    end
+    if running and not roundNow.running then
+        markRoundStart()
+    elseif roundNow.running and not running then
+        local secs = tick() - roundNow.started
+        local entry = { secs = secs, opened = moveCount - roundNow.moves, flags = flagCount - roundNow.flags }
+        roundStats.rounds = roundStats.rounds + 1
+        roundStats.last = entry
+        if not roundStats.fastest or secs < roundStats.fastest.secs then
+            roundStats.fastest = entry
+        end
+    end
+    roundNow.running = running
+end
+local function fmtRound(e)
+    if not e then
+        return "none yet"
+    end
+    return string.format("%d:%02d, %d opened, %d flags", math.floor(e.secs / 60), math.floor(e.secs % 60), e.opened, e.flags)
 end
 
 task.spawn(function()
@@ -1672,6 +1860,11 @@ task.spawn(function()
                 warn("[TokaiHub] " .. text)
             end
         end
+        local okH, errH = pcall(tickHalloween)
+        if not okH then
+            halloweenNote = "error: " .. tostring(errH)
+        end
+        pcall(trackRound)
         task.wait(CONFIG.Tick)
     end
 end)
@@ -1932,6 +2125,17 @@ local function buildUI(lib)
         end,
     })
     Session:CreateStatus({
+        Name = "Paused",
+        Style = "Badge",
+        UpdateRate = 0.25,
+        Update = function()
+            if manualPause then
+                return "F8", "Warning"
+            end
+            return "running", "Success"
+        end,
+    })
+    Session:CreateStatus({
         Name = "Marks",
         Style = "Row",
         UpdateRate = 0.5,
@@ -2031,6 +2235,43 @@ local function buildUI(lib)
             return "Estimated", "Warning"
         end,
     })
+    local Rounds = Status:AddRightGroupbox({ Name = "Rounds", Icon = "trophy" })
+    Rounds:CreateStatus({
+        Name = "Finished",
+        Style = "Stat",
+        UpdateRate = 0.5,
+        Update = function()
+            return roundStats.rounds
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Last round",
+        Style = "Row",
+        UpdateRate = 0.5,
+        Update = function()
+            return fmtRound(roundStats.last)
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Fastest",
+        Style = "Row",
+        UpdateRate = 0.5,
+        Update = function()
+            return fmtRound(roundStats.fastest)
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Mines left",
+        Style = "Stat",
+        UpdateRate = 0.5,
+        Update = function()
+            local total = totalMines()
+            if not total or not board or board.kind ~= "flag" then
+                return "?"
+            end
+            return math.max(0, total - board.flags)
+        end,
+    })
     local Jobs = Status:AddLeftGroupbox({ Name = "Recent tiles", Icon = "list-checks" })
     Jobs:CreateStatusList({
         Name = "Moves",
@@ -2047,6 +2288,43 @@ local function buildUI(lib)
                 }
             end
             return rows
+        end,
+    })
+
+    local Halloween = Window:CreateTab({ Name = "Halloween", Icon = "ghost" })
+    local Vote = Halloween:AddLeftGroupbox({ Name = "Vote popup", Icon = "ghost" })
+    UI.halloween = Vote:CreateDropdown({
+        Name = "Halloween vote",
+        Desc = "auto answers the Halloween vote popup",
+        Options = { "Off", "Veto (No)", "Yes" },
+        CurrentOption = "Off",
+        AllowNone = false,
+        Flag = "MS2_Halloween",
+    })
+    UI.halloweenDelay = Vote:CreateSlider({
+        Name = "Answer delay",
+        Desc = "wait this long after the popup opens before answering",
+        Range = { 0, 5000 },
+        Increment = 100,
+        Suffix = " ms",
+        CurrentValue = 0,
+        Flag = "MS2_HalloweenDelay",
+    })
+    local HwStatus = Halloween:AddRightGroupbox({ Name = "Status", Icon = "activity" })
+    HwStatus:CreateStatus({
+        Name = "Vote",
+        Style = "Row",
+        UpdateRate = 0.5,
+        Update = function()
+            return halloweenNote
+        end,
+    })
+    HwStatus:CreateStatus({
+        Name = "Answered",
+        Style = "Stat",
+        UpdateRate = 0.5,
+        Update = function()
+            return halloweenCount
         end,
     })
 

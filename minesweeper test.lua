@@ -825,17 +825,17 @@ local TIME = { now = function() return os.clock() end }
 
 local CONFIG = {
     Movement = "hop",
-    HopWait = 0.01,
+    HopWait = 0.02,
     HopPoll = 0.01,
     HopTimeout = 0.3,
-    HopBatch = 8,
+    HopBatch = 24,
     WalkSpeed = 28,
     MaxWalkTiles = 12,
     WalkWaypointTimeout = 1.5,
     Solve = false,
     SolverInterval = 0.03,
     MaxGuessRisk = 1,
-    BlockSeconds = 5,
+    BlockSeconds = 1.5,
     ShowMarks = true,
     ShowHeat = true,
     ShowGuess = true,
@@ -895,6 +895,7 @@ local function notify(text, kind)
     end)
 end
 
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local PAUSE_KEY = Enum.KeyCode.F8 -- pauses solve, auto flag and Halloween answers; marks keep running
 local manualPause = false
@@ -906,9 +907,12 @@ local pauseConn = UserInputService.InputBegan:Connect(function(input, gameProces
     notify(manualPause and "paused (F8 to resume)" or "resumed", manualPause and "Warning" or "Success")
 end)
 
+local missCount = 0
 local function noteMove(i, ok)
     if ok then
         moveCount = moveCount + 1
+    else
+        missCount = missCount + 1
     end
     table.insert(recent, 1, { tile = i, ok = ok })
     while #recent > 8 do
@@ -1130,7 +1134,7 @@ end
 
 local function noteFailure(i)
     failures[i] = (failures[i] or 0) + 1
-    if failures[i] >= 2 then
+    if failures[i] >= 3 then
         blockedUntil[i] = TIME.now() + CONFIG.BlockSeconds
         failures[i] = 0
     end
@@ -1167,22 +1171,72 @@ local function waitOpen(b, i)
     return false
 end
 
-local function hop(b, i)
+local function dwellFor(i)
+    return CONFIG.HopWait + math.min(0.02 * (failures[i] or 0), 0.15)
+end
+
+local function dwell(seconds)
+    local t0 = tick()
+    repeat
+        RunService.Heartbeat:Wait()
+    until tick() - t0 >= seconds
+end
+
+-- stand on the tile and stay for its dwell time; a tile that missed before gets longer
+local function stepOn(b, i)
     local tile = b.tileOf[i]
     if not tile or not standAbove(tile) then
+        return false
+    end
+    dwell(dwellFor(i))
+    return true
+end
+
+-- one shared verify window for a whole batch instead of waiting out each tile in turn
+local function settle(b, list, timeout)
+    local opened, pending = {}, list
+    local t0 = tick()
+    while true do
+        local still = {}
+        for _, i in ipairs(pending) do
+            local tile = b.tileOf[i]
+            if tile and tileOpen(tile, b.kind) then
+                opened[i] = true
+            else
+                still[#still + 1] = i
+            end
+        end
+        pending = still
+        if #pending == 0 or tick() - t0 >= timeout then
+            break
+        end
+        RunService.Heartbeat:Wait()
+    end
+    return opened
+end
+
+local function recordBatch(list, opened)
+    local moved = 0
+    for _, i in ipairs(list) do
+        if opened[i] then
+            failures[i] = nil
+            noteMove(i, true)
+            moved = moved + 1
+        else
+            noteFailure(i)
+            noteMove(i, false)
+        end
+    end
+    return moved
+end
+
+local function hop(b, i)
+    if not stepOn(b, i) then
         noteFailure(i)
         noteMove(i, false)
         return false
     end
-    task.wait(CONFIG.HopWait)
-    if waitOpen(b, i) then
-        failures[i] = nil
-        noteMove(i, true)
-        return true
-    end
-    noteFailure(i)
-    noteMove(i, false)
-    return false
+    return recordBatch({ i }, settle(b, { i }, CONFIG.HopTimeout)) == 1
 end
 
 local function playerCell(b)
@@ -1286,19 +1340,24 @@ local function goTo(b, i)
 end
 
 local function hopBatch(b, list)
-    local visited, moved = 0, 0
+    local visit = {}
     for _, i in ipairs(list) do
-        if visited >= CONFIG.HopBatch then
+        if #visit >= CONFIG.HopBatch then
             break
         end
         if not blocked(i) then
-            if hop(b, i) then
-                moved = moved + 1
+            if stepOn(b, i) then
+                visit[#visit + 1] = i
+            else
+                noteFailure(i)
+                noteMove(i, false)
             end
-            visited = visited + 1
         end
     end
-    return moved
+    if #visit == 0 then
+        return 0
+    end
+    return recordBatch(visit, settle(b, visit, CONFIG.HopTimeout))
 end
 
 local function act(b, r)
@@ -1860,12 +1919,18 @@ task.spawn(function()
                 warn("[TokaiHub] " .. text)
             end
         end
+        task.wait(CONFIG.Tick)
+    end
+end)
+
+task.spawn(function()
+    while alive do
         local okH, errH = pcall(tickHalloween)
         if not okH then
             halloweenNote = "error: " .. tostring(errH)
         end
         pcall(trackRound)
-        task.wait(CONFIG.Tick)
+        task.wait(0.05)
     end
 end)
 
@@ -1972,19 +2037,19 @@ local function buildUI(lib)
     local TP = Movement:AddLeftGroupbox({ Name = "Teleport speed", Icon = "zap" })
     UI.tpSpeed = TP:CreateSlider({
         Name = "TP speed",
-        Desc = "wait after landing before the tile is checked",
+        Desc = "how long to stay on each tile; each miss adds 20 ms on the retry",
         Range = { 0, 300 },
         Increment = 5,
         Suffix = " ms",
-        CurrentValue = 10,
+        CurrentValue = 20,
         Flag = "MS2_TPSpeed",
     })
     UI.tpBatch = TP:CreateSlider({
         Name = "Tiles per scan",
-        Range = { 1, 16 },
+        Range = { 1, 40 },
         Increment = 1,
         Suffix = " tiles",
-        CurrentValue = 8,
+        CurrentValue = 24,
         Flag = "MS2_HopBatch",
     })
     UI.tpTimeout = TP:CreateSlider({
@@ -2270,6 +2335,22 @@ local function buildUI(lib)
                 return "?"
             end
             return math.max(0, total - board.flags)
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Opened",
+        Style = "Stat",
+        UpdateRate = 0.5,
+        Update = function()
+            return moveCount
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Missed",
+        Style = "Stat",
+        UpdateRate = 0.5,
+        Update = function()
+            return missCount
         end,
     })
     local Jobs = Status:AddLeftGroupbox({ Name = "Recent tiles", Icon = "list-checks" })

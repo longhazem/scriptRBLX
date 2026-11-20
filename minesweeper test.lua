@@ -1497,6 +1497,8 @@ local function refreshMarks(b, r)
     end
 end
 
+local FLAG_COOLDOWN = 2 -- seconds, the board needs about this long to show a new flag
+
 local function flagNext(b, r)
     if not CONFIG.AutoFlag then
         flagNote = "off"
@@ -1511,13 +1513,40 @@ local function flagNext(b, r)
         flagNote = "no character"
         return false
     end
-    local best, bestD = nil, math.huge
+    local now = tick()
+    -- remember which of our flags the board shows, so a flag that went missing
+    -- can be told apart from a click that never showed up
+    if b.kind == "flag" then
+        for _, rec in pairs(flagged) do
+            if b.flag[rec.i] then
+                rec.seen = true
+            end
+        end
+    end
+    local best, bestD, bestI, bestRec = nil, math.huge, nil, nil
     for _, i in ipairs(r.mines) do
         local tile = b.tileOf[i]
-        if tile and tile.Parent and not flagged[tile] then
-            local d = (tile.Position - root.Position).Magnitude
-            if d <= CONFIG.FlagRange and d < bestD then
-                best, bestD = tile, d
+        -- a tile that shows X is flagged already, clicking it again would take the flag off
+        if tile and tile.Parent and not (b.kind == "flag" and b.flag[i]) then
+            local rec = flagged[tile]
+            local due
+            if rec == nil then
+                due = true
+            elseif b.kind ~= "flag" then
+                -- the colour layout cannot show flags, so each tile is only clicked once
+                due = false
+            elseif rec.seen then
+                -- the flag was showing and is gone now, place it again after the cooldown
+                due = now - rec.t >= FLAG_COOLDOWN
+            else
+                -- the flag never showed, one retry after the cooldown and then leave it
+                due = rec.clicks < 2 and now - rec.t >= FLAG_COOLDOWN
+            end
+            if due then
+                local d = (tile.Position - root.Position).Magnitude
+                if d <= CONFIG.FlagRange and d < bestD then
+                    best, bestD, bestI, bestRec = tile, d, i, rec
+                end
             end
         end
     end
@@ -1529,7 +1558,10 @@ local function flagNext(b, r)
         end
         return false
     end
-    flagged[best] = true
+    local rec = bestRec or { i = bestI, t = now, clicks = 0, seen = false }
+    rec.i, rec.t = bestI, now
+    rec.clicks = rec.clicks + 1
+    flagged[best] = rec
     local cd = best:FindFirstChildWhichIsA("ClickDetector", true)
     if not cd then
         noDetector = noDetector + 1

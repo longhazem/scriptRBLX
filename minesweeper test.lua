@@ -1,3 +1,4 @@
+
 local genv = getgenv()
 if genv.MS2_STOP then pcall(genv.MS2_STOP) end
 
@@ -1497,7 +1498,14 @@ local function refreshMarks(b, r)
     end
 end
 
-local FLAG_COOLDOWN = 2 -- seconds, the board needs about this long to show a new flag
+local FLAG_COOLDOWN = 3    -- seconds, the board needs about this long to show a new flag
+local FLAG_MAX_REPLACE = 3 -- how many times a flag that went missing gets placed again
+
+-- key by position, not by part: if the game swaps the part of a tile, it is still the same tile
+local function flagKey(tile)
+    local p = tile.Position
+    return string.format("%.1f:%.1f", p.X, p.Z)
+end
 
 local function flagNext(b, r)
     if not CONFIG.AutoFlag then
@@ -1514,21 +1522,24 @@ local function flagNext(b, r)
         return false
     end
     local now = tick()
-    -- remember which of our flags the board shows, so a flag that went missing
-    -- can be told apart from a click that never showed up
+    -- a flag we placed that the board shows is seen, so when it disappears later we know it was removed
     if b.kind == "flag" then
-        for _, rec in pairs(flagged) do
-            if b.flag[rec.i] then
-                rec.seen = true
+        for i = 1, b.W * b.H do
+            if b.flag[i] and b.tileOf[i] then
+                local rec = flagged[flagKey(b.tileOf[i])]
+                if rec then
+                    rec.seen = true
+                end
             end
         end
     end
-    local best, bestD, bestI, bestRec = nil, math.huge, nil, nil
+    local best, bestD, bestKey, bestRec = nil, math.huge, nil, nil
     for _, i in ipairs(r.mines) do
         local tile = b.tileOf[i]
         -- a tile that shows X is flagged already, clicking it again would take the flag off
         if tile and tile.Parent and not (b.kind == "flag" and b.flag[i]) then
-            local rec = flagged[tile]
+            local key = flagKey(tile)
+            local rec = flagged[key]
             local due
             if rec == nil then
                 due = true
@@ -1536,16 +1547,16 @@ local function flagNext(b, r)
                 -- the colour layout cannot show flags, so each tile is only clicked once
                 due = false
             elseif rec.seen then
-                -- the flag was showing and is gone now, place it again after the cooldown
-                due = now - rec.t >= FLAG_COOLDOWN
+                -- our flag showed up and is gone now, place it again after the cooldown
+                due = now - rec.t >= FLAG_COOLDOWN and rec.replaced < FLAG_MAX_REPLACE
             else
-                -- the flag never showed, one retry after the cooldown and then leave it
+                -- the flag never showed up, one retry after the cooldown and then leave it
                 due = rec.clicks < 2 and now - rec.t >= FLAG_COOLDOWN
             end
             if due then
                 local d = (tile.Position - root.Position).Magnitude
                 if d <= CONFIG.FlagRange and d < bestD then
-                    best, bestD, bestI, bestRec = tile, d, i, rec
+                    best, bestD, bestKey, bestRec = tile, d, key, rec
                 end
             end
         end
@@ -1558,10 +1569,13 @@ local function flagNext(b, r)
         end
         return false
     end
-    local rec = bestRec or { i = bestI, t = now, clicks = 0, seen = false }
-    rec.i, rec.t = bestI, now
+    local rec = bestRec or { t = 0, clicks = 0, replaced = 0, seen = false }
+    if rec.seen then
+        rec.replaced = rec.replaced + 1
+    end
+    rec.t, rec.seen = now, false
     rec.clicks = rec.clicks + 1
-    flagged[best] = rec
+    flagged[bestKey] = rec
     local cd = best:FindFirstChildWhichIsA("ClickDetector", true)
     if not cd then
         noDetector = noDetector + 1

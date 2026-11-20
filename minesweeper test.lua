@@ -844,7 +844,7 @@ local CONFIG = {
     Opacity = 0.6,
     AutoFlag = false,
     FlagDelay = 0.05,
-    FlagRange = 32,
+    FlagRange = 30,
     Tick = 0.02,
     HalloweenMode = "Off",
     HalloweenDelay = 0,
@@ -1497,79 +1497,13 @@ local function refreshMarks(b, r)
     end
 end
 
-local FLAG_TRIES, FLAG_RETRY = 3, 1.2
-
--- the game only takes flags while a round runs, the round is not flagless, and you are on the Playing team
-local function flagBlockedReason()
-    if not currentRound() then
-        return "no round running"
-    end
-    local info = ReplicatedStorage:FindFirstChild("Info")
-    local flagless = info and info:FindFirstChild("Flagless")
-    if flagless and flagless.Value then
-        return "this round is flagless, flags are off"
-    end
-    local playing = game:GetService("Teams"):FindFirstChild("Playing")
-    if playing and player.Team ~= playing then
-        return "you are not on the Playing team"
-    end
-    return nil
-end
-
--- screen point of a tile, nil when it is not visible
-local function tileOnScreen(part)
-    local cam = workspace.CurrentCamera
-    if not cam then
-        return nil
-    end
-    local v, onScreen = cam:WorldToViewportPoint(part.Position)
-    if not onScreen or v.Z <= 0 then
-        return nil
-    end
-    return v
-end
-
-local function clickable(part)
-    if type(fireclickdetector) == "function" and part:FindFirstChildWhichIsA("ClickDetector", true) then
-        return true
-    end
-    return type(mousemoveabs) == "function" and type(mouse1click) == "function" and tileOnScreen(part) ~= nil
-end
-
--- touch devices have a ClickDetector on each tile. PC has none, so the cursor goes onto the tile
--- and a real left click lets the game place the flag itself
-local function placeFlag(part)
-    local cd = part:FindFirstChildWhichIsA("ClickDetector", true)
-    if cd and type(fireclickdetector) == "function" then
-        fireclickdetector(cd)
-        return true
-    end
-    local v = tileOnScreen(part)
-    if not v then
-        return false, "tile is off screen"
-    end
-    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
-        return false, "cursor is locked to the centre, unlock it for pc flags"
-    end
-    local back = UserInputService:GetMouseLocation()
-    mousemoveabs(v.X, v.Y)
-    RunService.Heartbeat:Wait()
-    RunService.Heartbeat:Wait()
-    mouse1click()
-    RunService.Heartbeat:Wait()
-    RunService.Heartbeat:Wait()
-    mousemoveabs(back.X, back.Y)
-    return true
-end
-
 local function flagNext(b, r)
     if not CONFIG.AutoFlag then
         flagNote = "off"
         return false
     end
-    local block = flagBlockedReason()
-    if block then
-        flagNote = block
+    if type(fireclickdetector) ~= "function" then
+        flagNote = "fireclickdetector is not available in this executor"
         return false
     end
     local root = rootPart()
@@ -1577,64 +1511,34 @@ local function flagNext(b, r)
         flagNote = "no character"
         return false
     end
-    -- a click counts once the board shows the flag on that tile
-    for _, rec in pairs(flagged) do
-        if rec.clicked and not rec.done and b.kind == "flag" and b.flag[rec.i] then
-            rec.done = true
-            flagCount = flagCount + 1
-        end
-    end
-    local now = tick()
-    local best, bestD, bestI, bestRec = nil, math.huge, nil, nil
-    local pending, gaveUp = 0, 0
+    local best, bestD = nil, math.huge
     for _, i in ipairs(r.mines) do
         local tile = b.tileOf[i]
-        -- a tile that already shows X is flagged, clicking it again would take the flag off
-        if tile and tile.Parent and not (b.kind == "flag" and b.flag[i]) then
-            local rec = flagged[tile]
-            if not (rec and rec.done) then
-                pending = pending + 1
-                if rec and rec.tries >= FLAG_TRIES then
-                    gaveUp = gaveUp + 1
-                elseif (not rec or now >= rec.nextAt) and clickable(tile) then
-                    local d = (tile.Position - root.Position).Magnitude
-                    if d <= CONFIG.FlagRange and d < bestD then
-                        best, bestD, bestI, bestRec = tile, d, i, rec
-                    end
-                end
+        if tile and tile.Parent and not flagged[tile] then
+            local d = (tile.Position - root.Position).Magnitude
+            if d <= CONFIG.FlagRange and d < bestD then
+                best, bestD = tile, d
             end
         end
     end
     if not best then
         if #r.mines == 0 then
             flagNote = "no certain mines yet"
-        elseif pending == 0 then
-            flagNote = "every certain mine is flagged"
-        elseif gaveUp > 0 then
-            flagNote = gaveUp .. " mine(s) did not take a flag after " .. FLAG_TRIES .. " tries"
         else
-            flagNote = "certain mines are out of range or not visible yet"
+            flagNote = "certain mines are out of range or already flagged"
         end
         return false
     end
-    local rec = bestRec or { i = bestI, tries = 0, nextAt = 0, clicked = false, done = false }
-    rec.i = bestI
-    flagged[best] = rec
-    local ok, why = placeFlag(best)
-    if not ok then
-        rec.nextAt = now + 0.5
-        flagNote = why
+    flagged[best] = true
+    local cd = best:FindFirstChildWhichIsA("ClickDetector", true)
+    if not cd then
+        noDetector = noDetector + 1
+        flagNote = "no ClickDetector on the tile (" .. noDetector .. " so far)"
         return false
     end
-    rec.tries = rec.tries + 1
-    rec.clicked = true
-    rec.nextAt = now + FLAG_RETRY
-    if b.kind ~= "flag" then
-        -- the colour layout cannot show flags, so a sent click is the most we can count
-        rec.done = true
-        flagCount = flagCount + 1
-    end
-    flagNote = string.format("flag sent to tile %d (try %d/%d)", bestI, rec.tries, FLAG_TRIES)
+    fireclickdetector(cd)
+    flagCount = flagCount + 1
+    flagNote = "flagging"
     return true
 end
 
@@ -2200,11 +2104,11 @@ local function buildUI(lib)
     local Reach = Flags:AddRightGroupbox({ Name = "Reach", Icon = "crosshair" })
     UI.flagRange = Reach:CreateSlider({
         Name = "Flag range",
-        Desc = "studs from your character, the game takes flags within 32",
-        Range = { 1, 60 },
+        Desc = "studs from your character",
+        Range = { 1, 30 },
         Increment = 1,
         Suffix = " studs",
-        CurrentValue = 32,
+        CurrentValue = 30,
         Flag = "MS2_FlagStuds",
     })
 

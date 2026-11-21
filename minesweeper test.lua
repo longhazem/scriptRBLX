@@ -834,7 +834,7 @@ local CONFIG = {
     WalkWaypointTimeout = 1.5,
     Solve = false,
     SolverInterval = 0.03,
-    MaxGuessRisk = 1,
+    MaxGuessRisk = 0,
     BlockSeconds = 1.5,
     ShowMarks = true,
     ShowHeat = true,
@@ -848,6 +848,8 @@ local CONFIG = {
     Tick = 0.02,
     HalloweenMode = "Off",
     HalloweenDelay = 0,
+    HideExplosions = true,
+    SafeWalk = false,
 }
 
 local COLOURS = {
@@ -1187,6 +1189,8 @@ local function waitOpen(b, i)
     return false
 end
 
+local FLAG = { near = 15, retryNear = 0.25, retryFar = 1, regap = 0.02, maxFails = 300, key = nil, keyAt = -math.huge, sent = {}, wanted = {}, lastAny = -math.huge }
+
 local function dwellFor(i)
     return CONFIG.HopWait + math.min(0.02 * (failures[i] or 0), 0.15)
 end
@@ -1201,7 +1205,10 @@ end
 -- stand on the tile and stay for its dwell time; a tile that missed before gets longer
 local function stepOn(b, i)
     local tile = b.tileOf[i]
-    if not tile or not standAbove(tile) then
+    if not tile or FLAG.wanted[tile] or hasServerFlag(tile) then
+        return false
+    end
+    if not standAbove(tile) then
         return false
     end
     dwell(dwellFor(i))
@@ -1290,7 +1297,7 @@ local function findPath(b, from, to)
             local nc, nr = col + d[1], row + d[2]
             if nc >= 1 and nc <= b.W and nr >= 1 and nr <= b.H then
                 local j = (nr - 1) * b.W + nc
-                if not seen[j] and (b.walk[j] or j == to) then
+                if not seen[j] and (b.walk[j] or j == to) and not FLAG.wanted[b.tileOf[j]] then
                     seen[j] = true
                     parent[j] = cur
                     queue[#queue + 1] = j
@@ -1391,7 +1398,7 @@ local function act(b, r)
         return hopBatch(b, ready)
     end
     local g = r.guess
-    if g and (r.guessP or 1) <= CONFIG.MaxGuessRisk and not blocked(g) and b.tileOf[g] and b.tileOf[g].Parent then
+    if g and (r.guessP or 1) <= CONFIG.MaxGuessRisk and not blocked(g) and b.tileOf[g] and b.tileOf[g].Parent and not FLAG.wanted[b.tileOf[g]] then
         return goTo(b, g) and 1 or 0
     end
     return 0
@@ -1417,12 +1424,41 @@ local function touchesNumber(b, i)
     return false
 end
 
+local function espFolder()
+    local folder = workspace:FindFirstChild("TokaiESP")
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = "TokaiESP"
+        folder.Parent = workspace
+    end
+    return folder
+end
+
+-- a neon plate on top of the tile: the material glows, the highlight stays visible through walls
+local function neonFor(tile)
+    local part = Instance.new("Part")
+    part.Name = "TokaiNeon"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Material = Enum.Material.Neon
+    part.Size = Vector3.new(tile.Size.X * 0.92, 0.12, tile.Size.Z * 0.92)
+    part.CFrame = tile.CFrame * CFrame.new(0, tile.Size.Y / 2 + 0.06, 0)
+    part.Parent = espFolder()
+    return part
+end
+
 local function paint(tile, colour, transparency, key)
     local rec = highlights[tile]
     if colour == nil then
         if rec then
             pcall(function()
                 rec.inst:Destroy()
+                if rec.neon then
+                    rec.neon:Destroy()
+                end
             end)
             highlights[tile] = nil
         end
@@ -1433,7 +1469,8 @@ local function paint(tile, colour, transparency, key)
         inst.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         inst.Adornee = tile
         inst.Parent = tile
-        rec = { inst = inst, key = nil }
+        local okN, neon = pcall(neonFor, tile)
+        rec = { inst = inst, neon = okN and neon or nil, key = nil }
         highlights[tile] = rec
     end
     if rec.key ~= key then
@@ -1441,8 +1478,121 @@ local function paint(tile, colour, transparency, key)
         rec.inst.FillColor = colour
         rec.inst.OutlineColor = colour
         rec.inst.FillTransparency = transparency
-        rec.inst.OutlineTransparency = 0.2
+        rec.inst.OutlineTransparency = 0
+        if rec.neon then
+            rec.neon.Color = colour
+            rec.neon.Transparency = transparency
+        end
     end
+end
+
+local GUARD = { height = 10, walls = {} }
+
+local function guardFolder()
+    local folder = workspace:FindFirstChild("TokaiGuard")
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = "TokaiGuard"
+        folder.Parent = workspace
+    end
+    return folder
+end
+
+-- an invisible solid wall on a cell: the character cannot walk into it, the server never sees it
+local function makeWall(tile)
+    local wall = Instance.new("Part")
+    wall.Name = "TokaiWall"
+    wall.Anchored = true
+    wall.CanCollide = true
+    wall.CanQuery = false
+    wall.CanTouch = false
+    wall.CastShadow = false
+    wall.Transparency = 1
+    wall.Size = Vector3.new(tile.Size.X, GUARD.height, tile.Size.Z)
+    wall.CFrame = tile.CFrame * CFrame.new(0, tile.Size.Y / 2 + GUARD.height / 2, 0)
+    wall.Parent = guardFolder()
+    return wall
+end
+
+local function clearGuards()
+    for tile, wall in pairs(GUARD.walls) do
+        pcall(function()
+            wall:Destroy()
+        end)
+        GUARD.walls[tile] = nil
+    end
+end
+
+-- only the cells the solver has proven safe, and cells already opened, stay walkable
+local function applyGuards(b, res)
+    if not res or res.error or not b then
+        return
+    end
+    local safe = {}
+    for _, i in ipairs(res.safe or {}) do
+        safe[i] = true
+    end
+    local root = rootPart()
+    local keep = {}
+    for i = 1, b.W * b.H do
+        local tile = b.tileOf[i]
+        if tile and tile.Parent and b.exists[i] and not b.open[i] and not safe[i] then
+            -- never wall the cell the character is standing on
+            local under = root
+                and math.abs(tile.Position.X - root.Position.X) < tile.Size.X
+                and math.abs(tile.Position.Z - root.Position.Z) < tile.Size.Z
+            if not under then
+                keep[tile] = true
+                if not GUARD.walls[tile] then
+                    local okW, wall = pcall(makeWall, tile)
+                    if okW and wall then
+                        GUARD.walls[tile] = wall
+                    end
+                end
+            end
+        end
+    end
+    for tile, wall in pairs(GUARD.walls) do
+        if not keep[tile] then
+            pcall(function()
+                wall:Destroy()
+            end)
+            GUARD.walls[tile] = nil
+        end
+    end
+end
+
+local explosionFolder, explosionConn = nil, nil
+
+-- same idea as the game's DisableExplosions setting: explosions under Flag.Parts are not drawn
+local function syncHideExplosions(on)
+    local flag = workspace:FindFirstChild("Flag")
+    local parts = flag and flag:FindFirstChild("Parts")
+    if not on or not parts then
+        if explosionConn then
+            explosionConn:Disconnect()
+            explosionConn = nil
+        end
+        explosionFolder = nil
+        return
+    end
+    if parts == explosionFolder and explosionConn then
+        return
+    end
+    if explosionConn then
+        explosionConn:Disconnect()
+    end
+    explosionFolder = parts
+    for _, d in ipairs(parts:GetDescendants()) do
+        if d:IsA("Explosion") and d.Name ~= "Ignore" then
+            d.Visible = false
+        end
+    end
+    explosionConn = parts.DescendantAdded:Connect(function(d)
+        if d:IsA("Explosion") and d.Name ~= "Ignore" then
+            d.Visible = false
+        end
+    end)
 end
 
 local function clearMarks()
@@ -1520,7 +1670,6 @@ end
 -- a flag is a Model under the tile part. the flag is placed with PlaceFlag and the key the game
 -- client holds, so no ClickDetector is needed. a tile with a flag model is never fired at again,
 -- and a flag that went missing has no model, so it is placed again after the gap
-local FLAG = { gap = 3, regap = 0.05, maxFires = 20, key = nil, keyAt = -math.huge, sent = {}, wanted = {} }
 
 local function scanUpvaluesForKey(func, depth)
     if depth > 3 then
@@ -1628,7 +1777,7 @@ local function flagNext()
         return false
     end
     local now = tick()
-    -- live check of the tiles we fired at: a model that shows up means the server has the flag,
+    -- follow the tiles we fired at: a model that shows up means the server has the flag,
     -- a model that goes away after that means the flag was removed
     for tile, rec in pairs(FLAG.sent) do
         if not tile.Parent then
@@ -1646,24 +1795,27 @@ local function flagNext()
         if not tile.Parent then
             FLAG.wanted[tile] = nil
         elseif not hasServerFlag(tile) then
-            local rec = FLAG.sent[tile]
-            local ready = true
-            if rec then
-                if rec.fires >= FLAG.maxFires then
-                    ready = false
-                    capped = capped + 1
-                elseif rec.seen then
-                    ready = now - (rec.lostAt or now) >= FLAG.regap
-                else
-                    ready = now - rec.t >= FLAG.gap
-                    if not ready then
-                        waiting = waiting + 1
+            local d = (tile.Position - root.Position).Magnitude
+            if d <= CONFIG.FlagRange then
+                local rec = FLAG.sent[tile]
+                local ready = true
+                if rec then
+                    if rec.fails >= FLAG.maxFails then
+                        ready = false
+                        capped = capped + 1
+                    elseif rec.seen then
+                        -- a flag that was there is gone: put it back at once
+                        ready = now - (rec.lostAt or now) >= FLAG.regap
+                    else
+                        -- fired, no model yet: near tiles are tried again soon, far ones later
+                        local wait = d <= FLAG.near and FLAG.retryNear or FLAG.retryFar
+                        ready = now - rec.t >= wait
+                        if not ready then
+                            waiting = waiting + 1
+                        end
                     end
                 end
-            end
-            if ready then
-                local d = (tile.Position - root.Position).Magnitude
-                if d <= CONFIG.FlagRange and d < bestD then
+                if ready and d < bestD then
                     best, bestD = tile, d
                 end
             end
@@ -1675,16 +1827,26 @@ local function flagNext()
         elseif waiting > 0 then
             flagNote = waiting .. " flag(s) waiting for the server"
         elseif capped > 0 then
-            flagNote = capped .. " tile(s) hit the flag limit"
+            flagNote = capped .. " tile(s) gave up after failed flags"
         else
             flagNote = "certain mines are out of range or already flagged"
         end
         return false
     end
-    local rec = FLAG.sent[best] or { fires = 0 }
-    rec.fires = rec.fires + 1
+    if now - FLAG.lastAny < CONFIG.FlagDelay then
+        flagNote = "waiting for flag delay"
+        return false
+    end
+    local rec = FLAG.sent[best]
+    if rec then
+        -- a flag that showed up before is being put back: not a failed try
+        rec.fails = rec.seen and 0 or rec.fails + 1
+    else
+        rec = { fails = 0 }
+        FLAG.sent[best] = rec
+    end
     rec.t, rec.seen, rec.lostAt = now, false, nil
-    FLAG.sent[best] = rec
+    FLAG.lastAny = now
     placeFlag:FireServer(best, key, true)
     flagCount = flagCount + 1
     flagNote = "flag sent"
@@ -1766,6 +1928,17 @@ local function syncUI()
     CONFIG.ShowMarks = UI.showMarks:Get() == true
     CONFIG.ShowHeat = UI.showHeat:Get() == true
     CONFIG.ShowGuess = UI.showGuess:Get() == true
+    CONFIG.HideExplosions = UI.hideExplosions and UI.hideExplosions:Get() == true
+    syncHideExplosions(CONFIG.HideExplosions)
+    CONFIG.SafeWalk = UI.safeWalk and UI.safeWalk:Get() == true
+    local wallH = UI.wallHeight and UI.wallHeight:Get() or GUARD.height
+    if wallH ~= GUARD.height then
+        GUARD.height = wallH
+        clearGuards()
+    end
+    if (not CONFIG.SafeWalk or not currentRound()) and next(GUARD.walls) ~= nil then
+        clearGuards()
+    end
     CONFIG.HalloweenMode = UI.halloween and UI.halloween:Get() or "Off"
     CONFIG.HalloweenDelay = UI.halloweenDelay and UI.halloweenDelay:Get() or 0
     CONFIG.AutoFlag = UI.autoFlag:Get() == true
@@ -1804,6 +1977,15 @@ local function syncUI()
     UI.walkTimeout:SetVisible(not teleport)
 end
 
+local function addWanted(b, res)
+    for _, i in ipairs(res.mines or {}) do
+        local tile = b.tileOf[i]
+        if tile then
+            FLAG.wanted[tile] = true
+        end
+    end
+end
+
 local function tickOnce(force)
     syncUI()
     if not CONFIG.ShowMarks then
@@ -1813,7 +1995,8 @@ local function tickOnce(force)
     local wantSolve = CONFIG.Solve and not manualPause
     local wantMarks = CONFIG.ShowMarks
     local wantFlag = CONFIG.AutoFlag and not manualPause
-    if not (wantSolve or wantMarks or wantFlag) then
+    local wantGuard = CONFIG.SafeWalk and not manualPause
+    if not (wantSolve or wantMarks or wantFlag or wantGuard) then
         lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
         marksNote = "marks off"
         flagNote = "off"
@@ -1822,12 +2005,14 @@ local function tickOnce(force)
     local doMarks = wantMarks and (force or now >= nextESP)
     local doSolve = wantSolve and (force or now >= nextSolve)
     local doFlag = wantFlag and (force or now >= nextFlag)
-    if not (doMarks or doSolve or doFlag) then
+    local doGuard = wantGuard
+    if not (doMarks or doSolve or doFlag or doGuard) then
         return
     end
     local b, err = readBoard()
     if not b then
         clearMarks()
+        clearGuards()
         lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
         marksNote = err or "no tiles found"
         if err and not string.find(err, "no tiles", 1, true) and err ~= lastError then
@@ -1848,6 +2033,9 @@ local function tickOnce(force)
     if b.sig ~= lastSig then
         lastSig = b.sig
         fastRes = solveBoard(b, "basic")
+        if not fastRes.error then
+            addWanted(b, fastRes)
+        end
         fullRes = nil
         reportError(fastRes)
     end
@@ -1872,11 +2060,14 @@ local function tickOnce(force)
         end
         nextSolve = now + ((moved > 0) and 0 or CONFIG.SolverInterval)
     end
-    local wantFull = (doMarks and (CONFIG.ShowHeat or CONFIG.ShowGuess)) or (doSolve and currentRound()) or doFlag
+    local wantFull = (doMarks and (CONFIG.ShowHeat or CONFIG.ShowGuess)) or (doSolve and currentRound()) or doFlag or doGuard
     if wantFull and moved == 0 then
         if not fullRes then
             task.wait()
             fullRes = solveBoard(b, "full")
+            if fullRes and not fullRes.error then
+                addWanted(b, fullRes)
+            end
             reportError(fullRes)
             if fullRes.error then
                 fullRes = nil
@@ -1892,7 +2083,10 @@ local function tickOnce(force)
             end
         end
     end
-    if CONFIG.AutoFlag then
+    if doGuard then
+        applyGuards(b, shown or fastRes)
+    end
+    do
         for _, i in ipairs((shown or fastRes).mines) do
             local tile = b.tileOf[i]
             if tile then
@@ -1912,6 +2106,8 @@ local function stop()
         pauseConn:Disconnect()
         pauseConn = nil
     end
+    syncHideExplosions(false)
+    clearGuards()
     CONFIG.Solve = false
     CONFIG.AutoFlag = false
     CONFIG.HalloweenMode = "Off"
@@ -2102,7 +2298,7 @@ task.spawn(function()
                 flagNote = "error: " .. tostring(errF)
             end
         end
-        task.wait(math.max(CONFIG.FlagDelay, 0.02))
+        task.wait(0.02)
     end
 end)
 
@@ -2193,7 +2389,7 @@ local function buildUI(lib)
         Range = { 0, 100 },
         Increment = 5,
         Suffix = "%",
-        CurrentValue = 100,
+        CurrentValue = 0,
         Flag = "MS2_GuessRisk",
     })
 
@@ -2583,6 +2779,25 @@ local function buildUI(lib)
 
     local Settings = Window:CreateTab({ Name = "Settings", Icon = "settings" })
     local Interface = Settings:AddLeftGroupbox({ Name = "Interface", Icon = "monitor" })
+    UI.hideExplosions = Interface:CreateToggle({
+        Name = "Hide explosions",
+        Desc = "does not draw explosions on the board, same as the game's own setting",
+        CurrentValue = true,
+    })
+    UI.safeWalk = Interface:CreateToggle({
+        Name = "Only safe tiles",
+        Desc = "walls on every cell not proven safe, you cannot step on a bomb. turn off to guess",
+        CurrentValue = false,
+    })
+    UI.wallHeight = Interface:CreateSlider({
+        Name = "Wall height",
+        Desc = "keep it above a normal jump (about 7 studs) so the character cannot climb onto a wall",
+        Range = { 4, 20 },
+        Increment = 1,
+        Suffix = " studs",
+        CurrentValue = 10,
+        Flag = "MS2_WallHeight",
+    })
     Interface:CreateKeybind({
         Name = "Toggle UI",
         CurrentKeybind = "RightControl",

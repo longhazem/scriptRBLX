@@ -885,10 +885,12 @@ local nextESP, nextSolve, nextFlag = 0, 0, 0
 local colourSig = ""
 local lastSolveState = false
 
+local LIB_WINDOW = nil
+
 local function notify(text, kind)
-    if LIB then
+    if LIB_WINDOW then
         pcall(function()
-            LIB:Notify({ Title = "TokaiHub", Content = text, Type = kind, Duration = 2.5 })
+            LIB_WINDOW:Notify({ Title = "TokaiHub", Content = text, Type = kind, Duration = 2.5 })
         end)
         return
     end
@@ -2361,13 +2363,14 @@ local function buildUI(lib)
     })
     Window:SetWatermark({ Text = "TokaiHub", FPS = true, Ping = true })
     UI.window = Window
+    LIB_WINDOW = Window
     Window:OnUnload(function()
         stop()
     end)
 
     local Solver = Window:CreateTab({ Name = "Solver", Icon = "crosshair" })
     local Solve = Solver:CreateSubTab({ Name = "Solve" })
-    local Auto = Solve:AddLeftGroupbox({ Name = "Auto solve", Icon = "zap" })
+    local Auto = Solve:CreateGroupbox({ Name = "Auto solve", Side = "Left", Icon = "zap" })
     UI.solve = Auto:CreateToggle({
         Name = "Auto solve",
         Desc = "moves onto certain safe tiles, then the best guess",
@@ -2382,7 +2385,7 @@ local function buildUI(lib)
         CurrentValue = 30,
         Flag = "MS2_SolverScan",
     })
-    local Guessing = Solve:AddRightGroupbox({ Name = "Guessing", Icon = "crosshair" })
+    local Guessing = Solve:CreateGroupbox({ Name = "Guessing", Side = "Right", Icon = "crosshair" })
     UI.guessRisk = Guessing:CreateSlider({
         Name = "Max guess risk",
         Desc = "a guess is only taken at or below this mine chance",
@@ -2394,7 +2397,7 @@ local function buildUI(lib)
     })
 
     local Movement = Solver:CreateSubTab({ Name = "Movement" })
-    local Route = Movement:AddLeftGroupbox({ Name = "Move by", Icon = "sliders-horizontal" })
+    local Route = Movement:CreateGroupbox({ Name = "Move by", Side = "Left", Icon = "sliders-horizontal" })
     UI.movement = Route:CreateDropdown({
         Name = "Move by",
         Options = { "Teleport (TP)", "Walk" },
@@ -2402,7 +2405,7 @@ local function buildUI(lib)
         AllowNone = false,
         Flag = "MS2_MoveBy",
     })
-    local TP = Movement:AddLeftGroupbox({ Name = "Teleport speed", Icon = "zap" })
+    local TP = Movement:CreateGroupbox({ Name = "Teleport speed", Side = "Left", Icon = "zap" })
     UI.tpSpeed = TP:CreateSlider({
         Name = "TP speed",
         Desc = "how long to stay on each tile; each miss adds 20 ms on the retry",
@@ -2428,7 +2431,7 @@ local function buildUI(lib)
         CurrentValue = 300,
         Flag = "MS2_TPTimeout",
     })
-    local Walking = Movement:AddRightGroupbox({ Name = "Walking", Icon = "repeat" })
+    local Walking = Movement:CreateGroupbox({ Name = "Walking", Side = "Right", Icon = "repeat" })
     UI.walkSpeed = Walking:CreateSlider({
         Name = "Walk speed",
         Range = { 16, 60 },
@@ -2454,7 +2457,7 @@ local function buildUI(lib)
     })
 
     local Flags = Window:CreateTab({ Name = "Flags", Icon = "flag" })
-    local Auto2 = Flags:AddLeftGroupbox({ Name = "Auto flag", Icon = "flag" })
+    local Auto2 = Flags:CreateGroupbox({ Name = "Auto flag", Side = "Left", Icon = "flag" })
     UI.autoFlag = Auto2:CreateToggle({
         Name = "Auto flag mines",
         Desc = "clicks certain mines, works without auto solve",
@@ -2469,7 +2472,7 @@ local function buildUI(lib)
         CurrentValue = 0.05,
         Flag = "MS2_FlagDelay",
     })
-    local Reach = Flags:AddRightGroupbox({ Name = "Reach", Icon = "crosshair" })
+    local Reach = Flags:CreateGroupbox({ Name = "Reach", Side = "Right", Icon = "crosshair" })
     UI.flagRange = Reach:CreateSlider({
         Name = "Flag range",
         Desc = "studs from your character",
@@ -2482,7 +2485,7 @@ local function buildUI(lib)
 
     local ESP = Window:CreateTab({ Name = "ESP", Icon = "eye" })
     local Marks = ESP:CreateSubTab({ Name = "Marks" })
-    local Show = Marks:AddLeftGroupbox({ Name = "Show", Icon = "layout-grid" })
+    local Show = Marks:CreateGroupbox({ Name = "Show", Side = "Left", Icon = "layout-grid" })
     UI.showMarks = Show:CreateToggle({
         Name = "Show marks",
         Desc = "runs on its own, no mode to pick",
@@ -2506,7 +2509,7 @@ local function buildUI(lib)
         CurrentValue = 30,
         Flag = "MS2_ESPScan",
     })
-    local Look = Marks:AddRightGroupbox({ Name = "Distance and opacity", Icon = "sliders-horizontal" })
+    local Look = Marks:CreateGroupbox({ Name = "Distance and opacity", Side = "Right", Icon = "sliders-horizontal" })
     UI.showDistance = Look:CreateSlider({
         Name = "Show distance",
         Desc = "only tiles this close to you; 0 = no limit",
@@ -2525,16 +2528,16 @@ local function buildUI(lib)
         Flag = "MS2_Opacity",
     })
     local Colours = ESP:CreateSubTab({ Name = "Colours" })
-    local Certain = Colours:AddLeftGroupbox({ Name = "Certain tiles", Icon = "monitor" })
+    local Certain = Colours:CreateGroupbox({ Name = "Certain tiles", Side = "Left", Icon = "monitor" })
     UI.colSafe = Certain:CreateColorPicker({ Name = "Safe tile", Color = COLOURS.safe, Flag = "MS2_ColSafe" })
     UI.colMine = Certain:CreateColorPicker({ Name = "Mine tile", Color = COLOURS.mine, Flag = "MS2_ColMine" })
     UI.colGuess = Certain:CreateColorPicker({ Name = "Best guess", Color = COLOURS.guess, Flag = "MS2_ColGuess" })
-    local Heat = Colours:AddRightGroupbox({ Name = "Risk heat", Icon = "monitor" })
+    local Heat = Colours:CreateGroupbox({ Name = "Risk heat", Side = "Right", Icon = "monitor" })
     UI.colLow = Heat:CreateColorPicker({ Name = "Low risk", Color = COLOURS.lowRisk, Flag = "MS2_ColLow" })
     UI.colHigh = Heat:CreateColorPicker({ Name = "High risk", Color = COLOURS.highRisk, Flag = "MS2_ColHigh" })
 
     local Status = Window:CreateTab({ Name = "Status", Icon = "activity" })
-    local Session = Status:AddLeftGroupbox({ Name = "Solver", Icon = "timer" })
+    local Session = Status:CreateGroupbox({ Name = "Solver", Side = "Left", Icon = "timer" })
     Session:CreateStatus({
         Name = "Auto solve",
         Pin = true,
@@ -2602,7 +2605,7 @@ local function buildUI(lib)
             return string.format("%.1f ms", ms)
         end,
     })
-    local Health = Status:AddRightGroupbox({ Name = "Health", Icon = "heart-pulse" })
+    local Health = Status:CreateGroupbox({ Name = "Health", Side = "Right", Icon = "heart-pulse" })
     Health:CreateStatus({
         Name = "Round",
         Style = "Dot",
@@ -2668,7 +2671,7 @@ local function buildUI(lib)
             return "Estimated", "Warning"
         end,
     })
-    local Rounds = Status:AddRightGroupbox({ Name = "Rounds", Icon = "trophy" })
+    local Rounds = Status:CreateGroupbox({ Name = "Rounds", Side = "Right", Icon = "trophy" })
     Rounds:CreateStatus({
         Name = "Finished",
         Style = "Stat",
@@ -2721,7 +2724,7 @@ local function buildUI(lib)
             return missCount
         end,
     })
-    local Jobs = Status:AddLeftGroupbox({ Name = "Recent tiles", Icon = "list-checks" })
+    local Jobs = Status:CreateGroupbox({ Name = "Recent tiles", Side = "Left", Icon = "list-checks" })
     Jobs:CreateStatusList({
         Name = "Moves",
         MaxRows = 6,
@@ -2741,7 +2744,7 @@ local function buildUI(lib)
     })
 
     local Halloween = Window:CreateTab({ Name = "Halloween", Icon = "ghost" })
-    local Vote = Halloween:AddLeftGroupbox({ Name = "Vote popup", Icon = "ghost" })
+    local Vote = Halloween:CreateGroupbox({ Name = "Vote popup", Side = "Left", Icon = "ghost" })
     UI.halloween = Vote:CreateDropdown({
         Name = "Halloween vote",
         Desc = "auto answers the Halloween vote popup",
@@ -2759,7 +2762,7 @@ local function buildUI(lib)
         CurrentValue = 0,
         Flag = "MS2_HalloweenDelay",
     })
-    local HwStatus = Halloween:AddRightGroupbox({ Name = "Status", Icon = "activity" })
+    local HwStatus = Halloween:CreateGroupbox({ Name = "Status", Side = "Right", Icon = "activity" })
     HwStatus:CreateStatus({
         Name = "Vote",
         Style = "Row",
@@ -2778,7 +2781,7 @@ local function buildUI(lib)
     })
 
     local Settings = Window:CreateTab({ Name = "Settings", Icon = "settings" })
-    local Interface = Settings:AddLeftGroupbox({ Name = "Interface", Icon = "monitor" })
+    local Interface = Settings:CreateGroupbox({ Name = "Interface", Side = "Left", Icon = "monitor" })
     UI.hideExplosions = Interface:CreateToggle({
         Name = "Hide explosions",
         Desc = "does not draw explosions on the board, same as the game's own setting",

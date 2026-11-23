@@ -852,6 +852,7 @@ local CONFIG = {
     SafeWalk = false,
     IgnoreBullets = true,
     IgnoreSpikes = true,
+    OpenMethod = "move",
 }
 
 local COLOURS = {
@@ -1209,7 +1210,7 @@ end
 -- stand on the tile and stay for its dwell time; a tile that missed before gets longer
 local function stepOn(b, i)
     local tile = b.tileOf[i]
-    if not tile or FLAG.wanted[tile] or hasServerFlag(tile) then
+    if not tile or FLAG.wanted[tile] or hasServerFlag(tile) or hasFlagAbove(tile) then
         return false
     end
     if not standAbove(tile) then
@@ -1387,6 +1388,60 @@ local function hopBatch(b, list)
     return recordBatch(visit, settle(b, visit, CONFIG.HopTimeout))
 end
 
+local touchOff = false
+local touchMisses = 0
+
+local function touchLimb()
+    local char = player.Character
+    if not char then
+        return nil
+    end
+    return char:FindFirstChild("RightFoot") or char:FindFirstChild("Right Leg")
+        or char:FindFirstChild("LeftFoot") or char:FindFirstChild("Left Leg")
+        or char:FindFirstChild("HumanoidRootPart")
+end
+
+-- opens safe tiles by a simulated touch from the character's foot, the character does not move.
+-- returns nil when touch is not available, so the caller moves instead
+local function touchBatch(b, list)
+    local limb = touchLimb()
+    if not limb or type(firetouchinterest) ~= "function" then
+        return nil
+    end
+    local visit = {}
+    for _, i in ipairs(list) do
+        if #visit >= CONFIG.HopBatch then
+            break
+        end
+        local tile = b.tileOf[i]
+        if tile and tile.Parent and not blocked(i) and not FLAG.wanted[tile] and not hasServerFlag(tile) and not hasFlagAbove(tile) then
+            firetouchinterest(limb, tile, 0)
+            visit[#visit + 1] = i
+        end
+    end
+    if #visit == 0 then
+        return 0
+    end
+    RunService.Heartbeat:Wait()
+    for _, i in ipairs(visit) do
+        local tile = b.tileOf[i]
+        if tile then
+            firetouchinterest(limb, tile, 1)
+        end
+    end
+    local moved = recordBatch(visit, settle(b, visit, CONFIG.HopTimeout))
+    if moved == 0 then
+        touchMisses = touchMisses + 1
+    else
+        touchMisses = 0
+    end
+    if touchMisses >= 3 and not touchOff then
+        touchOff = true
+        notify("touch open did not work here, switched back to move", "Warning")
+    end
+    return moved
+end
+
 local function act(b, r)
     local ready = {}
     for _, i in ipairs(r.safe) do
@@ -1398,6 +1453,12 @@ local function act(b, r)
     if #ready > 0 then
         if CONFIG.Movement == "walk" then
             return goTo(b, ready[1]) and 1 or 0
+        end
+        if CONFIG.OpenMethod == "touch" and not touchOff then
+            local touched = touchBatch(b, ready)
+            if touched ~= nil then
+                return touched
+            end
         end
         return hopBatch(b, ready)
     end
@@ -1704,6 +1765,47 @@ end
 -- client holds, so no ClickDetector is needed. a tile with a flag model is never fired at again,
 -- and a flag that went missing has no model, so it is placed again after the gap
 
+-- a flag is any part above the tile inside its footprint (Blockerman's check). it also finds
+-- flags that are not children of the tile, so a flagged tile is not clicked again
+local flagPos, flagPosAt = {}, -math.huge
+
+local function refreshFlagPositions()
+    if tick() - flagPosAt < 0.1 then
+        return
+    end
+    flagPosAt = tick()
+    flagPos = {}
+    local folder = workspace:FindFirstChild("Flag") or workspace:FindFirstChild("Flags")
+    if folder then
+        for _, d in ipairs(folder:GetDescendants()) do
+            if d:IsA("BasePart") then
+                flagPos[#flagPos + 1] = d.Position
+            end
+        end
+    end
+    for _, o in ipairs(workspace:GetChildren()) do
+        if o:IsA("Model") and string.find(string.lower(o.Name), "flag") then
+            local primary = o.PrimaryPart or o:FindFirstChildWhichIsA("BasePart")
+            if primary then
+                flagPos[#flagPos + 1] = primary.Position
+            end
+        end
+    end
+end
+
+local function hasFlagAbove(tile)
+    refreshFlagPositions()
+    local p = tile.Position
+    local sx, sz = tile.Size.X * 0.55, tile.Size.Z * 0.55
+    for _, fp in ipairs(flagPos) do
+        local dy = fp.Y - p.Y
+        if dy > 0.3 and dy < 6 and math.abs(fp.X - p.X) < sx and math.abs(fp.Z - p.Z) < sz then
+            return true
+        end
+    end
+    return false
+end
+
 local function scanUpvaluesForKey(func, depth)
     if depth > 3 then
         return nil
@@ -1839,7 +1941,7 @@ local function flagNext()
     for tile, rec in pairs(FLAG.sent) do
         if not tile.Parent then
             FLAG.sent[tile] = nil
-        elseif hasServerFlag(tile) then
+        elseif hasServerFlag(tile) or hasFlagAbove(tile) then
             rec.seen = true
             rec.lostAt = nil
         elseif rec.seen then
@@ -1851,7 +1953,7 @@ local function flagNext()
     for tile in pairs(FLAG.wanted) do
         if not tile.Parent then
             FLAG.wanted[tile] = nil
-        elseif not hasServerFlag(tile) then
+        elseif not hasServerFlag(tile) and not hasFlagAbove(tile) then
             local d = (tile.Position - root.Position).Magnitude
             if d <= CONFIG.FlagRange then
                 local rec = FLAG.sent[tile]
@@ -2012,6 +2114,7 @@ local function syncUI()
     CONFIG.Opacity = UI.opacity:Get() / 100
     local teleport = UI.movement:Get() ~= "Walk"
     CONFIG.Movement = teleport and "hop" or "walk"
+    CONFIG.OpenMethod = (UI.openMethod and UI.openMethod:Get() == "Touch (no move)") and "touch" or "move"
     CONFIG.HopWait = UI.tpSpeed:Get() / 1000
     CONFIG.HopBatch = math.floor(UI.tpBatch:Get())
     CONFIG.HopTimeout = UI.tpTimeout:Get() / 1000
@@ -2489,6 +2592,14 @@ local function buildUI(lib)
         CurrentOption = "Teleport (TP)",
         AllowNone = false,
         Flag = "MS2_MoveBy",
+    })
+    UI.openMethod = Route:CreateDropdown({
+        Name = "Open by",
+        Desc = "Touch opens tiles without moving you (TP only), it falls back to Move if it fails",
+        Options = { "Move (TP)", "Touch (no move)" },
+        CurrentOption = "Move (TP)",
+        AllowNone = false,
+        Flag = "MS2_OpenBy",
     })
     local TP = Movement:CreateGroupbox({ Name = "Teleport speed", Side = "Left", Icon = "zap" })
     UI.tpSpeed = TP:CreateSlider({

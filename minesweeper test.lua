@@ -850,6 +850,8 @@ local CONFIG = {
     HalloweenDelay = 0,
     HideExplosions = true,
     SafeWalk = false,
+    IgnoreBullets = true,
+    IgnoreSpikes = true,
 }
 
 local COLOURS = {
@@ -1564,6 +1566,35 @@ local function applyGuards(b, res)
     end
 end
 
+local hitConns = {}
+local hitGuardCounted = setmetatable({}, { __mode = "k" })
+local hitGuardBlocked = 0
+
+-- bullets (MTC BulletScript) and Halloween spikes report damage from the client when they Touch you.
+-- a part with CanTouch off never fires Touched, so no hit is reported
+local function guardName(name, on)
+    if not on then
+        if hitConns[name] then
+            hitConns[name]:Disconnect()
+            hitConns[name] = nil
+        end
+        return
+    end
+    if hitConns[name] then
+        return
+    end
+    for _, c in ipairs(workspace:GetChildren()) do
+        if c.Name == name and c:IsA("BasePart") then
+            c.CanTouch = false
+        end
+    end
+    hitConns[name] = workspace.ChildAdded:Connect(function(c)
+        if c.Name == name and c:IsA("BasePart") then
+            c.CanTouch = false
+        end
+    end)
+end
+
 local explosionFolder, explosionConn = nil, nil
 
 -- same idea as the game's DisableExplosions setting: explosions under Flag.Parts are not drawn
@@ -1756,9 +1787,33 @@ local function getFlagKey()
     return FLAG.key
 end
 
-local function flagNext()
+-- returns nil when the bot may act, otherwise the reason (ghost game state from MTC GhostGui)
+local function actBlock()
     if not currentRound() then
-        flagNote = "no round running"
+        return "no round running"
+    end
+    local char = player.Character
+    if char and char:GetAttribute("IsGhost") then
+        return "you are a ghost"
+    end
+    local playing = game:GetService("Teams"):FindFirstChild("Playing")
+    if playing and player.Team ~= playing then
+        return "not on the Playing team"
+    end
+    return nil
+end
+
+local function flagNext()
+    local blocked = actBlock()
+    if blocked then
+        flagNote = blocked
+        return false
+    end
+    -- MTC: Info.Flagless turns flags off for the whole round
+    local info = ReplicatedStorage:FindFirstChild("Info")
+    local flagless = info and info:FindFirstChild("Flagless")
+    if flagless and flagless.Value then
+        flagNote = "this round is flagless, flags are off"
         return false
     end
     local root = rootPart()
@@ -1932,13 +1987,17 @@ local function syncUI()
     CONFIG.ShowGuess = UI.showGuess:Get() == true
     CONFIG.HideExplosions = UI.hideExplosions and UI.hideExplosions:Get() == true
     syncHideExplosions(CONFIG.HideExplosions)
+    CONFIG.IgnoreBullets = UI.ignoreBullets and UI.ignoreBullets:Get() == true
+    CONFIG.IgnoreSpikes = UI.ignoreSpikes and UI.ignoreSpikes:Get() == true
+    guardName("Bullet-Part", CONFIG.IgnoreBullets)
+    guardName("Spike", CONFIG.IgnoreSpikes)
     CONFIG.SafeWalk = UI.safeWalk and UI.safeWalk:Get() == true
     local wallH = UI.wallHeight and UI.wallHeight:Get() or GUARD.height
     if wallH ~= GUARD.height then
         GUARD.height = wallH
         clearGuards()
     end
-    if (not CONFIG.SafeWalk or not currentRound()) and next(GUARD.walls) ~= nil then
+    if (not CONFIG.SafeWalk or actBlock()) and next(GUARD.walls) ~= nil then
         clearGuards()
     end
     CONFIG.HalloweenMode = UI.halloween and UI.halloween:Get() or "Off"
@@ -2057,12 +2116,12 @@ local function tickOnce(force)
     end
     local moved = 0
     if doSolve then
-        if currentRound() then
+        if not actBlock() then
             moved = act(b, fastRes)
         end
         nextSolve = now + ((moved > 0) and 0 or CONFIG.SolverInterval)
     end
-    local wantFull = (doMarks and (CONFIG.ShowHeat or CONFIG.ShowGuess)) or (doSolve and currentRound()) or doFlag or doGuard
+    local wantFull = (doMarks and (CONFIG.ShowHeat or CONFIG.ShowGuess)) or (doSolve and not actBlock()) or doFlag or doGuard
     if wantFull and moved == 0 then
         if not fullRes then
             task.wait()
@@ -2080,7 +2139,7 @@ local function tickOnce(force)
             if doMarks then
                 refreshMarks(b, fullRes)
             end
-            if doSolve and currentRound() then
+            if doSolve and not actBlock() then
                 act(b, fullRes)
             end
         end
@@ -2109,6 +2168,8 @@ local function stop()
         pauseConn = nil
     end
     syncHideExplosions(false)
+    guardName("Bullet-Part", false)
+    guardName("Spike", false)
     clearGuards()
     CONFIG.Solve = false
     CONFIG.AutoFlag = false
@@ -2247,6 +2308,7 @@ local function trackRound()
         local entry = { secs = secs, opened = moveCount - roundNow.moves, flags = flagCount - roundNow.flags }
         roundStats.rounds = roundStats.rounds + 1
         roundStats.last = entry
+        notify(string.format("round over: %d:%02d, %d opened, %d flags", math.floor(secs / 60), math.floor(secs % 60), entry.opened, entry.flags), "Success")
         if not roundStats.fastest or secs < roundStats.fastest.secs then
             roundStats.fastest = entry
         end
@@ -2301,6 +2363,29 @@ task.spawn(function()
             end
         end
         task.wait(0.02)
+    end
+end)
+
+-- counts bullets and spikes that reached the torso while they are guarded
+task.spawn(function()
+    while alive do
+        if CONFIG.IgnoreBullets or CONFIG.IgnoreSpikes then
+            local ch = player.Character
+            local torso = ch and ch:FindFirstChild("Torso")
+            if torso then
+                for _, c in ipairs(workspace:GetChildren()) do
+                    local guarded = (c.Name == "Bullet-Part" and CONFIG.IgnoreBullets) or (c.Name == "Spike" and CONFIG.IgnoreSpikes)
+                    if guarded and c:IsA("BasePart") and not hitGuardCounted[c] then
+                        local reach = math.max(c.Size.X, c.Size.Y, c.Size.Z) / 2 + 2
+                        if (c.Position - torso.Position).Magnitude < reach then
+                            hitGuardCounted[c] = true
+                            hitGuardBlocked = hitGuardBlocked + 1
+                        end
+                    end
+                end
+            end
+        end
+        task.wait(0.05)
     end
 end)
 
@@ -2673,6 +2758,35 @@ local function buildUI(lib)
     })
     local Rounds = Status:CreateGroupbox({ Name = "Rounds", Side = "Right", Icon = "trophy" })
     Rounds:CreateStatus({
+        Name = "Player",
+        Style = "Row",
+        UpdateRate = 0.5,
+        Update = function()
+            return actBlock() or "playing"
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Mode",
+        Style = "Row",
+        UpdateRate = 0.5,
+        Update = function()
+            local info = ReplicatedStorage:FindFirstChild("Info")
+            local flagless = info and info:FindFirstChild("Flagless")
+            if flagless and flagless.Value then
+                return "flagless"
+            end
+            return "normal"
+        end,
+    })
+    Rounds:CreateStatus({
+        Name = "Hits blocked",
+        Style = "Stat",
+        UpdateRate = 0.5,
+        Update = function()
+            return hitGuardBlocked
+        end,
+    })
+    Rounds:CreateStatus({
         Name = "Finished",
         Style = "Stat",
         UpdateRate = 0.5,
@@ -2800,6 +2914,16 @@ local function buildUI(lib)
         Suffix = " studs",
         CurrentValue = 10,
         Flag = "MS2_WallHeight",
+    })
+    UI.ignoreBullets = Interface:CreateToggle({
+        Name = "Ignore bullets",
+        Desc = "bullets report damage from the client on touch, so a bullet never hits you",
+        CurrentValue = true,
+    })
+    UI.ignoreSpikes = Interface:CreateToggle({
+        Name = "Ignore spikes",
+        Desc = "Halloween spikes report damage from the client on touch, so a spike never hits you",
+        CurrentValue = true,
     })
     Interface:CreateKeybind({
         Name = "Toggle UI",

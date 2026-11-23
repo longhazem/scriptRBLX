@@ -1,3085 +1,823 @@
-local genv = getgenv()
-if genv.MS2_STOP then pcall(genv.MS2_STOP) end
-
-local Core = {}
-
-local function neighbours(W, H, i)
-    local out = {}
-    local col = (i - 1) % W + 1
-    local row = math.floor((i - 1) / W) + 1
-    for dr = -1, 1 do
-        for dc = -1, 1 do
-            if dr ~= 0 or dc ~= 0 then
-                local nc, nr = col + dc, row + dr
-                if nc >= 1 and nc <= W and nr >= 1 and nr <= H then
-                    out[#out + 1] = (nr - 1) * W + nc
-                end
-            end
-        end
-    end
-    return out
-end
-Core.neighbours = neighbours
-
-local function logFactorials(n)
-    local lf = { [0] = 0 }
-    local acc = 0
-    for i = 1, n do
-        acc = acc + math.log(i)
-        lf[i] = acc
-    end
-    return lf
-end
-
-local function polyMul(a, b)
-    local la, lb = #a, #b
-    local out = {}
-    for i = 1, la + lb - 1 do
-        out[i] = 0
-    end
-    for i = 1, la do
-        local ai = a[i]
-        if ai ~= 0 then
-            for j = 1, lb do
-                out[i + j - 1] = out[i + j - 1] + ai * b[j]
-            end
-        end
-    end
-    return out
-end
-
-local function findRoot(parent, x)
-    while parent[x] ~= x do
-        parent[x] = parent[parent[x]]
-        x = parent[x]
-    end
-    return x
-end
-
-local function buildModel(vars, cons)
-    local n, m = #vars, #cons
-    local localOf = {}
-    for li = 1, n do
-        localOf[vars[li]] = li
-    end
-    local cv, tgt, vc = {}, {}, {}
-    for li = 1, n do
-        vc[li] = {}
-    end
-    for ci = 1, m do
-        local c = cons[ci]
-        local list = {}
-        for k = 1, #c.vars do
-            local li = localOf[c.vars[k]]
-            list[k] = li
-            vc[li][#vc[li] + 1] = ci
-        end
-        cv[ci] = list
-        tgt[ci] = c.target
-    end
-    local order, seen = {}, {}
-    for start = 1, n do
-        if not seen[start] then
-            seen[start] = true
-            local queue, head = { start }, 1
-            while head <= #queue do
-                local li = queue[head]
-                head = head + 1
-                order[#order + 1] = li
-                for _, ci in ipairs(vc[li]) do
-                    for _, lj in ipairs(cv[ci]) do
-                        if not seen[lj] then
-                            seen[lj] = true
-                            queue[#queue + 1] = lj
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return { n = n, m = m, cv = cv, tgt = tgt, vc = vc, order = order }
-end
-
-local function enumerate(model, work)
-    local n, m, cv, tgt, vc, order = model.n, model.m, model.cv, model.tgt, model.vc, model.order
-    local sum, unas = {}, {}
-    for ci = 1, m do
-        sum[ci] = 0
-        unas[ci] = #cv[ci]
-    end
-    local assign, cnt, cellK = {}, {}, {}
-    for li = 1, n do
-        cellK[li] = {}
-    end
-    local spent, overflow = 0, false
-
-    local function dfs(pos, k)
-        spent = spent + 1
-        if spent > work then
-            overflow = true
-            return
-        end
-        if pos > n then
-            spent = spent + n
-            cnt[k + 1] = (cnt[k + 1] or 0) + 1
-            for li = 1, n do
-                if assign[li] == 1 then
-                    local row = cellK[li]
-                    row[k + 1] = (row[k + 1] or 0) + 1
-                end
-            end
-            return
-        end
-        local li = order[pos]
-        local list = vc[li]
-        for val = 0, 1 do
-            for _, ci in ipairs(list) do
-                unas[ci] = unas[ci] - 1
-                sum[ci] = sum[ci] + val
-            end
-            local ok = true
-            for _, ci in ipairs(list) do
-                if sum[ci] > tgt[ci] or sum[ci] + unas[ci] < tgt[ci] then
-                    ok = false
-                    break
-                end
-            end
-            if ok then
-                assign[li] = val
-                dfs(pos + 1, k + val)
-                assign[li] = nil
-            end
-            for _, ci in ipairs(list) do
-                unas[ci] = unas[ci] + 1
-                sum[ci] = sum[ci] - val
-            end
-            if overflow then
-                return
-            end
-        end
-    end
-
-    dfs(1, 0)
-    if overflow then
-        return nil, spent
-    end
-    for k = 1, n + 1 do
-        cnt[k] = cnt[k] or 0
-    end
-    for li = 1, n do
-        for k = 1, n + 1 do
-            cellK[li][k] = cellK[li][k] or 0
-        end
-    end
-    return cnt, cellK, spent
-end
-
-local function probeFit(model, pinLi, pinVal, budget)
-    local n, m, tgt, vc, order = model.n, model.m, model.tgt, model.vc, model.order
-    local sum, unas = {}, {}
-    for ci = 1, m do
-        sum[ci] = 0
-        unas[ci] = #model.cv[ci]
-    end
-    local spent, found, overflow = 0, false, false
-
-    local function dfs(pos)
-        spent = spent + 1
-        if spent > budget then
-            overflow = true
-            return
-        end
-        if pos > n then
-            found = true
-            return
-        end
-        local li = order[pos]
-        local list = vc[li]
-        local lo, hi = 0, 1
-        if li == pinLi then
-            lo, hi = pinVal, pinVal
-        end
-        for val = lo, hi do
-            for _, ci in ipairs(list) do
-                unas[ci] = unas[ci] - 1
-                sum[ci] = sum[ci] + val
-            end
-            local ok = true
-            for _, ci in ipairs(list) do
-                if sum[ci] > tgt[ci] or sum[ci] + unas[ci] < tgt[ci] then
-                    ok = false
-                    break
-                end
-            end
-            if ok then
-                dfs(pos + 1)
-            end
-            for _, ci in ipairs(list) do
-                unas[ci] = unas[ci] + 1
-                sum[ci] = sum[ci] - val
-            end
-            if found or overflow then
-                return
-            end
-        end
-    end
-
-    dfs(1)
-    if found then
-        return true, spent
-    end
-    if overflow then
-        return nil, spent
-    end
-    return false, spent
-end
-
-function Core.solve(W, H, st, opts)
-    opts = opts or {}
-    local N = W * H
-    local open = st.open or {}
-    local value = st.value or {}
-    local flag = st.flag or {}
-    local exists = {}
-    for i = 1, N do
-        exists[i] = (st.exists == nil) or (st.exists[i] == true)
-    end
-    local total = opts.totalMines
-    local exactLimit = opts.exactLimit or 60
-    local workLeft = opts.work or 400000
-    local full = opts.mode ~= "basic"
-    local clock0 = os.clock()
-    local res = { safe = {}, mines = {}, probs = {}, guess = nil, guessP = nil, error = nil, stats = {} }
-
-    local nb = {}
-    for i = 1, N do
-        local list = {}
-        if exists[i] then
-            for _, j in ipairs(neighbours(W, H, i)) do
-                if exists[j] then
-                    list[#list + 1] = j
-                end
-            end
-        end
-        nb[i] = list
-    end
-
-    local known = {}
-    for i = 1, N do
-        if exists[i] and flag[i] then
-            known[i] = 1
-        end
-    end
-
-    local conflict = nil
-    local function setKnown(i, v)
-        local old = known[i]
-        if old == nil then
-            known[i] = v
-            return true
-        end
-        if old ~= v then
-            conflict = conflict or ("cell " .. i .. " is both safe and a mine")
-        end
-        return false
-    end
-
-    local cons = {}
-    for i = 1, N do
-        if exists[i] and open[i] and value[i] ~= nil then
-            local vars, f = {}, 0
-            for _, j in ipairs(nb[i]) do
-                if flag[j] then
-                    f = f + 1
-                elseif not open[j] then
-                    vars[#vars + 1] = j
-                end
-            end
-            cons[#cons + 1] = { vars = vars, target = value[i] - f, src = i }
-        end
-    end
-
-    local function pruneOne(c)
-        local keep = {}
-        for _, v in ipairs(c.vars) do
-            local k = known[v]
-            if k == nil then
-                keep[#keep + 1] = v
-            elseif k == 1 then
-                c.target = c.target - 1
-            end
-        end
-        c.vars = keep
-    end
-
-    local function basic()
-        local changed = false
-        for _, c in ipairs(cons) do
-            pruneOne(c)
-            local n = #c.vars
-            if n == 0 then
-                if c.target ~= 0 then
-                    conflict = conflict or ("number at cell " .. c.src .. " does not fit the flags around it")
-                end
-            elseif c.target < 0 or c.target > n then
-                conflict = conflict or ("number at cell " .. c.src .. " cannot be met")
-            elseif c.target == 0 then
-                for _, v in ipairs(c.vars) do
-                    if setKnown(v, 0) then
-                        changed = true
-                    end
-                end
-            elseif c.target == n then
-                for _, v in ipairs(c.vars) do
-                    if setKnown(v, 1) then
-                        changed = true
-                    end
-                end
-            end
-        end
-        return changed
-    end
-
-    local function subsets()
-        local changed = false
-        local byVar = {}
-        for ci, c in ipairs(cons) do
-            pruneOne(c)
-            for _, v in ipairs(c.vars) do
-                local list = byVar[v]
-                if not list then
-                    list = {}
-                    byVar[v] = list
-                end
-                list[#list + 1] = ci
-            end
-        end
-        for ai, a in ipairs(cons) do
-            pruneOne(a)
-            if #a.vars > 0 then
-                for _, bi in ipairs(byVar[a.vars[1]] or {}) do
-                    if bi ~= ai and conflict == nil then
-                        local b = cons[bi]
-                        pruneOne(a)
-                        pruneOne(b)
-                        if #a.vars > 0 and #b.vars > #a.vars then
-                            local setA, setB = {}, {}
-                            for _, v in ipairs(a.vars) do
-                                setA[v] = true
-                            end
-                            for _, v in ipairs(b.vars) do
-                                setB[v] = true
-                            end
-                            local sub = true
-                            for _, v in ipairs(a.vars) do
-                                if not setB[v] then
-                                    sub = false
-                                    break
-                                end
-                            end
-                            if sub then
-                                local diff = {}
-                                for _, v in ipairs(b.vars) do
-                                    if not setA[v] then
-                                        diff[#diff + 1] = v
-                                    end
-                                end
-                                local dt = b.target - a.target
-                                if dt < 0 or dt > #diff then
-                                    conflict = conflict or ("numbers at cells " .. a.src .. " and " .. b.src .. " contradict")
-                                elseif dt == 0 then
-                                    for _, v in ipairs(diff) do
-                                        if setKnown(v, 0) then
-                                            changed = true
-                                        end
-                                    end
-                                elseif dt == #diff then
-                                    for _, v in ipairs(diff) do
-                                        if setKnown(v, 1) then
-                                            changed = true
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        return changed
-    end
-
-    local function globalRule()
-        if total == nil then
-            return false
-        end
-        local mines, unknowns = 0, {}
-        for i = 1, N do
-            if exists[i] then
-                if known[i] == 1 then
-                    mines = mines + 1
-                elseif known[i] == nil and not open[i] then
-                    unknowns[#unknowns + 1] = i
-                end
-            end
-        end
-        local remaining = total - mines
-        if remaining < 0 then
-            conflict = conflict or "the board holds more mines than the game count"
-            return false
-        end
-        local changed = false
-        if #unknowns > 0 then
-            if remaining == 0 then
-                for _, i in ipairs(unknowns) do
-                    if setKnown(i, 0) then
-                        changed = true
-                    end
-                end
-            elseif remaining == #unknowns then
-                for _, i in ipairs(unknowns) do
-                    if setKnown(i, 1) then
-                        changed = true
-                    end
-                end
-            end
-        end
-        return changed
-    end
-
-    local rounds = 0
-    local progress = true
-    while progress and conflict == nil and rounds < 2000 do
-        rounds = rounds + 1
-        local a = basic()
-        local b = subsets()
-        local c = false
-        if full then
-            c = globalRule()
-        end
-        progress = a or b or c
-    end
-    if conflict then
-        res.error = conflict
-        return res
-    end
-
-    local parent, frontier = {}, {}
-    for _, c in ipairs(cons) do
-        pruneOne(c)
-        for _, v in ipairs(c.vars) do
-            frontier[v] = true
-            parent[v] = v
-        end
-    end
-    for _, c in ipairs(cons) do
-        if #c.vars > 1 then
-            local root = findRoot(parent, c.vars[1])
-            for k = 2, #c.vars do
-                local other = findRoot(parent, c.vars[k])
-                if other ~= root then
-                    parent[other] = root
-                end
-            end
-        end
-    end
-    local varList = {}
-    for v in pairs(frontier) do
-        varList[#varList + 1] = v
-    end
-    table.sort(varList)
-    local comps, byRoot = {}, {}
-    for _, v in ipairs(varList) do
-        local r = findRoot(parent, v)
-        local comp = byRoot[r]
-        if not comp then
-            comp = { vars = {}, cons = {}, exact = false, n = 0 }
-            byRoot[r] = comp
-            comps[#comps + 1] = comp
-        end
-        comp.vars[#comp.vars + 1] = v
-    end
-    for _, c in ipairs(cons) do
-        if #c.vars > 0 then
-            local comp = byRoot[findRoot(parent, c.vars[1])]
-            comp.cons[#comp.cons + 1] = c
-        end
-    end
-
-    local frontierCount = #varList
-    local unknownCount, minesKnown = 0, 0
-    for i = 1, N do
-        if exists[i] then
-            if known[i] == 1 then
-                minesKnown = minesKnown + 1
-            elseif known[i] == nil and not open[i] then
-                unknownCount = unknownCount + 1
-            end
-        end
-    end
-    local outside = unknownCount - frontierCount
-    local remaining = nil
-    if total ~= nil then
-        remaining = total - minesKnown
-    end
-
-    local exactAll = true
-    for _, comp in ipairs(comps) do
-        comp.n = #comp.vars
-        if full and comp.n <= exactLimit and workLeft > 0 then
-            local model = buildModel(comp.vars, comp.cons)
-            local cnt, cellK, spent = enumerate(model, workLeft)
-            if cnt then
-                comp.exact = true
-                comp.cnt, comp.cellK = cnt, cellK
-                workLeft = workLeft - spent
-            else
-                workLeft = 0
-            end
-        end
-        if not comp.exact then
-            exactAll = false
-        end
-    end
-
-    local exactVar = {}
-    for _, comp in ipairs(comps) do
-        if comp.exact then
-            local sumC = 0
-            for k = 1, #comp.cnt do
-                sumC = sumC + comp.cnt[k]
-            end
-            if sumC == 0 then
-                res.error = "no assignment of the frontier fits the numbers (stale board?)"
-                return res
-            end
-            for k = 1, #comp.cnt do
-                comp.cnt[k] = comp.cnt[k] / sumC
-            end
-            for li = 1, comp.n do
-                local row = comp.cellK[li]
-                for k = 1, #row do
-                    row[k] = row[k] / sumC
-                end
-            end
-        end
-        for _, v in ipairs(comp.vars) do
-            exactVar[v] = comp.exact
-        end
-    end
-
-    local P = {}
-    for _, comp in ipairs(comps) do
-        if not comp.exact then
-            local sumP, cntP = {}, {}
-            for _, c in ipairs(comp.cons) do
-                local dens = c.target / #c.vars
-                for _, v in ipairs(c.vars) do
-                    sumP[v] = (sumP[v] or 0) + dens
-                    cntP[v] = (cntP[v] or 0) + 1
-                end
-            end
-            for _, v in ipairs(comp.vars) do
-                P[v] = math.min(1, math.max(0, (sumP[v] or 0.5) / (cntP[v] or 1)))
-            end
-        end
-    end
-
-    local probes = 0
-    local probeCertain = {}
-    if full then
-        local probeLeft = opts.probeWork or 300000
-        local probeLimit = opts.probeLimit or 20000
-        for _, comp in ipairs(comps) do
-            if not comp.exact and probeLeft > 0 then
-                local model = buildModel(comp.vars, comp.cons)
-                for li = 1, comp.n do
-                    if probeLeft <= 0 then
-                        break
-                    end
-                    local v = comp.vars[li]
-                    if known[v] == nil then
-                        local canMine, s1 = probeFit(model, li, 1, math.min(probeLimit, probeLeft))
-                        probeLeft = probeLeft - (s1 or 0)
-                        probes = probes + 1
-                        local canSafe = nil
-                        if probeLeft > 0 then
-                            local s2
-                            canSafe, s2 = probeFit(model, li, 0, math.min(probeLimit, probeLeft))
-                            probeLeft = probeLeft - (s2 or 0)
-                            probes = probes + 1
-                        end
-                        if canMine == false and canSafe == false then
-                            res.error = "a cell fits neither value (stale board?)"
-                            return res
-                        elseif canMine == false then
-                            probeCertain[v] = 0
-                        elseif canSafe == false then
-                            probeCertain[v] = 1
-                        end
-                    end
-                end
-            end
-        end
-        for v, val in pairs(probeCertain) do
-            if known[v] == nil then
-                setKnown(v, val)
-            end
-            P[v] = val
-        end
-        if total ~= nil then
-            local mk = 0
-            for i = 1, N do
-                if exists[i] and known[i] == 1 then
-                    mk = mk + 1
-                end
-            end
-            remaining = total - mk
-        end
-    end
-
-    local Pout = nil
-    if total ~= nil and exactAll and remaining ~= nil then
-
-        local F = frontierCount
-        local lf = logFactorials(math.max(unknownCount, 1))
-        local logw, best = {}, nil
-        for t = 0, F do
-            local r = remaining - t
-            local l = false
-            if outside == 0 then
-                if r == 0 then
-                    l = 0
-                end
-            elseif r >= 0 and r <= outside then
-                l = lf[outside] - lf[r] - lf[outside - r]
-            end
-            logw[t + 1] = l
-            if l and (best == nil or l > best) then
-                best = l
-            end
-        end
-        local wOut = {}
-        for t = 0, F do
-            local l = logw[t + 1]
-            if l and best ~= nil then
-                wOut[t + 1] = math.exp(l - best)
-            else
-                wOut[t + 1] = 0
-            end
-        end
-        local m = #comps
-        local pre, suf = { [0] = { 1 } }, { [m + 1] = { 1 } }
-        for j = 1, m do
-            pre[j] = polyMul(pre[j - 1], comps[j].cnt)
-        end
-        for j = m, 1, -1 do
-            suf[j] = polyMul(comps[j].cnt, suf[j + 1])
-        end
-        local D = pre[m]
-        local Z = 0
-        for t = 0, F do
-            Z = Z + D[t + 1] * wOut[t + 1]
-        end
-        if Z <= 0 then
-            res.error = "the mine count does not fit the board (stale count?)"
-            return res
-        end
-        for j = 1, m do
-            local comp = comps[j]
-            local excl = polyMul(pre[j - 1], suf[j + 1])
-            local G = {}
-            for k = 0, comp.n do
-                local acc = 0
-                for s = 0, #excl - 1 do
-                    local t = s + k
-                    if t <= F then
-                        acc = acc + excl[s + 1] * wOut[t + 1]
-                    end
-                end
-                G[k + 1] = acc
-            end
-            for li = 1, comp.n do
-                local row = comp.cellK[li]
-                local num = 0
-                for k = 0, comp.n do
-                    num = num + row[k + 1] * G[k + 1]
-                end
-                P[comp.vars[li]] = num / Z
-            end
-        end
-        if outside > 0 then
-            local E = 0
-            for t = 0, F do
-                E = E + D[t + 1] * wOut[t + 1] * (remaining - t)
-            end
-            Pout = (E / Z) / outside
-        end
-    else
-        for _, comp in ipairs(comps) do
-            if comp.exact then
-                for li, v in ipairs(comp.vars) do
-                    local s = 0
-                    for k = 1, comp.n + 1 do
-                        s = s + comp.cellK[li][k]
-                    end
-                    P[v] = s
-                end
-            end
-        end
-        if outside > 0 then
-            if remaining ~= nil then
-                local expect = 0
-                for _, v in ipairs(varList) do
-                    expect = expect + (P[v] or 0.5)
-                end
-                Pout = math.min(1, math.max(0, (remaining - expect) / outside))
-            else
-                local sumP = 0
-                for _, v in ipairs(varList) do
-                    sumP = sumP + (P[v] or 0.5)
-                end
-                Pout = (frontierCount > 0) and (sumP / frontierCount) or 0.5
-            end
-        end
-    end
-
-    local EPS = 1e-9
-    for _, v in ipairs(varList) do
-        if exactVar[v] and known[v] == nil then
-            local p = P[v]
-            if p <= EPS then
-                setKnown(v, 0)
-            elseif p >= 1 - EPS then
-                setKnown(v, 1)
-            end
-        end
-    end
-
-    for i = 1, N do
-        if exists[i] and not open[i] and not flag[i] then
-            local k = known[i]
-            if k == 0 then
-                res.safe[#res.safe + 1] = i
-                res.probs[i] = 0
-            elseif k == 1 then
-                res.mines[#res.mines + 1] = i
-                res.probs[i] = 1
-            else
-                local p = P[i]
-                if p == nil then
-                    p = Pout or 0.5
-                end
-                res.probs[i] = p
-            end
-        end
-    end
-
-    if full then
-        local bestI, bestP, bestFront, bestInfo = nil, math.huge, false, -1
-        for i = 1, N do
-            if exists[i] and not open[i] and not flag[i] and known[i] == nil then
-                local p = res.probs[i]
-                local front = (P[i] ~= nil)
-                local info = 0
-                for _, j in ipairs(nb[i]) do
-                    if open[j] and value[j] ~= nil then
-                        info = info + 1
-                    end
-                end
-                local better = false
-                if bestI == nil or p < bestP - 1e-12 then
-                    better = true
-                elseif math.abs(p - bestP) <= 1e-12 then
-                    if front ~= bestFront then
-                        better = front
-                    else
-                        better = info > bestInfo
-                    end
-                end
-                if better then
-                    bestI, bestP, bestFront, bestInfo = i, p, front, info
-                end
-            end
-        end
-        res.guess = bestI
-        res.guessP = bestI and bestP or nil
-    end
-
-    res.stats = {
-        comps = #comps,
-        frontier = frontierCount,
-        outside = outside,
-        exact = exactAll,
-        probes = probes,
-        work = (opts.work or 400000) - workLeft,
-        seconds = os.clock() - clock0,
-    }
-    return res
-end
+-- Services
 local Players = game:GetService("Players")
-local StarterGui = game:GetService("StarterGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local player = Players.LocalPlayer
-local TIME = { now = function() return os.clock() end }
+local Workspace = game:GetService("Workspace")
 
-local CONFIG = {
-    Movement = "hop",
-    HopWait = 0.02,
-    HopPoll = 0.01,
-    HopTimeout = 0.3,
-    HopBatch = 24,
-    WalkSpeed = 28,
-    MaxWalkTiles = 12,
-    WalkWaypointTimeout = 1.5,
-    Solve = false,
-    SolverInterval = 0.03,
-    MaxGuessRisk = 0,
-    BlockSeconds = 1.5,
-    ShowMarks = true,
-    ShowHeat = true,
-    ShowGuess = true,
-    ESPInterval = 0.03,
-    ShowDistance = 0,
-    Opacity = 0.6,
-    AutoFlag = false,
-    FlagDelay = 0.05,
-    FlagRange = 30,
-    Tick = 0.02,
-    HalloweenMode = "Off",
-    HalloweenDelay = 0,
-    HideExplosions = true,
-    SafeWalk = false,
-    IgnoreBullets = true,
-    IgnoreSpikes = true,
-    OpenMethod = "move",
-}
+local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
-local COLOURS = {
-    safe = Color3.fromRGB(60, 220, 90),
-    mine = Color3.fromRGB(230, 50, 50),
-    guess = Color3.fromRGB(255, 230, 60),
-    lowRisk = Color3.fromRGB(80, 170, 255),
-    highRisk = Color3.fromRGB(255, 120, 60),
-}
-
-local UNOPENED = {
-    { 0.459, 0.804, 0.392 }, { 0.404, 0.706, 0.345 },
-    { 0.804, 0.392, 0.392 }, { 0.706, 0.345, 0.345 },
-    { 0.392, 0.741, 0.804 }, { 0.345, 0.651, 0.706 },
-}
-local EXCLUDED = { 1.0, 1.0, 0.49 }
-local DIRS4 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
-local DIRS8 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }
-
-local UI = {}
-local LIB = nil
-local recent, moveCount, errorCount, flagCount, noDetector = {}, 0, 0, 0, 0
-local lastError = nil
-local alive = true
-local board, fastRes, fullRes, shown = nil, nil, nil, nil
-local lastSig = nil
-local highlights = {}
-local flagged = {}
-local failures, blockedUntil = {}, {}
-local marksNote = "waiting for the board"
-local flagNote = "off"
-local nextESP, nextSolve, nextFlag = 0, 0, 0
-local colourSig = ""
-local lastSolveState = false
-
-local LIB_WINDOW = nil
-
-local function notify(text, kind)
-    if LIB_WINDOW then
-        pcall(function()
-            LIB_WINDOW:Notify({ Title = "TokaiHub", Content = text, Type = kind, Duration = 2.5 })
-        end)
-        return
+-- Determine GUI parent
+local guiParent
+if type(gethui) == "function" then
+    guiParent = gethui()
+else
+    local success = pcall(function()
+        return game:GetService("CoreGui").Name
+    end)
+    if success then
+        guiParent = game:GetService("CoreGui")
+    else
+        guiParent = player:WaitForChild("PlayerGui")
     end
-    pcall(function()
-        StarterGui:SetCore("SendNotification", { Title = "TokaiHub", Text = text, Duration = 2.5 })
+end
+
+-- Create ScreenGui
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "Gui_" .. math.random(10000, 99999)
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 2147483647
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+screenGui.Parent = guiParent
+
+-- Main draggable frame (Fixed at 200x100)
+local mainFrame = Instance.new("Frame")
+mainFrame.Parent = screenGui
+mainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+mainFrame.Size = UDim2.new(0, 200, 0, 100)
+mainFrame.Position = UDim2.new(0.3, 0, 0.5, -50)
+mainFrame.Draggable = true
+mainFrame.Active = true
+
+-- Status label
+local status = Instance.new("TextLabel")
+status.Parent = mainFrame
+status.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+status.Size = UDim2.new(0, 200, 0, 30)
+status.Position = UDim2.new(0, 0, 0, -30)
+status.Text = "Status: Offline"
+status.TextColor3 = Color3.fromRGB(255, 0, 0)
+status.TextScaled = true
+
+-- Helper to create buttons
+local function createButton(name, text, x, y, width, height, textColor)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Parent = mainFrame
+    btn.Text = text
+    btn.Size = UDim2.new(0, width, 0, height)
+    btn.Position = UDim2.new(0, x, 0, y)
+    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    btn.TextColor3 = textColor or Color3.fromRGB(255, 255, 255)
+    btn.TextScaled = true
+    btn.AutoButtonColor = true
+    btn.BorderSizePixel = 0
+    return btn
+end
+
+-- 5-Button Layout inside 200x100
+local toggleBtn    = createButton("ToggleBtn", "START", 8, 8, 88, 26, Color3.fromRGB(0, 255, 0))
+local fastBtn      = createButton("FastBtn", "AUTO TOUCH: OFF", 104, 8, 88, 26, Color3.fromRGB(0, 255, 255))
+local antiLagBtn   = createButton("AntiLagBtn", "ANTI-LAG: OFF", 8, 38, 88, 26, Color3.fromRGB(255, 255, 255))
+local billboardBtn = createButton("BillboardBtn", "BILLBOARD: OFF", 104, 38, 88, 26, Color3.fromRGB(255, 255, 0))
+local destroyBtn   = createButton("DestroyBtn", "Destroy UI", 8, 68, 184, 24, Color3.fromRGB(255, 100, 100))
+
+-------------------------------------------------------------------------------
+-- CORE VARIABLES & CONFIG
+-------------------------------------------------------------------------------
+
+local BATCH_SIZE = 30 -- High-speed parallel batch size
+
+local isScanning = false
+local isAutoTouching = false
+local isAntiLagOn = false
+local isBillboardOn = false
+
+local cachedParts = {}      
+local neighborMap = {}      
+local numberTiles = {}      
+local knownMines = {}       
+local knownSafe = {}
+local probabilityMap = {}
+local currentBestGuess = nil 
+local connections = {}
+local pendingReset = false 
+local trackedBillboards = {}
+local activeFlagPositions = {} -- Lightweight Vector3 cache
+
+-------------------------------------------------------------------------------
+-- HELPER & PROXIMITY FUNCTIONS
+-------------------------------------------------------------------------------
+
+local function getCharPos()
+    local char = player.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
+    return root and root.Position or nil
+end
+
+local function sortByProximity(list, charPos)
+    if not charPos or #list <= 1 then return end
+    table.sort(list, function(a, b)
+        return (a.Position - charPos).Magnitude < (b.Position - charPos).Magnitude
     end)
 end
 
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local PAUSE_KEY = Enum.KeyCode.F8 -- pauses solve, auto flag and Halloween answers; marks keep running
-local manualPause = false
-local pauseConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed or input.KeyCode ~= PAUSE_KEY then
-        return
-    end
-    manualPause = not manualPause
-    notify(manualPause and "paused (F8 to resume)" or "resumed", manualPause and "Warning" or "Success")
-end)
-
-local missCount = 0
-local function noteMove(i, ok)
-    if ok then
-        moveCount = moveCount + 1
-    else
-        missCount = missCount + 1
-    end
-    table.insert(recent, 1, { tile = i, ok = ok })
-    while #recent > 8 do
-        table.remove(recent)
-    end
+local function isColorMatch(c1, r, g, b)
+    return math.abs(c1.R - r) < 0.05 and math.abs(c1.G - g) < 0.05 and math.abs(c1.B - b) < 0.05
 end
 
-local function rootPart()
-    local char = player.Character
-    return char and char:FindFirstChild("HumanoidRootPart")
+local function isExcluded(part)
+    if not part:IsA("BasePart") then return true end
+    return isColorMatch(part.Color, 1.000, 1.000, 0.490)
 end
 
-local function colourIs(c, rgb)
-    return math.abs(c.R - rgb[1]) < 0.05 and math.abs(c.G - rgb[2]) < 0.05 and math.abs(c.B - rgb[3]) < 0.05
+local function isUnrevealed(part)
+    if not part or not part:IsA("BasePart") or isExcluded(part) or numberTiles[part] then return false end
+    
+    local green1 = isColorMatch(part.Color, 0.459, 0.804, 0.392)
+    local green2 = isColorMatch(part.Color, 0.404, 0.706, 0.345)
+    local red1   = isColorMatch(part.Color, 0.804, 0.392, 0.392) 
+    local red2   = isColorMatch(part.Color, 0.706, 0.345, 0.345) 
+    local blue1  = isColorMatch(part.Color, 0.392, 0.741, 0.804)
+    local blue2  = isColorMatch(part.Color, 0.345, 0.651, 0.706)
+    
+    return green1 or green2 or red1 or red2 or blue1 or blue2
 end
 
-local function unopenedColour(part)
-    if colourIs(part.Color, EXCLUDED) then
-        return false
-    end
-    for _, rgb in ipairs(UNOPENED) do
-        if colourIs(part.Color, rgb) then
-            return true
-        end
-    end
-    return false
-end
-
-local function numberOnTile(part)
-    for _, d in ipairs(part:GetDescendants()) do
-        if d:IsA("TextLabel") and d.Visible then
-            local digits = string.match(d.Text, "%d+")
-            local n = digits and tonumber(digits)
-            if n and n >= 1 and n <= 8 then
-                return n
-            end
+local function getNumber(part)
+    if not part or not part:IsA("BasePart") or isExcluded(part) then return nil end
+    for _, desc in ipairs(part:GetDescendants()) do
+        if desc:IsA("TextLabel") and desc.Visible then
+            local num = tonumber(desc.Text:match("%d+"))
+            if num and num >= 1 and num <= 8 then return num end
         end
     end
     return nil
 end
 
-local function hasServerFlag(part)
-    if not part then
-        return false
-    end
-    for _, child in ipairs(part:GetChildren()) do
-        if child:IsA("Model") then
-            return true
-        end
-    end
-    return false
-end
-
-local function classifyFlagTile(part)
-    local gui = part:FindFirstChild("NumberGui")
-    if not gui then
-        -- a flag placed by PlaceFlag is a model under the tile
-        if hasServerFlag(part) then
-            return "mine"
-        end
-        return "unopened"
-    end
-    local label = gui:FindFirstChild("TextLabel")
-    local text = label and label.Text or ""
-    if text == "" then
-        return "number", 0
-    end
-    if text == "X" then
-        return "mine"
-    end
-    local n = tonumber(text)
-    if n then
-        return "number", n
-    end
-    return nil
-end
-
-local function classifyColourTile(part)
-    if part.Name ~= "Part" then
-        return nil
-    end
-    if unopenedColour(part) then
-        return "unopened"
-    end
-    local n = numberOnTile(part)
-    if n then
-        return "number", n
-    end
-    return nil
-end
-
-local candidates = { set = {}, list = {}, dirty = true, scanned = false, at = 0 }
-local function isTile(d)
-    return d.Name == "Part" and d:IsA("BasePart")
-end
-local tileConn = workspace.DescendantAdded:Connect(function(d)
-    if isTile(d) then
-        candidates.set[d] = true
-        candidates.dirty = true
-    end
-end)
-local function colourCandidates()
-    local now = TIME.now()
-    if not candidates.scanned or now - candidates.at > 10 then
-        -- one full scan every 10 s catches anything the listener missed
-        candidates.scanned = true
-        candidates.at = now
-        for _, d in ipairs(workspace:GetDescendants()) do
-            if isTile(d) then
-                candidates.set[d] = true
-            end
-        end
-        candidates.dirty = true
-    end
-    if candidates.dirty then
-        local list = {}
-        for d in pairs(candidates.set) do
-            if d.Parent and d:IsDescendantOf(workspace) then
-                list[#list + 1] = d
-            else
-                candidates.set[d] = nil
-            end
-        end
-        candidates.list = list
-        candidates.dirty = false
-    end
-    return candidates.list
-end
-
-local function buildBoard(entries)
-    local size = entries[1].part.Size.X
-    if not size or size <= 0 then
-        return nil, "tile size unknown"
-    end
-    local minX, minZ, maxX, maxZ = math.huge, math.huge, -math.huge, -math.huge
-    for _, e in ipairs(entries) do
-        local p = e.part.Position
-        minX = math.min(minX, p.X)
-        maxX = math.max(maxX, p.X)
-        minZ = math.min(minZ, p.Z)
-        maxZ = math.max(maxZ, p.Z)
-    end
-    local W = math.floor((maxX - minX) / size + 0.5) + 1
-    local H = math.floor((maxZ - minZ) / size + 0.5) + 1
-    local b = {
-        W = W, H = H, size = size, minX = minX, minZ = minZ,
-        exists = {}, open = {}, value = {}, flag = {}, tileOf = {}, walk = {},
-        hidden = 0, numbers = 0, flags = 0,
-    }
-    local sig = {}
-    for _, e in ipairs(entries) do
-        local p = e.part.Position
-        local col = math.floor((p.X - minX) / size + 0.5) + 1
-        local row = math.floor((p.Z - minZ) / size + 0.5) + 1
-        local i = (row - 1) * W + col
-        if b.exists[i] then
-            return nil, "two tiles share one spot"
-        end
-        b.exists[i] = true
-        b.tileOf[i] = e.part
-        if e.state == "number" then
-            b.open[i] = true
-            b.value[i] = e.value
-            b.walk[i] = true
-            b.numbers = b.numbers + 1
-        elseif e.state == "mine" then
-            b.flag[i] = true
-            b.flags = b.flags + 1
-        else
-            b.hidden = b.hidden + 1
-        end
-        sig[#sig + 1] = i .. ":" .. e.state .. ":" .. tostring(e.value or "")
-    end
-    table.sort(sig)
-    b.sig = W .. "x" .. H .. "|" .. table.concat(sig, ";")
-    return b
-end
-
-local function readBoard()
-    local flagFolder = workspace:FindFirstChild("Flag")
-    local parts = flagFolder and flagFolder:FindFirstChild("Parts")
-    local entries, kind = {}, nil
-    if parts then
-        kind = "flag"
-        for _, part in ipairs(parts:GetChildren()) do
-            local state, value = classifyFlagTile(part)
-            if state then
-                entries[#entries + 1] = { part = part, state = state, value = value }
-            end
-        end
-    else
-        kind = "colour"
-        for _, part in ipairs(colourCandidates()) do
-            if part.Parent then
-                local state, value = classifyColourTile(part)
-                if state then
-                    entries[#entries + 1] = { part = part, state = state, value = value }
-                end
-            end
-        end
-    end
-    if #entries == 0 then
-        return nil, "no tiles found (" .. kind .. " layout)"
-    end
-    local b, err = buildBoard(entries)
-    if not b then
-        return nil, err
-    end
-    b.kind = kind
-    b.info = string.format("%dx%d | %d hidden | %d numbers | %d flags | %s layout", b.W, b.H, b.hidden, b.numbers, b.flags, kind)
-    return b, nil
-end
-
-local function currentRound()
-    local info = ReplicatedStorage:FindFirstChild("Info")
-    local running = info and info:FindFirstChild("GameRunning")
-    return not (running and running.Value == false)
-end
-
-local function totalMines()
-    local info = ReplicatedStorage:FindFirstChild("Info")
-    local mines = info and info:FindFirstChild("Mines")
-    return mines and mines.Value or nil
-end
-
-local function tileOpen(part, kind)
-    if not part.Parent then
+local function isTileCandidate(part)
+    if not part or not part:IsA("BasePart") then return false end
+    if isExcluded(part) then return false end
+    if numberTiles[part] or isUnrevealed(part) or getNumber(part) ~= nil then return true end
+    if part.Name == "Part" and part.Parent and string.find(string.lower(part.Parent.Name), "part") then
         return true
     end
-    if kind == "flag" then
-        return part:FindFirstChild("NumberGui") ~= nil
-    end
-    return not unopenedColour(part)
-end
-
-local function noteFailure(i)
-    failures[i] = (failures[i] or 0) + 1
-    if failures[i] >= 3 then
-        blockedUntil[i] = TIME.now() + CONFIG.BlockSeconds
-        failures[i] = 0
-    end
-end
-
-local function blocked(i)
-    return blockedUntil[i] ~= nil and TIME.now() < blockedUntil[i]
-end
-
-local function standAbove(tile)
-    local char = player.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root or not tile or not tile.Parent then
-        return false
-    end
-    local p = tile.Position
-    root.CFrame = CFrame.new(p.X, p.Y + tile.Size.Y / 2 + 3, p.Z)
-    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-    return true
-end
-
-local function waitOpen(b, i)
-    local tile = b.tileOf[i]
-    if not tile then
-        return false
-    end
-    local t0 = TIME.now()
-    repeat
-        if tileOpen(tile, b.kind) then
-            return true
-        end
-        task.wait(CONFIG.HopPoll)
-    until TIME.now() - t0 > CONFIG.HopTimeout
     return false
 end
 
-local FLAG = { near = 15, retryNear = 0.25, retryFar = 1, regap = 0.02, maxFails = 300, key = nil, keyAt = -math.huge, sent = {}, wanted = {}, lastAny = -math.huge }
+-------------------------------------------------------------------------------
+-- ULTRA-FAST SPATIAL FLAG CACHE
+-------------------------------------------------------------------------------
 
-local function dwellFor(i)
-    return CONFIG.HopWait + math.min(0.02 * (failures[i] or 0), 0.15)
-end
-
-local function dwell(seconds)
-    local t0 = tick()
-    repeat
-        RunService.Heartbeat:Wait()
-    until tick() - t0 >= seconds
-end
-
--- stand on the tile and stay for its dwell time; a tile that missed before gets longer
-local function stepOn(b, i)
-    local tile = b.tileOf[i]
-    if not tile or FLAG.wanted[tile] or hasServerFlag(tile) or hasFlagAbove(tile) then
-        return false
-    end
-    if not standAbove(tile) then
-        return false
-    end
-    dwell(dwellFor(i))
-    return true
-end
-
--- one shared verify window for a whole batch instead of waiting out each tile in turn
-local function settle(b, list, timeout)
-    local opened, pending = {}, list
-    local t0 = tick()
-    while true do
-        local still = {}
-        for _, i in ipairs(pending) do
-            local tile = b.tileOf[i]
-            if tile and tileOpen(tile, b.kind) then
-                opened[i] = true
-            else
-                still[#still + 1] = i
-            end
-        end
-        pending = still
-        if #pending == 0 or tick() - t0 >= timeout then
-            break
-        end
-        RunService.Heartbeat:Wait()
-    end
-    return opened
-end
-
-local function recordBatch(list, opened)
-    local moved = 0
-    for _, i in ipairs(list) do
-        if opened[i] then
-            failures[i] = nil
-            noteMove(i, true)
-            moved = moved + 1
-        else
-            noteFailure(i)
-            noteMove(i, false)
-        end
-    end
-    return moved
-end
-
-local function hop(b, i)
-    if not stepOn(b, i) then
-        noteFailure(i)
-        noteMove(i, false)
-        return false
-    end
-    return recordBatch({ i }, settle(b, { i }, CONFIG.HopTimeout)) == 1
-end
-
-local function playerCell(b)
-    local root = rootPart()
-    if not root then
-        return nil
-    end
-    local p = root.Position
-    local col = math.floor((p.X - b.minX) / b.size + 0.5) + 1
-    local row = math.floor((p.Z - b.minZ) / b.size + 0.5) + 1
-    if col < 1 or col > b.W or row < 1 or row > b.H then
-        return nil
-    end
-    return (row - 1) * b.W + col
-end
-
-local function findPath(b, from, to)
-    if not from or not to then
-        return nil
-    end
-    if from == to then
-        return {}
-    end
-    local parent, seen = {}, { [from] = true }
-    local queue, head = { from }, 1
-    while head <= #queue do
-        local cur = queue[head]
-        head = head + 1
-        if cur == to then
-            break
-        end
-        local col = (cur - 1) % b.W + 1
-        local row = math.floor((cur - 1) / b.W) + 1
-        for _, d in ipairs(DIRS4) do
-            local nc, nr = col + d[1], row + d[2]
-            if nc >= 1 and nc <= b.W and nr >= 1 and nr <= b.H then
-                local j = (nr - 1) * b.W + nc
-                if not seen[j] and (b.walk[j] or j == to) and not FLAG.wanted[b.tileOf[j]] then
-                    seen[j] = true
-                    parent[j] = cur
-                    queue[#queue + 1] = j
-                end
+local function refreshFlagCache()
+    table.clear(activeFlagPositions)
+    
+    local flagFolder = Workspace:FindFirstChild("Flag") or Workspace:FindFirstChild("Flags")
+    if flagFolder then
+        for _, desc in ipairs(flagFolder:GetDescendants()) do
+            if desc:IsA("BasePart") then
+                table.insert(activeFlagPositions, desc.Position)
             end
         end
     end
-    if not seen[to] then
-        return nil
-    end
-    local path, cur = {}, to
-    while cur ~= from do
-        table.insert(path, 1, cur)
-        cur = parent[cur]
-    end
-    return path
-end
-
-local function walkTo(b, i)
-    local from = playerCell(b)
-    local path = from and findPath(b, from, i)
-    if not path or #path == 0 or #path > CONFIG.MaxWalkTiles then
-        return false
-    end
-    local char = player.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not hum or not root then
-        return false
-    end
-    hum.WalkSpeed = CONFIG.WalkSpeed
-    for _, j in ipairs(path) do
-        local tile = b.tileOf[j]
-        if not tile or not tile.Parent then
-            return false
-        end
-        local target = Vector3.new(tile.Position.X, root.Position.Y, tile.Position.Z)
-        hum:MoveTo(target)
-        local t0 = TIME.now()
-        while (root.Position - target).Magnitude > 1.5 do
-            task.wait(0.05)
-            if TIME.now() - t0 > CONFIG.WalkWaypointTimeout then
-                hum.Jump = true
-                return false
+    
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if obj:IsA("Model") and string.find(string.lower(obj.Name), "flag") then
+            local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+            if primary then
+                table.insert(activeFlagPositions, primary.Position)
             end
         end
     end
-    return true
 end
 
-local function goTo(b, i)
-    if CONFIG.Movement == "walk" and walkTo(b, i) then
-        if waitOpen(b, i) then
-            failures[i] = nil
-            noteMove(i, true)
+local function hasFlag(part)
+    if not part or not part:IsDescendantOf(workspace) then return false end
+    local pPos = part.Position
+    local pSizeX = part.Size.X * 0.55
+    local pSizeZ = part.Size.Z * 0.55
+
+    for _, fPos in ipairs(activeFlagPositions) do
+        local dx = math.abs(fPos.X - pPos.X)
+        local dz = math.abs(fPos.Z - pPos.Z)
+        local dy = fPos.Y - pPos.Y
+        if dx < pSizeX and dz < pSizeZ and dy > 0.3 and dy < 6 then
             return true
         end
-        noteFailure(i)
-        noteMove(i, false)
-        return false
     end
-    return hop(b, i)
+    return false
 end
 
-local function hopBatch(b, list)
-    local visit = {}
-    for _, i in ipairs(list) do
-        if #visit >= CONFIG.HopBatch then
-            break
-        end
-        if not blocked(i) then
-            if stepOn(b, i) then
-                visit[#visit + 1] = i
-            else
-                noteFailure(i)
-                noteMove(i, false)
-            end
-        end
+local function clickTile(part)
+    if not part or not part:IsDescendantOf(workspace) then return end
+    local cd = part:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildWhichIsA("ClickDetector", true)
+    if cd and typeof(fireclickdetector) == "function" then
+        fireclickdetector(cd, 0)
     end
-    if #visit == 0 then
-        return 0
-    end
-    return recordBatch(visit, settle(b, visit, CONFIG.HopTimeout))
 end
 
-local touchOff = false
-local touchMisses = 0
+-------------------------------------------------------------------------------
+-- TOUCH TRIGGER (NO LEG OFFSET)
+-------------------------------------------------------------------------------
 
-local function touchLimb()
+local function triggerTileTouch(targetTile)
+    if not targetTile or not targetTile:IsDescendantOf(workspace) then return end
+    
     local char = player.Character
-    if not char then
-        return nil
-    end
-    return char:FindFirstChild("RightFoot") or char:FindFirstChild("Right Leg")
-        or char:FindFirstChild("LeftFoot") or char:FindFirstChild("Left Leg")
+    if not char then return end
+    
+    local limb = char:FindFirstChild("RightFoot") 
+        or char:FindFirstChild("Right Leg") 
+        or char:FindFirstChild("LeftFoot") 
+        or char:FindFirstChild("Left Leg")
         or char:FindFirstChild("HumanoidRootPart")
-end
+        
+    if not limb then return end
 
--- opens safe tiles by a simulated touch from the character's foot, the character does not move.
--- returns nil when touch is not available, so the caller moves instead
-local function touchBatch(b, list)
-    local limb = touchLimb()
-    if not limb or type(firetouchinterest) ~= "function" then
-        return nil
-    end
-    local visit = {}
-    for _, i in ipairs(list) do
-        if #visit >= CONFIG.HopBatch then
-            break
-        end
-        local tile = b.tileOf[i]
-        if tile and tile.Parent and not blocked(i) and not FLAG.wanted[tile] and not hasServerFlag(tile) and not hasFlagAbove(tile) then
-            firetouchinterest(limb, tile, 0)
-            visit[#visit + 1] = i
-        end
-    end
-    if #visit == 0 then
-        return 0
-    end
-    RunService.Heartbeat:Wait()
-    for _, i in ipairs(visit) do
-        local tile = b.tileOf[i]
-        if tile then
-            firetouchinterest(limb, tile, 1)
-        end
-    end
-    local moved = recordBatch(visit, settle(b, visit, CONFIG.HopTimeout))
-    if moved == 0 then
-        touchMisses = touchMisses + 1
+    if typeof(firetouchinterest) == "function" then
+        firetouchinterest(limb, targetTile, 0)
+        task.wait(0.015)
+        firetouchinterest(limb, targetTile, 1)
     else
-        touchMisses = 0
+        local probe = Instance.new("Part")
+        probe.Name = "LegProbe"
+        probe.Size = limb.Size
+        probe.CanCollide = false
+        probe.Transparency = 1
+        probe.CFrame = targetTile.CFrame
+        probe.Parent = char
+        task.wait(0.02)
+        probe:Destroy()
     end
-    if touchMisses >= 3 and not touchOff then
-        touchOff = true
-        notify("touch open did not work here, switched back to move", "Warning")
-    end
-    return moved
 end
 
-local function act(b, r)
-    local ready = {}
-    for _, i in ipairs(r.safe) do
-        local tile = b.tileOf[i]
-        if tile and tile.Parent and not blocked(i) then
-            ready[#ready + 1] = i
+-------------------------------------------------------------------------------
+-- HIGHLIGHT VISUALS
+-------------------------------------------------------------------------------
+
+local function clearVisuals(part)
+    if not part then return end
+    if part:FindFirstChild("Mine_Highlight") then part.Mine_Highlight:Destroy() end
+    if part:FindFirstChild("Safe_Highlight") then part.Safe_Highlight:Destroy() end
+    if part:FindFirstChild("Guess_Highlight") then part.Guess_Highlight:Destroy() end
+end
+
+local function createHighlight(part, color, name)
+    if part:FindFirstChild(name) then return end
+    
+    if name == "Guess_Highlight" then
+        if part:FindFirstChild("Safe_Highlight") or part:FindFirstChild("Mine_Highlight") then return end
+    elseif name == "Safe_Highlight" or name == "Mine_Highlight" then
+        if part:FindFirstChild("Guess_Highlight") then part.Guess_Highlight:Destroy() end
+    end
+
+    local h = Instance.new("Highlight")
+    h.Name = name
+    h.Adornee = part
+    h.FillColor = color
+    h.FillTransparency = 0.4
+    h.OutlineTransparency = 0.5
+    h.DepthMode = Enum.HighlightDepthMode.Occluded 
+    h.Parent = part
+end
+
+-------------------------------------------------------------------------------
+-- BILLBOARD INSPECTOR (OPTIMIZED)
+-------------------------------------------------------------------------------
+
+local function removeBillboard(part)
+    if trackedBillboards[part] then
+        trackedBillboards[part]:Destroy()
+        trackedBillboards[part] = nil
+    end
+end
+
+local function removeAllBillboards()
+    for part, bb in pairs(trackedBillboards) do
+        if bb then bb:Destroy() end
+    end
+    table.clear(trackedBillboards)
+end
+
+local function updateBillboard(part)
+    if not isBillboardOn or not part or not part:IsDescendantOf(workspace) then
+        removeBillboard(part)
+        return
+    end
+
+    local bb = trackedBillboards[part]
+    if not bb or not bb.Parent then
+        bb = Instance.new("BillboardGui")
+        bb.Name = "TileDebug_" .. part.Name
+        bb.Size = UDim2.new(7.5, 0, 4.8, 0)
+        bb.StudsOffset = Vector3.new(0, (part.Size.Y / 2) + 3.0, 0)
+        bb.AlwaysOnTop = true
+        bb.Adornee = part
+        bb.Parent = guiParent
+
+        local bg = Instance.new("Frame")
+        bg.Name = "BG"
+        bg.Size = UDim2.new(1, 0, 1, 0)
+        bg.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        bg.BackgroundTransparency = 0.15
+        bg.BorderSizePixel = 2
+        bg.Parent = bb
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Name = "InfoLabel"
+        lbl.Size = UDim2.new(1, -8, 1, -8)
+        lbl.Position = UDim2.new(0, 4, 0, 4)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        lbl.TextScaled = true
+        lbl.Font = Enum.Font.SourceSansBold
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextYAlignment = Enum.TextYAlignment.Top
+        lbl.Parent = bg
+
+        trackedBillboards[part] = bb
+    end
+
+    local num = numberTiles[part] or getNumber(part)
+    local unrev = isUnrevealed(part)
+    local isFlagged = hasFlag(part)
+    local c = part.Color
+    local hexColor = string.format("#%02X%02X%02X", math.floor(c.R * 255), math.floor(c.G * 255), math.floor(c.B * 255))
+    
+    local tag = "🔍 [CANDIDATE BLOCK]"
+    local borderColor = Color3.fromRGB(255, 170, 0)
+
+    if knownSafe[part] then
+        if isFlagged then
+            tag = "⚠️ [SAFE TILE - HAS FLAG] (Will Unflag)"
+            borderColor = Color3.fromRGB(255, 150, 0)
+        else
+            tag = "✅ [CONFIRMED SAFE (100%)]"
+            borderColor = Color3.fromRGB(0, 255, 0)
         end
-    end
-    if #ready > 0 then
-        if CONFIG.Movement == "walk" then
-            return goTo(b, ready[1]) and 1 or 0
+    elseif knownMines[part] then
+        if isFlagged then
+            tag = "🚩 [MINE - FLAGGED ✅] (Protected)"
+            borderColor = Color3.fromRGB(0, 200, 255)
+        else
+            tag = "💣 [MINE - UNFLAGGED] (Will Flag)"
+            borderColor = Color3.fromRGB(255, 0, 0)
         end
-        if CONFIG.OpenMethod == "touch" and not touchOff then
-            local touched = touchBatch(b, ready)
-            if touched ~= nil then
-                return touched
-            end
-        end
-        return hopBatch(b, ready)
+    elseif currentBestGuess == part then
+        tag = string.format("⚡ [BEST GUESS] (Prob: %.2f)", probabilityMap[part] or 0)
+        borderColor = Color3.fromRGB(255, 255, 0)
+    elseif num then
+        tag = string.format("🔢 [REVEALED NUMBER: %d]", num)
+        borderColor = Color3.fromRGB(0, 200, 255)
+    elseif unrev then
+        local prob = probabilityMap[part]
+        tag = prob and string.format("🟩 [UNREVEALED TILE] (Prob: %.2f)", prob) or "🟩 [UNREVEALED TILE]"
     end
-    local g = r.guess
-    if g and (r.guessP or 1) <= CONFIG.MaxGuessRisk and not blocked(g) and b.tileOf[g] and b.tileOf[g].Parent and not FLAG.wanted[b.tileOf[g]] then
-        return goTo(b, g) and 1 or 0
+
+    local neighborCount = neighborMap[part] and #neighborMap[part] or 0
+    local bg = bb:FindFirstChild("BG")
+    local lbl = bg and bg:FindFirstChild("InfoLabel")
+    if bg and lbl then
+        bg.BorderColor3 = borderColor
+        lbl.Text = string.format(
+            "%s\n• Name: %s | Flagged: %s\n• Class: %s | Parent: %s\n• Path: %s\n• Color: RGB(%.2f, %.2f, %.2f) | Hex: %s | Mat: %s\n• Size: (%.1f, %.1f, %.1f) | Unrevealed: %s | Number: %s | Neighbors: %d",
+            tag,
+            part.Name, tostring(isFlagged),
+            part.ClassName,
+            part.Parent and part.Parent.Name or "None",
+            part:GetFullName(),
+            c.R, c.G, c.B, hexColor, tostring(part.Material.Name),
+            part.Size.X, part.Size.Y, part.Size.Z, tostring(unrev), tostring(num or "N/A"), neighborCount
+        )
     end
-    return 0
 end
 
-local function heatColour(p)
-    local lo, hi = COLOURS.lowRisk, COLOURS.highRisk
-    return Color3.fromRGB((lo.R + (hi.R - lo.R) * p) * 255, (lo.G + (hi.G - lo.G) * p) * 255, (lo.B + (hi.B - lo.B) * p) * 255)
-end
+-------------------------------------------------------------------------------
+-- NEIGHBOR CACHING & RESET
+-------------------------------------------------------------------------------
 
-local function touchesNumber(b, i)
-    local col = (i - 1) % b.W + 1
-    local row = math.floor((i - 1) / b.W) + 1
-    for _, d in ipairs(DIRS8) do
-        local nc, nr = col + d[1], row + d[2]
-        if nc >= 1 and nc <= b.W and nr >= 1 and nr <= b.H then
-            local j = (nr - 1) * b.W + nc
-            if b.open[j] and (b.value[j] or 0) > 0 then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function espFolder()
-    local folder = workspace:FindFirstChild("TokaiESP")
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = "TokaiESP"
-        folder.Parent = workspace
-    end
-    return folder
-end
-
--- a neon plate on top of the tile: the material glows, the highlight stays visible through walls
-local function neonFor(tile)
-    local part = Instance.new("Part")
-    part.Name = "TokaiNeon"
-    part.Anchored = true
-    part.CanCollide = false
-    part.CanTouch = false
-    part.CanQuery = false
-    part.CastShadow = false
-    part.Material = Enum.Material.Neon
-    part.Size = Vector3.new(tile.Size.X * 0.92, 0.12, tile.Size.Z * 0.92)
-    part.CFrame = tile.CFrame * CFrame.new(0, tile.Size.Y / 2 + 0.06, 0)
-    part.Parent = espFolder()
-    return part
-end
-
-local function paint(tile, colour, transparency, key)
-    local rec = highlights[tile]
-    if colour == nil then
-        if rec then
-            pcall(function()
-                rec.inst:Destroy()
-                if rec.neon then
-                    rec.neon:Destroy()
+local function cacheNeighbors(centerPart, forceRefresh)
+    if not forceRefresh and neighborMap[centerPart] then return end
+    
+    local neighbors = {}
+    local boxSize = centerPart.Size * 2.5 
+    local partsInBox = workspace:GetPartBoundsInBox(centerPart.CFrame, boxSize)
+    
+    for _, p in ipairs(partsInBox) do
+        if p ~= centerPart and isTileCandidate(p) then
+            if math.abs(p.Position.Y - centerPart.Position.Y) < 1.5 then
+                local dist = (p.Position - centerPart.Position).Magnitude
+                if dist < (centerPart.Size.X * 1.85) then 
+                    table.insert(neighbors, p)
                 end
-            end)
-            highlights[tile] = nil
-        end
-        return
-    end
-    if not rec then
-        local inst = Instance.new("Highlight")
-        inst.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        inst.Adornee = tile
-        inst.Parent = tile
-        local okN, neon = pcall(neonFor, tile)
-        rec = { inst = inst, neon = okN and neon or nil, key = nil }
-        highlights[tile] = rec
-    end
-    if rec.key ~= key then
-        rec.key = key
-        rec.inst.FillColor = colour
-        rec.inst.OutlineColor = colour
-        rec.inst.FillTransparency = transparency
-        rec.inst.OutlineTransparency = 0
-        if rec.neon then
-            rec.neon.Color = colour
-            rec.neon.Transparency = transparency
+            end
         end
     end
+    neighborMap[centerPart] = neighbors
 end
 
-local GUARD = { height = 10, walls = {} }
-
-local function guardFolder()
-    local folder = workspace:FindFirstChild("TokaiGuard")
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = "TokaiGuard"
-        folder.Parent = workspace
-    end
-    return folder
+local function requestReset()
+    if pendingReset then return end
+    pendingReset = true
+    
+    task.delay(0.2, function()
+        pendingReset = false
+        if not isScanning then return end
+        
+        for p, _ in pairs(knownSafe) do clearVisuals(p) end
+        for p, _ in pairs(knownMines) do clearVisuals(p) end
+        if currentBestGuess then clearVisuals(currentBestGuess) end
+        
+        knownSafe = {}
+        knownMines = {}
+        currentBestGuess = nil
+    end)
 end
 
--- an invisible solid wall on a cell: the character cannot walk into it, the server never sees it
-local function makeWall(tile)
-    local wall = Instance.new("Part")
-    wall.Name = "TokaiWall"
-    wall.Anchored = true
-    wall.CanCollide = true
-    wall.CanQuery = false
-    wall.CanTouch = false
-    wall.CastShadow = false
-    wall.Transparency = 1
-    wall.Size = Vector3.new(tile.Size.X, GUARD.height, tile.Size.Z)
-    wall.CFrame = tile.CFrame * CFrame.new(0, tile.Size.Y / 2 + GUARD.height / 2, 0)
-    wall.Parent = guardFolder()
-    return wall
-end
+-------------------------------------------------------------------------------
+-- SOLVER LOGIC
+-------------------------------------------------------------------------------
 
-local function clearGuards()
-    for tile, wall in pairs(GUARD.walls) do
-        pcall(function()
-            wall:Destroy()
-        end)
-        GUARD.walls[tile] = nil
-    end
-end
+local function solveBoard()
+    if pendingReset then return end 
+    
+    local activeNumbers = {} 
+    probabilityMap = {} 
+    
+    -- PASS 1: Basic Logic
+    for centerPart, targetNum in pairs(numberTiles) do
+        if not centerPart:IsDescendantOf(workspace) then 
+            numberTiles[centerPart] = nil
+            continue 
+        end
 
--- only the cells the solver has proven safe, and cells already opened, stay walkable
-local function applyGuards(b, res)
-    if not res or res.error or not b then
-        return
-    end
-    local safe = {}
-    for _, i in ipairs(res.safe or {}) do
-        safe[i] = true
-    end
-    local root = rootPart()
-    local keep = {}
-    for i = 1, b.W * b.H do
-        local tile = b.tileOf[i]
-        if tile and tile.Parent and b.exists[i] and not b.open[i] and not safe[i] then
-            -- never wall the cell the character is standing on
-            local under = root
-                and math.abs(tile.Position.X - root.Position.X) < tile.Size.X
-                and math.abs(tile.Position.Z - root.Position.Z) < tile.Size.Z
-            if not under then
-                keep[tile] = true
-                if not GUARD.walls[tile] then
-                    local okW, wall = pcall(makeWall, tile)
-                    if okW and wall then
-                        GUARD.walls[tile] = wall
+        local neighbors = neighborMap[centerPart]
+        if not neighbors then continue end 
+        
+        local unrevealed = {}
+        local mineCount = 0
+        
+        for _, n in ipairs(neighbors) do
+            if knownMines[n] then 
+                mineCount = mineCount + 1
+            elseif isUnrevealed(n) and not knownSafe[n] then 
+                table.insert(unrevealed, n) 
+            end
+        end
+        
+        local remainingMines = targetNum - mineCount
+        
+        if remainingMines == #unrevealed and #unrevealed > 0 then
+            for _, p in ipairs(unrevealed) do 
+                if not knownMines[p] then 
+                    knownMines[p] = true
+                    clearVisuals(p)
+                    createHighlight(p, Color3.new(1,0,0), "Mine_Highlight") 
+                end 
+            end
+        elseif remainingMines == 0 and #unrevealed > 0 then
+            for _, p in ipairs(unrevealed) do 
+                if not knownSafe[p] then 
+                    knownSafe[p] = true
+                    clearVisuals(p)
+                    createHighlight(p, Color3.new(0,1,0), "Safe_Highlight") 
+                end 
+            end
+        else
+            if #unrevealed > 0 then
+                local prob = remainingMines / #unrevealed
+                for _, p in ipairs(unrevealed) do
+                    if not probabilityMap[p] or prob > probabilityMap[p] then
+                        probabilityMap[p] = prob
                     end
                 end
             end
         end
-    end
-    for tile, wall in pairs(GUARD.walls) do
-        if not keep[tile] then
-            pcall(function()
-                wall:Destroy()
-            end)
-            GUARD.walls[tile] = nil
+        
+        if #unrevealed > 0 then
+            table.insert(activeNumbers, {
+                part = centerPart,
+                unrevealed = unrevealed,
+                needed = remainingMines
+            })
         end
     end
-end
-
-local hitConns = {}
-local hitGuardCounted = setmetatable({}, { __mode = "k" })
-local hitGuardBlocked = 0
-
--- bullets (MTC BulletScript) and Halloween spikes report damage from the client when they Touch you.
--- a part with CanTouch off never fires Touched, so no hit is reported
-local function guardName(name, on)
-    if not on then
-        if hitConns[name] then
-            hitConns[name]:Disconnect()
-            hitConns[name] = nil
-        end
-        return
-    end
-    if hitConns[name] then
-        return
-    end
-    for _, c in ipairs(workspace:GetChildren()) do
-        if c.Name == name and c:IsA("BasePart") then
-            c.CanTouch = false
-        end
-    end
-    hitConns[name] = workspace.ChildAdded:Connect(function(c)
-        if c.Name == name and c:IsA("BasePart") then
-            c.CanTouch = false
-        end
-    end)
-end
-
-local explosionFolder, explosionConn = nil, nil
-
--- same idea as the game's DisableExplosions setting: explosions under Flag.Parts are not drawn
-local function syncHideExplosions(on)
-    local flag = workspace:FindFirstChild("Flag")
-    local parts = flag and flag:FindFirstChild("Parts")
-    if not on or not parts then
-        if explosionConn then
-            explosionConn:Disconnect()
-            explosionConn = nil
-        end
-        explosionFolder = nil
-        return
-    end
-    if parts == explosionFolder and explosionConn then
-        return
-    end
-    if explosionConn then
-        explosionConn:Disconnect()
-    end
-    explosionFolder = parts
-    for _, d in ipairs(parts:GetDescendants()) do
-        if d:IsA("Explosion") and d.Name ~= "Ignore" then
-            d.Visible = false
-        end
-    end
-    explosionConn = parts.DescendantAdded:Connect(function(d)
-        if d:IsA("Explosion") and d.Name ~= "Ignore" then
-            d.Visible = false
-        end
-    end)
-end
-
-local function clearMarks()
-    for tile in pairs(highlights) do
-        paint(tile, nil)
-    end
-end
-
-local function refreshMarks(b, r)
-    local want = {}
-    local root = rootPart()
-    local transparency = 1 - CONFIG.Opacity
-    local function allowed(tile)
-        if CONFIG.ShowDistance <= 0 or not root then
-            return true
-        end
-        return (tile.Position - root.Position).Magnitude <= CONFIG.ShowDistance
-    end
-    local function put(i, kind, colour)
-        local tile = b.tileOf[i]
-        if tile and tile.Parent and allowed(tile) then
-            want[tile] = { kind = kind, colour = colour }
-        end
-    end
-    if CONFIG.ShowMarks then
-        if CONFIG.ShowHeat and r.probs then
-            for i, p in pairs(r.probs) do
-                if p > 0 and p < 1 and b.exists[i] and not b.open[i] and not b.flag[i] and touchesNumber(b, i) then
-                    put(i, "risk", heatColour(p))
+    
+    -- PASS 2: Advanced Set Difference
+    local numActive = #activeNumbers
+    for i = 1, numActive do
+        local A = activeNumbers[i]
+        for j = 1, numActive do
+            if i == j then continue end
+            local B = activeNumbers[j]
+            if (A.part.Position - B.part.Position).Magnitude > (A.part.Size.X * 3) then continue end
+            
+            local isSubset = true
+            for _, uA in ipairs(A.unrevealed) do
+                local found = false
+                for _, uB in ipairs(B.unrevealed) do
+                    if uA == uB then found = true; break end
                 end
+                if not found then isSubset = false; break end
             end
-        end
-        if CONFIG.ShowGuess and r.guess and b.exists[r.guess] and not b.open[r.guess] then
-            put(r.guess, "guess", COLOURS.guess)
-        end
-        for _, i in ipairs(r.safe) do
-            put(i, "safe", COLOURS.safe)
-        end
-        for _, i in ipairs(r.mines) do
-            put(i, "mine", COLOURS.mine)
-        end
-        for i in pairs(b.flag) do
-            put(i, "mine", COLOURS.mine)
-        end
-    end
-    local counts = { safe = 0, mine = 0, guess = 0, risk = 0 }
-    for _, m in pairs(want) do
-        counts[m.kind] = counts[m.kind] + 1
-    end
-    for tile in pairs(highlights) do
-        if want[tile] == nil then
-            paint(tile, nil)
-        end
-    end
-    for tile, m in pairs(want) do
-        local c = m.colour
-        local key = string.format("%.3f,%.3f,%.3f,%.3f", c.R, c.G, c.B, transparency)
-        paint(tile, c, transparency, key)
-    end
-    local total = counts.safe + counts.mine + counts.guess + counts.risk
-    if not CONFIG.ShowMarks then
-        marksNote = "marks off"
-    elseif b.numbers == 0 and counts.guess > 0 then
-        marksNote = "no numbers yet: the yellow tile is the first guess"
-    elseif b.numbers == 0 then
-        marksNote = "no numbers yet: open one tile first"
-    elseif total == 0 then
-        marksNote = "numbers read, nothing to mark"
-    else
-        marksNote = string.format("%d safe, %d mine, %d guess, %d risk", counts.safe, counts.mine, counts.guess, counts.risk)
-    end
-end
-
--- AUTO FLAG
--- a flag is a Model under the tile part. the flag is placed with PlaceFlag and the key the game
--- client holds, so no ClickDetector is needed. a tile with a flag model is never fired at again,
--- and a flag that went missing has no model, so it is placed again after the gap
-
--- a flag is any part above the tile inside its footprint (Blockerman's check). it also finds
--- flags that are not children of the tile, so a flagged tile is not clicked again
-local flagPos, flagPosAt = {}, -math.huge
-
-local function refreshFlagPositions()
-    if tick() - flagPosAt < 0.1 then
-        return
-    end
-    flagPosAt = tick()
-    flagPos = {}
-    local folder = workspace:FindFirstChild("Flag") or workspace:FindFirstChild("Flags")
-    if folder then
-        for _, d in ipairs(folder:GetDescendants()) do
-            if d:IsA("BasePart") then
-                flagPos[#flagPos + 1] = d.Position
-            end
-        end
-    end
-    for _, o in ipairs(workspace:GetChildren()) do
-        if o:IsA("Model") and string.find(string.lower(o.Name), "flag") then
-            local primary = o.PrimaryPart or o:FindFirstChildWhichIsA("BasePart")
-            if primary then
-                flagPos[#flagPos + 1] = primary.Position
-            end
-        end
-    end
-end
-
-local function hasFlagAbove(tile)
-    refreshFlagPositions()
-    local p = tile.Position
-    local sx, sz = tile.Size.X * 0.55, tile.Size.Z * 0.55
-    for _, fp in ipairs(flagPos) do
-        local dy = fp.Y - p.Y
-        if dy > 0.3 and dy < 6 and math.abs(fp.X - p.X) < sx and math.abs(fp.Z - p.Z) < sz then
-            return true
-        end
-    end
-    return false
-end
-
-local function scanUpvaluesForKey(func, depth)
-    if depth > 3 then
-        return nil
-    end
-    local ok, ups = pcall(debug.getupvalues, func)
-    if not ok or type(ups) ~= "table" then
-        return nil
-    end
-    for _, v in pairs(ups) do
-        if type(v) == "string" and #v >= 10 and tonumber(v) then
-            return v
-        elseif type(v) == "number" and v > 1000 then
-            return tostring(v)
-        elseif type(v) == "function" then
-            local nested = scanUpvaluesForKey(v, depth + 1)
-            if nested then
-                return nested
-            end
-        end
-    end
-    return nil
-end
-
-local function findFlagKey()
-    local salasana = workspace:FindFirstChild("Salasana")
-    if salasana and salasana:IsA("ValueObject") and salasana.Value ~= 0 then
-        return tostring(salasana.Value)
-    end
-    -- the game's MouseControl keeps the key as an upvalue of its own functions
-    if type(getgc) == "function" and type(debug.getupvalues) == "function" then
-        for _, v in pairs(getgc(true)) do
-            if type(v) == "function" then
-                local okI, info = pcall(debug.info, v, "s")
-                if okI and type(info) == "string" and info:find("MouseControl") then
-                    local okU, ups = pcall(debug.getupvalues, v)
-                    if okU and type(ups) == "table" then
-                        local hasRemote, key = false, nil
-                        for _, uv in pairs(ups) do
-                            if typeof(uv) == "Instance" and (uv.Name == "PlaceFlag" or uv.Name == "FlagEvents" or uv.Name == "ReplicatedStorage") then
-                                hasRemote = true
-                            elseif type(uv) == "string" and #uv >= 10 and tonumber(uv) then
-                                key = uv
-                            elseif type(uv) == "number" and uv > 1000 then
-                                key = tostring(uv)
+            
+            if isSubset then
+                local diffMines = B.needed - A.needed
+                local diffSet = {}
+                for _, uB in ipairs(B.unrevealed) do
+                    local inA = false
+                    for _, uA in ipairs(A.unrevealed) do
+                        if uB == uA then inA = true; break end
+                    end
+                    if not inA then table.insert(diffSet, uB) end
+                end
+                
+                if #diffSet > 0 then
+                    if diffMines == 0 then
+                        for _, p in ipairs(diffSet) do
+                            if not knownSafe[p] then
+                                knownSafe[p] = true
+                                clearVisuals(p)
+                                createHighlight(p, Color3.new(0,1,0), "Safe_Highlight")
                             end
                         end
-                        if hasRemote and key then
-                            return key
+                    elseif diffMines == #diffSet then
+                        for _, p in ipairs(diffSet) do
+                            if not knownMines[p] then
+                                knownMines[p] = true
+                                clearVisuals(p)
+                                createHighlight(p, Color3.new(1,0,0), "Mine_Highlight")
+                            end
                         end
                     end
                 end
             end
         end
     end
-    if type(getconnections) == "function" then
-        local mouse = player:GetMouse()
-        for _, event in ipairs({ mouse.Button1Down, mouse.Button2Down }) do
-            for _, conn in ipairs(getconnections(event)) do
-                if conn.Function then
-                    local key = scanUpvaluesForKey(conn.Function, 0)
-                    if key then
-                        return key
-                    end
+
+    -- PASS 3: Best Guess (Yellow)
+    local hasSafeMoves = false
+    for _, _ in pairs(knownSafe) do hasSafeMoves = true; break end
+    
+    if currentBestGuess and (not currentBestGuess:IsDescendantOf(workspace) or knownSafe[currentBestGuess] or knownMines[currentBestGuess] or hasSafeMoves) then
+        if currentBestGuess:IsDescendantOf(workspace) and currentBestGuess:FindFirstChild("Guess_Highlight") then
+            currentBestGuess.Guess_Highlight:Destroy()
+        end
+        currentBestGuess = nil
+    end
+
+    if not hasSafeMoves then
+        local bestPart = nil
+        local lowestProb = 1.1 
+        
+        for part, prob in pairs(probabilityMap) do
+            if not knownMines[part] and not knownSafe[part] then
+                if prob < lowestProb then
+                    lowestProb = prob
+                    bestPart = part
                 end
             end
         end
-    end
-    return nil
-end
-
-local function getFlagKey()
-    if FLAG.key then
-        return FLAG.key
-    end
-    local now = tick()
-    if now - FLAG.keyAt < 5 then
-        return nil
-    end
-    FLAG.keyAt = now
-    FLAG.key = findFlagKey()
-    return FLAG.key
-end
-
--- returns nil when the bot may act, otherwise the reason (ghost game state from MTC GhostGui)
-local function actBlock()
-    if not currentRound() then
-        return "no round running"
-    end
-    local char = player.Character
-    if char and char:GetAttribute("IsGhost") then
-        return "you are a ghost"
-    end
-    local playing = game:GetService("Teams"):FindFirstChild("Playing")
-    if playing and player.Team ~= playing then
-        return "not on the Playing team"
-    end
-    return nil
-end
-
-local function flagNext()
-    local blocked = actBlock()
-    if blocked then
-        flagNote = blocked
-        return false
-    end
-    -- MTC: Info.Flagless turns flags off for the whole round
-    local info = ReplicatedStorage:FindFirstChild("Info")
-    local flagless = info and info:FindFirstChild("Flagless")
-    if flagless and flagless.Value then
-        flagNote = "this round is flagless, flags are off"
-        return false
-    end
-    local root = rootPart()
-    if not root then
-        flagNote = "no character"
-        return false
-    end
-    local events = ReplicatedStorage:FindFirstChild("Events")
-    local flagEvents = events and events:FindFirstChild("FlagEvents")
-    local placeFlag = flagEvents and flagEvents:FindFirstChild("PlaceFlag")
-    if not placeFlag then
-        flagNote = "PlaceFlag remote not found"
-        return false
-    end
-    local key = getFlagKey()
-    if not key then
-        flagNote = "flag key not found, this executor cannot place flags"
-        return false
-    end
-    local now = tick()
-    -- follow the tiles we fired at: a model that shows up means the server has the flag,
-    -- a model that goes away after that means the flag was removed
-    for tile, rec in pairs(FLAG.sent) do
-        if not tile.Parent then
-            FLAG.sent[tile] = nil
-        elseif hasServerFlag(tile) or hasFlagAbove(tile) then
-            rec.seen = true
-            rec.lostAt = nil
-        elseif rec.seen then
-            rec.lostAt = rec.lostAt or now
+        
+        if bestPart and bestPart ~= currentBestGuess then
+            if currentBestGuess and currentBestGuess:IsDescendantOf(workspace) and currentBestGuess:FindFirstChild("Guess_Highlight") then
+                currentBestGuess.Guess_Highlight:Destroy()
+            end
+            currentBestGuess = bestPart
+            createHighlight(bestPart, Color3.fromRGB(255, 255, 0), "Guess_Highlight") 
         end
     end
-    local best, bestD = nil, math.huge
-    local waiting, capped = 0, 0
-    for tile in pairs(FLAG.wanted) do
-        if not tile.Parent then
-            FLAG.wanted[tile] = nil
-        elseif not hasServerFlag(tile) and not hasFlagAbove(tile) then
-            local d = (tile.Position - root.Position).Magnitude
-            if d <= CONFIG.FlagRange then
-                local rec = FLAG.sent[tile]
-                local ready = true
-                if rec then
-                    if rec.fails >= FLAG.maxFails then
-                        ready = false
-                        capped = capped + 1
-                    elseif rec.seen then
-                        -- a flag that was there is gone: put it back at once
-                        ready = now - (rec.lostAt or now) >= FLAG.regap
+end
+
+-------------------------------------------------------------------------------
+-- MAIN SOLVER LOOP
+-------------------------------------------------------------------------------
+
+local function startSolverLoop()
+    task.spawn(function()
+        while isScanning do
+            local validParts = {}
+            local charPos = getCharPos()
+            
+            for _, part in ipairs(cachedParts) do
+                if part and part:IsDescendantOf(workspace) then
+                    table.insert(validParts, part)
+                    
+                    -- Anti-Lag Distance Filter
+                    if isAntiLagOn and charPos then
+                        local dist = (part.Position - charPos).Magnitude
+                        if dist > 60 then
+                            clearVisuals(part)
+                            removeBillboard(part)
+                            numberTiles[part] = nil
+                            knownSafe[part] = nil
+                            knownMines[part] = nil
+                            continue 
+                        end
+                    end
+                    
+                    if not neighborMap[part] then cacheNeighbors(part, false) end
+                    
+                    if isExcluded(part) then
+                        if numberTiles[part] or knownSafe[part] or knownMines[part] then
+                            numberTiles[part] = nil; knownSafe[part] = nil; knownMines[part] = nil
+                            clearVisuals(part)
+                        end
+                    elseif not isUnrevealed(part) and not numberTiles[part] then
+                        local num = getNumber(part)
+                        if num then
+                            numberTiles[part] = num
+                            knownSafe[part] = nil; knownMines[part] = nil
+                            clearVisuals(part)
+                        end
+                    end
+
+                    if isBillboardOn then
+                        updateBillboard(part)
+                    end
+                else
+                    removeBillboard(part)
+                    neighborMap[part] = nil
+                    numberTiles[part] = nil
+                    knownMines[part] = nil
+                    knownSafe[part] = nil
+                end
+            end
+            cachedParts = validParts
+            
+            solveBoard()
+            task.wait(0.12) -- Optimized loop yield
+        end
+    end)
+end
+
+local function onDescendantAdded(descendant)
+    if isScanning and isTileCandidate(descendant) then
+        table.insert(cachedParts, descendant)
+        task.delay(0.1, function() 
+            if descendant:IsDescendantOf(workspace) then 
+                cacheNeighbors(descendant, true) 
+                for _, neighbor in ipairs(neighborMap[descendant] or {}) do
+                    cacheNeighbors(neighbor, true)
+                end
+                requestReset()
+            end 
+        end)
+    end
+end
+
+-------------------------------------------------------------------------------
+-- UI CONNECTIONS
+-------------------------------------------------------------------------------
+
+toggleBtn.MouseButton1Click:Connect(function()
+    if isScanning then
+        isScanning = false
+        isAutoTouching = false
+        pendingReset = false
+        
+        toggleBtn.Text = "START"
+        toggleBtn.TextColor3 = Color3.fromRGB(0, 255, 0)
+        fastBtn.Text = "AUTO TOUCH: OFF"
+        fastBtn.TextColor3 = Color3.fromRGB(0, 255, 255)
+        status.Text = "Status: Offline"
+        status.TextColor3 = Color3.fromRGB(255, 0, 0)
+        
+        for _, conn in pairs(connections) do conn:Disconnect() end
+        connections = {}
+        for _, p in pairs(cachedParts) do if p:IsDescendantOf(workspace) then clearVisuals(p) end end
+        removeAllBillboards()
+        cachedParts = {}; neighborMap = {}; numberTiles = {}; knownMines = {}; knownSafe = {}; currentBestGuess = nil
+    else
+        isScanning = true
+        toggleBtn.Text = "STOP"
+        toggleBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
+        status.Text = "Status: Scanning..."
+        status.TextColor3 = Color3.fromRGB(0, 255, 0)
+        
+        cachedParts = {}; neighborMap = {}
+        
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if isTileCandidate(obj) then 
+                table.insert(cachedParts, obj)
+                cacheNeighbors(obj, false)
+            end
+        end
+        table.insert(connections, workspace.DescendantAdded:Connect(onDescendantAdded))
+        startSolverLoop()
+    end
+end)
+
+-- AUTO TOUCH: Proximity-Prioritized Flagging & Touching
+fastBtn.MouseButton1Click:Connect(function()
+    if not isScanning then return end
+    
+    isAutoTouching = not isAutoTouching 
+    
+    if isAutoTouching then
+        fastBtn.Text = "AUTO TOUCH: ON"
+        fastBtn.TextColor3 = Color3.fromRGB(0, 255, 0)
+        status.Text = "Status: Proximity Active"
+        
+        task.spawn(function()
+            while isAutoTouching and isScanning do
+                if not pendingReset then
+                    local charPos = getCharPos()
+                    refreshFlagCache() -- Ultra-fast cache refresh
+                    
+                    -- 1. GATHER & REMOVE MISPLACED FLAGS (CLOSEST FIRST)
+                    local misplacedFlags = {}
+                    for part, _ in pairs(knownSafe) do
+                        if part and part:IsDescendantOf(workspace) and isUnrevealed(part) and hasFlag(part) then
+                            table.insert(misplacedFlags, part)
+                        end
+                    end
+                    sortByProximity(misplacedFlags, charPos)
+                    
+                    for _, part in ipairs(misplacedFlags) do
+                        if not isAutoTouching or not isScanning or pendingReset then break end
+                        clickTile(part)
+                        task.wait(0.02)
+                    end
+                    
+                    -- 2. GATHER & FLAG MINES (CLOSEST FIRST)
+                    local minesToFlag = {}
+                    for part, _ in pairs(knownMines) do
+                        if part and part:IsDescendantOf(workspace) and isUnrevealed(part) and not hasFlag(part) then
+                            table.insert(minesToFlag, part)
+                        end
+                    end
+                    sortByProximity(minesToFlag, charPos)
+                    
+                    for _, part in ipairs(minesToFlag) do
+                        if not isAutoTouching or not isScanning or pendingReset then break end
+                        clickTile(part)
+                        task.wait(0.02)
+                    end
+                    
+                    -- 3. GATHER & REVEAL SAFE TILES (CLOSEST FIRST)
+                    local safeToReveal = {}
+                    for part, _ in pairs(knownSafe) do
+                        if part and part:IsDescendantOf(workspace) and isUnrevealed(part) and not hasFlag(part) then
+                            table.insert(safeToReveal, part)
+                        end
+                    end
+                    sortByProximity(safeToReveal, charPos)
+                    
+                    if #safeToReveal > 0 then
+                        local batchCount = math.min(#safeToReveal, BATCH_SIZE)
+                        for i = 1, batchCount do
+                            local part = safeToReveal[i]
+                            task.spawn(function()
+                                if isAutoTouching and isScanning and not pendingReset then
+                                    triggerTileTouch(part)
+                                end
+                            end)
+                        end
+                        task.wait(0.05)
                     else
-                        -- fired, no model yet: near tiles are tried again soon, far ones later
-                        local wait = d <= FLAG.near and FLAG.retryNear or FLAG.retryFar
-                        ready = now - rec.t >= wait
-                        if not ready then
-                            waiting = waiting + 1
-                        end
+                        task.wait(0.08)
                     end
-                end
-                if ready and d < bestD then
-                    best, bestD = tile, d
+                else
+                    task.wait(0.1) 
                 end
             end
-        end
-    end
-    if not best then
-        if next(FLAG.wanted) == nil then
-            flagNote = "no certain mines yet"
-        elseif waiting > 0 then
-            flagNote = waiting .. " flag(s) waiting for the server"
-        elseif capped > 0 then
-            flagNote = capped .. " tile(s) gave up after failed flags"
-        else
-            flagNote = "certain mines are out of range or already flagged"
-        end
-        return false
-    end
-    if now - FLAG.lastAny < CONFIG.FlagDelay then
-        flagNote = "waiting for flag delay"
-        return false
-    end
-    local rec = FLAG.sent[best]
-    if rec then
-        -- a flag that showed up before is being put back: not a failed try
-        rec.fails = rec.seen and 0 or rec.fails + 1
+            
+            isAutoTouching = false
+            fastBtn.Text = "AUTO TOUCH: OFF"
+            fastBtn.TextColor3 = Color3.fromRGB(0, 255, 255)
+            if isScanning then status.Text = "Status: Scanning..." end
+        end)
     else
-        rec = { fails = 0 }
-        FLAG.sent[best] = rec
+        isAutoTouching = false
+        fastBtn.Text = "AUTO TOUCH: OFF"
+        fastBtn.TextColor3 = Color3.fromRGB(0, 255, 255)
+        status.Text = "Status: Scanning..."
     end
-    rec.t, rec.seen, rec.lostAt = now, false, nil
-    FLAG.lastAny = now
-    placeFlag:FireServer(best, key, true)
-    flagCount = flagCount + 1
-    flagNote = "flag sent"
-    return true
-end
+end)
 
-local function reportError(r)
-    if r and r.error and r.error ~= lastError then
-        lastError = r.error
-        errorCount = errorCount + 1
-        notify("numbers do not fit: " .. r.error, "Error")
-    end
-end
-
-local function solveBoard(b, mode)
-    local st = { open = b.open, value = b.value, flag = b.flag, exists = b.exists }
-    local total = totalMines()
-    local r = Core.solve(b.W, b.H, st, { totalMines = total, mode = mode })
-    if r.error and total then
-        local r2 = Core.solve(b.W, b.H, st, { mode = mode })
-        if not r2.error then
-            r2.totalIgnored = true
-            return r2
-        end
-    end
-    return r
-end
-
-local function modeName()
-    if CONFIG.Solve then
-        return "rage"
-    end
-    if CONFIG.ShowMarks then
-        return "legit"
-    end
-    return "off"
-end
-
-local function status()
-    local safe = shown and #shown.safe or 0
-    local mines = shown and #shown.mines or 0
-    local ms = (shown and shown.stats and shown.stats.seconds or 0) * 1000
-    return string.format("mode %s | move %s | safe %d | mines %d | solve %.1f ms", modeName(), CONFIG.Movement, safe, mines, ms)
-end
-
-local function setMode(m)
-    if UI.solve and type(UI.solve.Set) == "function" then
-        pcall(function()
-            UI.solve:Set(m == "rage", true)
-        end)
-    end
-    if UI.showMarks and type(UI.showMarks.Set) == "function" then
-        pcall(function()
-            UI.showMarks:Set(m ~= "off", true)
-        end)
-    end
-    CONFIG.Solve = m == "rage"
-    CONFIG.ShowMarks = m ~= "off"
-    lastSolveState = CONFIG.Solve
-    nextESP, nextSolve, nextFlag = 0, 0, 0
-    if m == "off" then
-        clearMarks()
-        lastSig, fastRes, fullRes, shown = nil, nil, nil, nil
-        marksNote = "marks off"
-    end
-end
-
-local function syncUI()
-    if not UI.ready then
-        return
-    end
-    local solve = UI.solve:Get() == true
-    if solve ~= lastSolveState then
-        lastSolveState = solve
-        nextSolve = 0
-        notify(solve and "auto solve on" or "auto solve off", solve and "Success" or "Warning")
-    end
-    CONFIG.Solve = solve
-    CONFIG.ShowMarks = UI.showMarks:Get() == true
-    CONFIG.ShowHeat = UI.showHeat:Get() == true
-    CONFIG.ShowGuess = UI.showGuess:Get() == true
-    CONFIG.HideExplosions = UI.hideExplosions and UI.hideExplosions:Get() == true
-    syncHideExplosions(CONFIG.HideExplosions)
-    CONFIG.IgnoreBullets = UI.ignoreBullets and UI.ignoreBullets:Get() == true
-    CONFIG.IgnoreSpikes = UI.ignoreSpikes and UI.ignoreSpikes:Get() == true
-    guardName("Bullet-Part", CONFIG.IgnoreBullets)
-    guardName("Spike", CONFIG.IgnoreSpikes)
-    CONFIG.SafeWalk = UI.safeWalk and UI.safeWalk:Get() == true
-    local wallH = UI.wallHeight and UI.wallHeight:Get() or GUARD.height
-    if wallH ~= GUARD.height then
-        GUARD.height = wallH
-        clearGuards()
-    end
-    if (not CONFIG.SafeWalk or actBlock()) and next(GUARD.walls) ~= nil then
-        clearGuards()
-    end
-    CONFIG.HalloweenMode = UI.halloween and UI.halloween:Get() or "Off"
-    CONFIG.HalloweenDelay = UI.halloweenDelay and UI.halloweenDelay:Get() or 0
-    CONFIG.AutoFlag = UI.autoFlag:Get() == true
-    CONFIG.FlagDelay = UI.flagDelay:Get()
-    CONFIG.FlagRange = UI.flagRange:Get()
-    CONFIG.ESPInterval = UI.espScan:Get() / 1000
-    CONFIG.SolverInterval = UI.solverScan:Get() / 1000
-    CONFIG.MaxGuessRisk = UI.guessRisk:Get() / 100
-    CONFIG.ShowDistance = UI.showDistance:Get()
-    CONFIG.Opacity = UI.opacity:Get() / 100
-    local teleport = UI.movement:Get() ~= "Walk"
-    CONFIG.Movement = teleport and "hop" or "walk"
-    CONFIG.OpenMethod = (UI.openMethod and UI.openMethod:Get() == "Touch (no move)") and "touch" or "move"
-    CONFIG.HopWait = UI.tpSpeed:Get() / 1000
-    CONFIG.HopBatch = math.floor(UI.tpBatch:Get())
-    CONFIG.HopTimeout = UI.tpTimeout:Get() / 1000
-    CONFIG.WalkSpeed = UI.walkSpeed:Get()
-    CONFIG.MaxWalkTiles = math.floor(UI.maxWalk:Get())
-    CONFIG.WalkWaypointTimeout = UI.walkTimeout:Get() / 1000
-    local cs = { UI.colSafe:Get(), UI.colMine:Get(), UI.colGuess:Get(), UI.colLow:Get(), UI.colHigh:Get() }
-    COLOURS.safe, COLOURS.mine, COLOURS.guess = cs[1], cs[2], cs[3]
-    COLOURS.lowRisk, COLOURS.highRisk = cs[4], cs[5]
-    local parts = {}
-    for _, c in ipairs(cs) do
-        parts[#parts + 1] = string.format("%.3f,%.3f,%.3f", c.R, c.G, c.B)
-    end
-    local sig = table.concat(parts, ";")
-    if sig ~= colourSig then
-        colourSig = sig
-        clearMarks()
-    end
-    UI.tpSpeed:SetVisible(teleport)
-    UI.tpBatch:SetVisible(teleport)
-    UI.tpTimeout:SetVisible(teleport)
-    UI.walkSpeed:SetVisible(not teleport)
-    UI.maxWalk:SetVisible(not teleport)
-    UI.walkTimeout:SetVisible(not teleport)
-end
-
-local function addWanted(b, res)
-    for _, i in ipairs(res.mines or {}) do
-        local tile = b.tileOf[i]
-        if tile then
-            FLAG.wanted[tile] = true
-        end
-    end
-end
-
-local function tickOnce(force)
-    syncUI()
-    if not CONFIG.ShowMarks then
-        clearMarks()
-    end
-    local now = TIME.now()
-    local wantSolve = CONFIG.Solve and not manualPause
-    local wantMarks = CONFIG.ShowMarks
-    local wantFlag = CONFIG.AutoFlag and not manualPause
-    local wantGuard = CONFIG.SafeWalk and not manualPause
-    if not (wantSolve or wantMarks or wantFlag or wantGuard) then
-        lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
-        marksNote = "marks off"
-        flagNote = "off"
-        return
-    end
-    local doMarks = wantMarks and (force or now >= nextESP)
-    local doSolve = wantSolve and (force or now >= nextSolve)
-    local doFlag = wantFlag and (force or now >= nextFlag)
-    local doGuard = wantGuard
-    if not (doMarks or doSolve or doFlag or doGuard) then
-        return
-    end
-    local b, err = readBoard()
-    if not b then
-        clearMarks()
-        clearGuards()
-        lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
-        marksNote = err or "no tiles found"
-        if err and not string.find(err, "no tiles", 1, true) and err ~= lastError then
-            lastError = err
-            errorCount = errorCount + 1
-            notify("board unreadable: " .. err, "Warning")
-        end
-        nextESP = now + CONFIG.ESPInterval
-        nextSolve = now + CONFIG.SolverInterval
-        nextFlag = now + CONFIG.FlagDelay
-        return
-    end
-    board = b
-    if b.numbers == 0 then
-        flagged = {}
-        FLAG.key, FLAG.sent, FLAG.wanted = nil, {}, {}
-    end
-    if b.sig ~= lastSig then
-        lastSig = b.sig
-        fastRes = solveBoard(b, "basic")
-        if not fastRes.error then
-            addWanted(b, fastRes)
-        end
-        fullRes = nil
-        reportError(fastRes)
-    end
-    if not fastRes or fastRes.error then
-        clearMarks()
-        shown = nil
-        marksNote = fastRes and ("solver error: " .. fastRes.error) or "no result"
-        nextESP = now + CONFIG.ESPInterval
-        nextSolve = now + CONFIG.SolverInterval
-        nextFlag = now + CONFIG.FlagDelay
-        return
-    end
-    shown = fullRes or fastRes
-    if doMarks then
-        refreshMarks(b, shown)
-        nextESP = now + CONFIG.ESPInterval
-    end
-    local moved = 0
-    if doSolve then
-        if not actBlock() then
-            moved = act(b, fastRes)
-        end
-        nextSolve = now + ((moved > 0) and 0 or CONFIG.SolverInterval)
-    end
-    local wantFull = (doMarks and (CONFIG.ShowHeat or CONFIG.ShowGuess)) or (doSolve and not actBlock()) or doFlag or doGuard
-    if wantFull and moved == 0 then
-        if not fullRes then
-            task.wait()
-            fullRes = solveBoard(b, "full")
-            if fullRes and not fullRes.error then
-                addWanted(b, fullRes)
-            end
-            reportError(fullRes)
-            if fullRes.error then
-                fullRes = nil
-            end
-        end
-        if fullRes then
-            shown = fullRes
-            if doMarks then
-                refreshMarks(b, fullRes)
-            end
-            if doSolve and not actBlock() then
-                act(b, fullRes)
-            end
-        end
-    end
-    if doGuard then
-        applyGuards(b, shown or fastRes)
-    end
-    do
-        for _, i in ipairs((shown or fastRes).mines) do
-            local tile = b.tileOf[i]
-            if tile then
-                FLAG.wanted[tile] = true
-            end
-        end
-    end
-end
-
-local function stop()
-    alive = false
-    if tileConn then
-        tileConn:Disconnect()
-        tileConn = nil
-    end
-    if pauseConn then
-        pauseConn:Disconnect()
-        pauseConn = nil
-    end
-    syncHideExplosions(false)
-    guardName("Bullet-Part", false)
-    guardName("Spike", false)
-    clearGuards()
-    CONFIG.Solve = false
-    CONFIG.AutoFlag = false
-    CONFIG.HalloweenMode = "Off"
-    clearMarks()
-    lastSig, fastRes, fullRes, shown, board = nil, nil, nil, nil, nil
-    marksNote = "stopped"
-end
-
-local halloweenNote = "off"
-local halloweenCount = 0
-local answeredPopup = nil   -- popup we already answered, cleared when it closes
-local popupSeen = nil       -- when the open popup was first seen
-local popupRef = nil        -- cached Vote frame, rescanned only when it is gone
-local nextHalloween = 0
-
--- the popup rests on screen near Y = 0.5 and the roll tween moves it to Y = 1.7,
--- so "open" means visible and above that line. Yes never hides the frame, so Visible alone is not enough.
-local function popupOpen(vote)
-    local node = vote
-    while node and node ~= player do
-        if node:IsA("LayerCollector") and not node.Enabled then
-            return false
-        end
-        if node:IsA("GuiObject") and not node.Visible then
-            return false
-        end
-        node = node.Parent
-    end
-    return vote.Position.Y.Scale < 1.2
-end
-
-local function findPopup()
-    if popupRef and popupRef.Parent then
-        return popupRef
-    end
-    popupRef = nil
-    local pg = player:FindFirstChildOfClass("PlayerGui")
-    if not pg then
-        return nil
-    end
-    for _, d in ipairs(pg:GetDescendants()) do
-        if d.Name == "Vote" and d:IsA("GuiObject") and d:FindFirstChild("Yes", true) and d:FindFirstChild("No", true) then
-            popupRef = d
-            return d
-        end
-    end
-    return nil
-end
-
--- firesignal runs the same handler a click would. without it: No just hides the popup
--- (what its handler does anyway), Yes goes straight to the RemoteEvent that sits next to the popup.
-local function answerPopup(vote, wantYes)
-    local holder = vote:FindFirstChild(wantYes and "Yes" or "No", true)
-    local btn = holder and holder:FindFirstChildWhichIsA("TextButton", true)
-    if btn and type(firesignal) == "function" then
-        firesignal(btn.Activated)
-        return true
-    end
-    if not wantYes then
-        vote.Visible = false
-        return true
-    end
-    local remote = vote.Parent and vote.Parent:FindFirstChild("RemoteEvent")
-    if remote and remote:IsA("RemoteEvent") then
-        remote:FireServer()
-        return true
-    end
-    return false
-end
-
-local function tickHalloween()
-    local mode = CONFIG.HalloweenMode
-    if not mode or mode == "Off" then
-        halloweenNote, answeredPopup, popupSeen = "off", nil, nil
-        return
-    end
-    if manualPause then
-        halloweenNote = "paused (F8)"
-        return
-    end
-    local now = TIME.now()
-    if now < nextHalloween then
-        return
-    end
-    nextHalloween = now + 0.1
-    local vote = findPopup()
-    if not vote then
-        halloweenNote, popupSeen = "no vote popup in PlayerGui yet", nil
-        nextHalloween = now + 0.5
-        return
-    end
-    if not popupOpen(vote) then
-        answeredPopup, popupSeen = nil, nil
-        halloweenNote = "waiting for a vote"
-        return
-    end
-    if answeredPopup == vote then
-        return
-    end
-    popupSeen = popupSeen or now
-    local wait = (CONFIG.HalloweenDelay or 0) / 1000
-    if now - popupSeen < wait then
-        halloweenNote = string.format("answering in %.1f s", wait - (now - popupSeen))
-        return
-    end
-    local wantYes = mode == "Yes"
-    if answerPopup(vote, wantYes) then
-        answeredPopup = vote
-        halloweenCount = halloweenCount + 1
-        halloweenNote = wantYes and "voted yes" or "vetoed"
+antiLagBtn.MouseButton1Click:Connect(function()
+    isAntiLagOn = not isAntiLagOn
+    if isAntiLagOn then
+        antiLagBtn.Text = "ANTI-LAG: ON"
+        antiLagBtn.TextColor3 = Color3.fromRGB(0, 255, 0)
     else
-        halloweenNote = "cannot answer: no firesignal and no RemoteEvent next to the popup"
-    end
-end
-
--- round stats: a round is the stretch where Info.GameRunning is not false
-local roundStats = { rounds = 0, last = nil, fastest = nil }
-local roundNow = { running = nil, started = 0, moves = 0, flags = 0 }
-local function markRoundStart()
-    roundNow.started = tick()
-    roundNow.moves = moveCount
-    roundNow.flags = flagCount
-end
-local function trackRound()
-    local running = currentRound()
-    if roundNow.running == nil then
-        roundNow.running = running
-        markRoundStart()
-        return
-    end
-    if running and not roundNow.running then
-        markRoundStart()
-    elseif roundNow.running and not running then
-        local secs = tick() - roundNow.started
-        local entry = { secs = secs, opened = moveCount - roundNow.moves, flags = flagCount - roundNow.flags }
-        roundStats.rounds = roundStats.rounds + 1
-        roundStats.last = entry
-        notify(string.format("round over: %d:%02d, %d opened, %d flags", math.floor(secs / 60), math.floor(secs % 60), entry.opened, entry.flags), "Success")
-        if not roundStats.fastest or secs < roundStats.fastest.secs then
-            roundStats.fastest = entry
-        end
-    end
-    roundNow.running = running
-end
-local function fmtRound(e)
-    if not e then
-        return "none yet"
-    end
-    return string.format("%d:%02d, %d opened, %d flags", math.floor(e.secs / 60), math.floor(e.secs % 60), e.opened, e.flags)
-end
-
-task.spawn(function()
-    while alive do
-        local ok, err = pcall(tickOnce, false)
-        if not ok then
-            local text = tostring(err)
-            if text ~= lastError then
-                lastError = text
-                errorCount = errorCount + 1
-                warn("[TokaiHub] " .. text)
-            end
-        end
-        task.wait(CONFIG.Tick)
+        antiLagBtn.Text = "ANTI-LAG: OFF"
+        antiLagBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     end
 end)
 
-task.spawn(function()
-    while alive do
-        local okH, errH = pcall(tickHalloween)
-        if not okH then
-            halloweenNote = "error: " .. tostring(errH)
+billboardBtn.MouseButton1Click:Connect(function()
+    isBillboardOn = not isBillboardOn
+    if isBillboardOn then
+        billboardBtn.Text = "BILLBOARD: ON"
+        billboardBtn.TextColor3 = Color3.fromRGB(0, 255, 0)
+        if isScanning then
+            for _, part in ipairs(cachedParts) do
+                updateBillboard(part)
+            end
         end
-        pcall(trackRound)
-        task.wait(0.05)
+    else
+        billboardBtn.Text = "BILLBOARD: OFF"
+        billboardBtn.TextColor3 = Color3.fromRGB(255, 255, 0)
+        removeAllBillboards()
     end
 end)
 
--- flags run on their own loop and use the mines the solver has already found,
--- so a long hop batch in the solver does not hold them back
-task.spawn(function()
-    while alive do
-        if not CONFIG.AutoFlag then
-            flagNote = "off"
-        elseif manualPause then
-            flagNote = "paused (F8)"
-        else
-            local okF, errF = pcall(flagNext)
-            if not okF then
-                flagNote = "error: " .. tostring(errF)
-            end
-        end
-        task.wait(0.02)
-    end
+destroyBtn.MouseButton1Click:Connect(function()
+    isScanning = false
+    isAutoTouching = false
+    isBillboardOn = false
+    isAntiLagOn = false
+    for _, conn in pairs(connections) do conn:Disconnect() end
+    removeAllBillboards()
+    screenGui:Destroy()
 end)
-
--- counts bullets and spikes that reached the torso while they are guarded
-task.spawn(function()
-    while alive do
-        if CONFIG.IgnoreBullets or CONFIG.IgnoreSpikes then
-            local ch = player.Character
-            local torso = ch and ch:FindFirstChild("Torso")
-            if torso then
-                for _, c in ipairs(workspace:GetChildren()) do
-                    local guarded = (c.Name == "Bullet-Part" and CONFIG.IgnoreBullets) or (c.Name == "Spike" and CONFIG.IgnoreSpikes)
-                    if guarded and c:IsA("BasePart") and not hitGuardCounted[c] then
-                        local reach = math.max(c.Size.X, c.Size.Y, c.Size.Z) / 2 + 2
-                        if (c.Position - torso.Position).Magnitude < reach then
-                            hitGuardCounted[c] = true
-                            hitGuardBlocked = hitGuardBlocked + 1
-                        end
-                    end
-                end
-            end
-        end
-        task.wait(0.05)
-    end
-end)
-
-genv.MS2_STOP = stop
-genv.MS2 = {
-    config = CONFIG,
-    setMode = setMode,
-    step = function()
-        tickOnce(true)
-    end,
-    tick = function()
-        tickOnce(false)
-    end,
-    stop = stop,
-    status = status,
-    note = function()
-        return marksNote
-    end,
-    flagNote = function()
-        return flagNote
-    end,
-}
-notify("TokaiHub ready: Auto solve is in the Solver tab")
-local LIB_PATH = "HawkTokaiLib/Source.luau"
-local LIB_URL = "https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau"
-
-local function loadLibrary()
-    local okRead, src = pcall(readfile, LIB_PATH)
-    if okRead and type(src) == "string" and #src > 0 then
-        local okRun, lib = pcall(function()
-            return loadstring(src)()
-        end)
-        if okRun and type(lib) == "table" then
-            return lib, "local copy"
-        end
-    end
-    local okGet, body = pcall(function()
-        return game:HttpGet(LIB_URL)
-    end)
-    if okGet and type(body) == "string" and #body > 0 then
-        local okRun, lib = pcall(function()
-            return loadstring(body)()
-        end)
-        if okRun and type(lib) == "table" then
-            return lib, "repo"
-        end
-    end
-    return nil, nil
-end
-
-local function buildUI(lib)
-    local Window = lib:CreateWindow({
-        Name = "TokaiHub",
-        LoadingSubtitle = "Minesweeper",
-        ToggleUIKeybind = "RightControl",
-        ConfigurationSaving = { Enabled = true, FolderName = "TokaiHub/Minesweeper" },
-        ToggleButton = { Platform = "Both", Icon = "crosshair" },
-        Backdrop = { Weather = "None", Tint = 0.45 },
-        Home = { Title = "TokaiHub", Welcome = "Minesweeper, ready when you are," },
-    })
-    Window:SetWatermark({ Text = "TokaiHub", FPS = true, Ping = true })
-    UI.window = Window
-    LIB_WINDOW = Window
-    Window:OnUnload(function()
-        stop()
-    end)
-
-    local Solver = Window:CreateTab({ Name = "Solver", Icon = "crosshair" })
-    local Solve = Solver:CreateSubTab({ Name = "Solve" })
-    local Auto = Solve:CreateGroupbox({ Name = "Auto solve", Side = "Left", Icon = "zap" })
-    UI.solve = Auto:CreateToggle({
-        Name = "Auto solve",
-        Desc = "moves onto certain safe tiles, then the best guess",
-        CurrentValue = false,
-    })
-    UI.solverScan = Auto:CreateSlider({
-        Name = "Solver scan speed",
-        Desc = "how often the solver reads the board and acts",
-        Range = { 0, 400 },
-        Increment = 10,
-        Suffix = " ms",
-        CurrentValue = 30,
-        Flag = "MS2_SolverScan",
-    })
-    local Guessing = Solve:CreateGroupbox({ Name = "Guessing", Side = "Right", Icon = "crosshair" })
-    UI.guessRisk = Guessing:CreateSlider({
-        Name = "Max guess risk",
-        Desc = "a guess is only taken at or below this mine chance",
-        Range = { 0, 100 },
-        Increment = 5,
-        Suffix = "%",
-        CurrentValue = 0,
-        Flag = "MS2_GuessRisk",
-    })
-
-    local Movement = Solver:CreateSubTab({ Name = "Movement" })
-    local Route = Movement:CreateGroupbox({ Name = "Move by", Side = "Left", Icon = "sliders-horizontal" })
-    UI.movement = Route:CreateDropdown({
-        Name = "Move by",
-        Options = { "Teleport (TP)", "Walk" },
-        CurrentOption = "Teleport (TP)",
-        AllowNone = false,
-        Flag = "MS2_MoveBy",
-    })
-    UI.openMethod = Route:CreateDropdown({
-        Name = "Open by",
-        Desc = "Touch opens tiles without moving you (TP only), it falls back to Move if it fails",
-        Options = { "Move (TP)", "Touch (no move)" },
-        CurrentOption = "Move (TP)",
-        AllowNone = false,
-        Flag = "MS2_OpenBy",
-    })
-    local TP = Movement:CreateGroupbox({ Name = "Teleport speed", Side = "Left", Icon = "zap" })
-    UI.tpSpeed = TP:CreateSlider({
-        Name = "TP speed",
-        Desc = "how long to stay on each tile; each miss adds 20 ms on the retry",
-        Range = { 0, 300 },
-        Increment = 5,
-        Suffix = " ms",
-        CurrentValue = 20,
-        Flag = "MS2_TPSpeed",
-    })
-    UI.tpBatch = TP:CreateSlider({
-        Name = "Tiles per scan",
-        Range = { 1, 40 },
-        Increment = 1,
-        Suffix = " tiles",
-        CurrentValue = 24,
-        Flag = "MS2_HopBatch",
-    })
-    UI.tpTimeout = TP:CreateSlider({
-        Name = "Give up after",
-        Range = { 50, 1000 },
-        Increment = 10,
-        Suffix = " ms",
-        CurrentValue = 300,
-        Flag = "MS2_TPTimeout",
-    })
-    local Walking = Movement:CreateGroupbox({ Name = "Walking", Side = "Right", Icon = "repeat" })
-    UI.walkSpeed = Walking:CreateSlider({
-        Name = "Walk speed",
-        Range = { 16, 60 },
-        Increment = 2,
-        CurrentValue = 28,
-        Flag = "MS2_WalkSpeed",
-    })
-    UI.maxWalk = Walking:CreateSlider({
-        Name = "Longest walk",
-        Range = { 1, 30 },
-        Increment = 1,
-        Suffix = " tiles",
-        CurrentValue = 12,
-        Flag = "MS2_MaxWalk",
-    })
-    UI.walkTimeout = Walking:CreateSlider({
-        Name = "Waypoint timeout",
-        Range = { 300, 5000 },
-        Increment = 100,
-        Suffix = " ms",
-        CurrentValue = 1500,
-        Flag = "MS2_WalkTimeout",
-    })
-
-    local Flags = Window:CreateTab({ Name = "Flags", Icon = "flag" })
-    local Auto2 = Flags:CreateGroupbox({ Name = "Auto flag", Side = "Left", Icon = "flag" })
-    UI.autoFlag = Auto2:CreateToggle({
-        Name = "Auto flag mines",
-        Desc = "clicks certain mines, works without auto solve",
-        CurrentValue = false,
-    })
-    UI.flagDelay = Auto2:CreateSlider({
-        Name = "Flag delay",
-        Desc = "seconds between two flag checks",
-        Range = { 0.05, 10 },
-        Increment = 0.05,
-        Suffix = " s",
-        CurrentValue = 0.05,
-        Flag = "MS2_FlagDelay",
-    })
-    local Reach = Flags:CreateGroupbox({ Name = "Reach", Side = "Right", Icon = "crosshair" })
-    UI.flagRange = Reach:CreateSlider({
-        Name = "Flag range",
-        Desc = "studs from your character",
-        Range = { 1, 30 },
-        Increment = 1,
-        Suffix = " studs",
-        CurrentValue = 30,
-        Flag = "MS2_FlagStuds",
-    })
-
-    local ESP = Window:CreateTab({ Name = "ESP", Icon = "eye" })
-    local Marks = ESP:CreateSubTab({ Name = "Marks" })
-    local Show = Marks:CreateGroupbox({ Name = "Show", Side = "Left", Icon = "layout-grid" })
-    UI.showMarks = Show:CreateToggle({
-        Name = "Show marks",
-        Desc = "runs on its own, no mode to pick",
-        CurrentValue = true,
-    })
-    UI.showHeat = Show:CreateToggle({
-        Name = "Risk heat",
-        Desc = "colours unknown tiles next to numbers by mine chance",
-        CurrentValue = true,
-    })
-    UI.showGuess = Show:CreateToggle({
-        Name = "Best guess",
-        Desc = "marks the tile the solver would guess",
-        CurrentValue = true,
-    })
-    UI.espScan = Show:CreateSlider({
-        Name = "ESP scan speed",
-        Range = { 30, 1000 },
-        Increment = 10,
-        Suffix = " ms",
-        CurrentValue = 30,
-        Flag = "MS2_ESPScan",
-    })
-    local Look = Marks:CreateGroupbox({ Name = "Distance and opacity", Side = "Right", Icon = "sliders-horizontal" })
-    UI.showDistance = Look:CreateSlider({
-        Name = "Show distance",
-        Desc = "only tiles this close to you; 0 = no limit",
-        Range = { 0, 500 },
-        Increment = 5,
-        Suffix = " studs",
-        CurrentValue = 0,
-        Flag = "MS2_ShowDistance",
-    })
-    UI.opacity = Look:CreateSlider({
-        Name = "Opacity",
-        Range = { 0, 100 },
-        Increment = 5,
-        Suffix = "%",
-        CurrentValue = 60,
-        Flag = "MS2_Opacity",
-    })
-    local Colours = ESP:CreateSubTab({ Name = "Colours" })
-    local Certain = Colours:CreateGroupbox({ Name = "Certain tiles", Side = "Left", Icon = "monitor" })
-    UI.colSafe = Certain:CreateColorPicker({ Name = "Safe tile", Color = COLOURS.safe, Flag = "MS2_ColSafe" })
-    UI.colMine = Certain:CreateColorPicker({ Name = "Mine tile", Color = COLOURS.mine, Flag = "MS2_ColMine" })
-    UI.colGuess = Certain:CreateColorPicker({ Name = "Best guess", Color = COLOURS.guess, Flag = "MS2_ColGuess" })
-    local Heat = Colours:CreateGroupbox({ Name = "Risk heat", Side = "Right", Icon = "monitor" })
-    UI.colLow = Heat:CreateColorPicker({ Name = "Low risk", Color = COLOURS.lowRisk, Flag = "MS2_ColLow" })
-    UI.colHigh = Heat:CreateColorPicker({ Name = "High risk", Color = COLOURS.highRisk, Flag = "MS2_ColHigh" })
-
-    local Status = Window:CreateTab({ Name = "Status", Icon = "activity" })
-    local Session = Status:CreateGroupbox({ Name = "Solver", Side = "Left", Icon = "timer" })
-    Session:CreateStatus({
-        Name = "Auto solve",
-        Pin = true,
-        UpdateRate = 0.25,
-        Update = function()
-            if CONFIG.Solve then
-                return "on", "Success"
-            end
-            return "off", "Warning"
-        end,
-    })
-    Session:CreateStatus({
-        Name = "Board",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            if not board then
-                return "none", "Warning"
-            end
-            return board.info, "Accent"
-        end,
-    })
-    Session:CreateStatus({
-        Name = "Paused",
-        Style = "Badge",
-        UpdateRate = 0.25,
-        Update = function()
-            if manualPause then
-                return "F8", "Warning"
-            end
-            return "running", "Success"
-        end,
-    })
-    Session:CreateStatus({
-        Name = "Marks",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return marksNote
-        end,
-    })
-    Session:CreateStatus({
-        Name = "Safe tiles",
-        Style = "Stat",
-        Pin = true,
-        UpdateRate = 0.25,
-        Update = function()
-            return shown and #shown.safe or 0
-        end,
-    })
-    Session:CreateStatus({
-        Name = "Mines",
-        Style = "Stat",
-        UpdateRate = 0.25,
-        Update = function()
-            return shown and #shown.mines or 0
-        end,
-    })
-    Session:CreateStatus({
-        Name = "Solve time",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            local ms = shown and shown.stats and shown.stats.seconds * 1000 or 0
-            return string.format("%.1f ms", ms)
-        end,
-    })
-    local Health = Status:CreateGroupbox({ Name = "Health", Side = "Right", Icon = "heart-pulse" })
-    Health:CreateStatus({
-        Name = "Round",
-        Style = "Dot",
-        UpdateRate = 0.5,
-        Update = function()
-            if currentRound() then
-                return "Running", "Success"
-            end
-            return "Waiting", "Warning"
-        end,
-    })
-    Health:CreateStatus({
-        Name = "Movement",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return CONFIG.Movement == "walk" and "walk" or "teleport"
-        end,
-    })
-    Health:CreateStatus({
-        Name = "Flag state",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return flagNote
-        end,
-    })
-    Health:CreateStatus({
-        Name = "Flags sent",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return flagCount
-        end,
-    })
-    Health:CreateStatus({
-        Name = "Errors",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return errorCount, errorCount > 0 and "Error" or "Success"
-        end,
-    })
-    Health:CreateStatus({
-        Name = "Last error",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return lastError or "none"
-        end,
-    })
-    Health:CreateStatus({
-        Name = "Exact",
-        Style = "Badge",
-        UpdateRate = 0.5,
-        Update = function()
-            if not shown or not shown.stats then
-                return "none", "Warning"
-            end
-            if shown.stats.exact then
-                return "Exact", "Success"
-            end
-            return "Estimated", "Warning"
-        end,
-    })
-    local Rounds = Status:CreateGroupbox({ Name = "Rounds", Side = "Right", Icon = "trophy" })
-    Rounds:CreateStatus({
-        Name = "Player",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return actBlock() or "playing"
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Mode",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            local info = ReplicatedStorage:FindFirstChild("Info")
-            local flagless = info and info:FindFirstChild("Flagless")
-            if flagless and flagless.Value then
-                return "flagless"
-            end
-            return "normal"
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Hits blocked",
-        Style = "Stat",
-        UpdateRate = 0.5,
-        Update = function()
-            return hitGuardBlocked
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Finished",
-        Style = "Stat",
-        UpdateRate = 0.5,
-        Update = function()
-            return roundStats.rounds
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Last round",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return fmtRound(roundStats.last)
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Fastest",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return fmtRound(roundStats.fastest)
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Mines left",
-        Style = "Stat",
-        UpdateRate = 0.5,
-        Update = function()
-            local total = totalMines()
-            if not total or not board or board.kind ~= "flag" then
-                return "?"
-            end
-            return math.max(0, total - board.flags)
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Opened",
-        Style = "Stat",
-        UpdateRate = 0.5,
-        Update = function()
-            return moveCount
-        end,
-    })
-    Rounds:CreateStatus({
-        Name = "Missed",
-        Style = "Stat",
-        UpdateRate = 0.5,
-        Update = function()
-            return missCount
-        end,
-    })
-    local Jobs = Status:CreateGroupbox({ Name = "Recent tiles", Side = "Left", Icon = "list-checks" })
-    Jobs:CreateStatusList({
-        Name = "Moves",
-        MaxRows = 6,
-        EmptyText = "No moves yet",
-        UpdateRate = 0.5,
-        Update = function()
-            local rows = {}
-            for n, entry in ipairs(recent) do
-                rows[n] = {
-                    Text = "tile " .. entry.tile,
-                    Value = entry.ok and "opened" or "missed",
-                    Tone = entry.ok and "Success" or "Warning",
-                }
-            end
-            return rows
-        end,
-    })
-
-    local Halloween = Window:CreateTab({ Name = "Halloween", Icon = "ghost" })
-    local Vote = Halloween:CreateGroupbox({ Name = "Vote popup", Side = "Left", Icon = "ghost" })
-    UI.halloween = Vote:CreateDropdown({
-        Name = "Halloween vote",
-        Desc = "auto answers the Halloween vote popup",
-        Options = { "Off", "Veto (No)", "Yes" },
-        CurrentOption = "Off",
-        AllowNone = false,
-        Flag = "MS2_Halloween",
-    })
-    UI.halloweenDelay = Vote:CreateSlider({
-        Name = "Answer delay",
-        Desc = "wait this long after the popup opens before answering",
-        Range = { 0, 5000 },
-        Increment = 100,
-        Suffix = " ms",
-        CurrentValue = 0,
-        Flag = "MS2_HalloweenDelay",
-    })
-    local HwStatus = Halloween:CreateGroupbox({ Name = "Status", Side = "Right", Icon = "activity" })
-    HwStatus:CreateStatus({
-        Name = "Vote",
-        Style = "Row",
-        UpdateRate = 0.5,
-        Update = function()
-            return halloweenNote
-        end,
-    })
-    HwStatus:CreateStatus({
-        Name = "Answered",
-        Style = "Stat",
-        UpdateRate = 0.5,
-        Update = function()
-            return halloweenCount
-        end,
-    })
-
-    local Settings = Window:CreateTab({ Name = "Settings", Icon = "settings" })
-    local Interface = Settings:CreateGroupbox({ Name = "Interface", Side = "Left", Icon = "monitor" })
-    UI.hideExplosions = Interface:CreateToggle({
-        Name = "Hide explosions",
-        Desc = "does not draw explosions on the board, same as the game's own setting",
-        CurrentValue = true,
-    })
-    UI.safeWalk = Interface:CreateToggle({
-        Name = "Only safe tiles",
-        Desc = "walls on every cell not proven safe, you cannot step on a bomb. turn off to guess",
-        CurrentValue = false,
-    })
-    UI.wallHeight = Interface:CreateSlider({
-        Name = "Wall height",
-        Desc = "keep it above a normal jump (about 7 studs) so the character cannot climb onto a wall",
-        Range = { 4, 20 },
-        Increment = 1,
-        Suffix = " studs",
-        CurrentValue = 10,
-        Flag = "MS2_WallHeight",
-    })
-    UI.ignoreBullets = Interface:CreateToggle({
-        Name = "Ignore bullets",
-        Desc = "bullets report damage from the client on touch, so a bullet never hits you",
-        CurrentValue = true,
-    })
-    UI.ignoreSpikes = Interface:CreateToggle({
-        Name = "Ignore spikes",
-        Desc = "Halloween spikes report damage from the client on touch, so a spike never hits you",
-        CurrentValue = true,
-    })
-    Interface:CreateKeybind({
-        Name = "Toggle UI",
-        CurrentKeybind = "RightControl",
-        OnChanged = function(key)
-            Window:SetKeybind(key)
-        end,
-    })
-    Interface:CreateButton({
-        Name = "Unload",
-        Icon = "power",
-        Callback = function()
-            lib:Confirm({
-                Title = "Unload TokaiHub?",
-                Content = "The window closes and the solver stops.",
-                Icon = "power",
-                ConfirmText = "Unload",
-                CancelText = "Keep",
-                Callback = function()
-                    Window:Destroy()
-                end,
-            })
-        end,
-    })
-    Settings:CreateConfigManager({ Name = "Configs", Side = "Left" })
-    Settings:CreateThemeManager({ Name = "Themes", Side = "Right" })
-
-    pcall(function()
-        Window:LoadAutoload()
-    end)
-    UI.ready = true
-end
-
-local LIBRARY, libSource = loadLibrary()
-if LIBRARY then
-    LIB = LIBRARY
-    if libSource ~= "local copy" then
-        warn("[TokaiHub] HawkTokaiLib loaded from the repo, not pinned. put Source.luau in HawkTokaiLib/ to pin it")
-    end
-    local okUI, uiErr = pcall(buildUI, LIBRARY)
-    if not okUI then
-        warn("[TokaiHub] ui failed: " .. tostring(uiErr))
-    end
-else
-    warn("[TokaiHub] HawkTokaiLib could not be loaded, the solver runs with its defaults")
-end
-
-genv.MS2.ui = UI

@@ -75,7 +75,13 @@ local Config = {
     fullbright        = false,
     -- RPM
     rpmEnabled        = false,
-    rpmValue          = 600,
+    rpmMultiplier     = 1,
+    rpmPerGun         = {},
+    pumpSpeedOn       = false,
+    pumpSpeed         = 1,
+    reloadSpeedOn     = false,
+    reloadSpeed       = 1,
+    autoHitRange      = 1000,
     -- Aimbot
     aimbotEnabled     = false,
     aimbotSmoothing   = 0.18,
@@ -112,6 +118,13 @@ local Config = {
     churchFarm        = false,
     skyZone           = false,
     fpsBoosterV2      = false,
+    runAndGun         = false,
+    jumpOn            = false,
+    jumpPower         = 30,
+    interactEspOn     = false,
+    autoLoot          = false,
+    lootRange         = 12,
+    lootContainersOnly = true,
     -- Silent Aim dùng chung FOV với aimbot
 }
 
@@ -149,32 +162,111 @@ local function installRecoilHook()
 end
 installRecoilHook()
 
--- ─── RPM HACK ─────────────────────────────────────────────────────────────────
+-- ─── RPM / FIRE RATE (đổi theo từng súng) ─────────────────────────────────────
+-- Chuỗi của game: FetchWeaponInfo (gọi mỗi lần equip) → CreateFullGunset → wepstats.firerate.
+-- Gate bắn đọc firerate * firerate_multiplier. Sniper là firemode "pump": không đổi firerate
+-- (đổi sẽ phá nhịp pump), mà chỉnh CharacterStats.pump_speed_multiplier. Semi giữ nguyên.
+-- Hiệu lực khi equip lại súng.
 
-local function findLastFired()
-    local pg = lp:FindFirstChild("PlayerGui")
-    if not pg then return nil end
-    local scripts = pg:FindFirstChild("Scripts")
-    if not scripts then return nil end
-    local game_folder = scripts:FindFirstChild("Game")
-    if not game_folder then return nil end
-    local mvc = game_folder:FindFirstChild("MAIN_CoreViewmodelController")
-    if not mvc then return nil end
-    local coreConfig = mvc:FindFirstChild("CoreConfig")
-    if not coreConfig then return nil end
-    return coreConfig:FindFirstChild("LastFired")
+local RPM_MIN, RPM_MAX = 10, 2000   -- ClampValues.firerate của game
+
+local function getWeaponNames()
+    local names = {}
+    local ok, list = pcall(function()
+        return game:GetService("ReplicatedStorage").Assets.Weapons.List:GetChildren()
+    end)
+    if ok and list then
+        for _, inst in ipairs(list) do table.insert(names, inst.Name) end
+    end
+    table.sort(names)
+    return names
+end
+
+local function applyRpmToGunset(gunset)
+    if not Config.rpmEnabled or not gunset or not gunset.weapon_stats then return end
+    local ws = gunset.weapon_stats
+    if ws.firemode ~= "auto" and ws.firemode ~= "burst" then return end
+    local base = tonumber(ws.firerate)
+    if not base or base <= 0 then return end
+    local target = Config.rpmPerGun[ws.weapon_name]
+    if not target then
+        if Config.rpmMultiplier == 1 then return end
+        target = base * Config.rpmMultiplier
+    end
+    target = math.clamp(target, RPM_MIN, RPM_MAX)
+    local ratio = target / base
+    ws.firerate = target
+    if ws.firemode == "burst" and tonumber(ws.firerate_burst) then
+        ws.firerate_burst = math.clamp(ws.firerate_burst * ratio, RPM_MIN, RPM_MAX)
+    end
+end
+
+local rpmHooked = false
+local function installRpmHook()
+    if rpmHooked then return true end
+    if not hookfunction then
+        warn("[Tokai] executor không có hookfunction → RPM theo súng không dùng được")
+        return false
+    end
+    local ok, createFn = pcall(function()
+        return require(game:GetService("ReplicatedStorage").Functions.WeaponFramework.Gunsets.CreateFullGunset)
+    end)
+    if not ok or type(createFn) ~= "function" then
+        warn("[Tokai] không lấy được CreateFullGunset")
+        return false
+    end
+    local wrap = newcclosure or function(f) return f end
+    local okHook = pcall(function()
+        local oldCreate
+        oldCreate = hookfunction(createFn, wrap(function(...)
+            local gunset, clamped = oldCreate(...)
+            if Config.rpmEnabled then pcall(applyRpmToGunset, gunset) end
+            return gunset, clamped
+        end))
+    end)
+    rpmHooked = okHook
+    return okHook
+end
+
+-- CharacterStats (Character.CharacterStats): pump_speed_multiplier, reloading_speed_multiplier, infinite_bullets
+local pumpSet, reloadSet, infSet = false, false, false
+
+local function applyCharStats()
+    local char  = lp.Character
+    local stats = char and char:FindFirstChild("CharacterStats")
+    if not stats then return end
+
+    local pump = stats:FindFirstChild("pump_speed_multiplier")
+    if pump and pump:IsA("NumberValue") then
+        if Config.pumpSpeedOn then
+            pump.Value = Config.pumpSpeed; pumpSet = true
+        elseif pumpSet then
+            pump.Value = 1; pumpSet = false
+        end
+    end
+
+    local rel = stats:FindFirstChild("reloading_speed_multiplier")
+    if rel and rel:IsA("NumberValue") then
+        if Config.reloadSpeedOn then
+            rel.Value = Config.reloadSpeed; reloadSet = true
+        elseif reloadSet then
+            rel.Value = 1; reloadSet = false
+        end
+    end
+
+    local inf = stats:FindFirstChild("infinite_bullets")
+    if inf and inf:IsA("BoolValue") then
+        if Config.infiniteAmmo then
+            inf.Value = true; infSet = true
+        elseif infSet then
+            inf.Value = false; infSet = false
+        end
+    end
 end
 
 task.spawn(function()
-    while true do
-        task.wait(0.05)
-        if Config.rpmEnabled then
-            local lastFired = findLastFired()
-            if lastFired then
-                local delay = 60 / Config.rpmValue
-                lastFired.Value = tick() - delay - 0.001
-            end
-        end
+    while task.wait(0.25) do
+        pcall(applyCharStats)
     end
 end)
 
@@ -806,7 +898,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     return oldNamecall(self, ...)
 end))
 
--- ─── AUTO HIT (zombie / boss / bulwark; bắn từng slot primary / secondary / melee) ─
+-- ─── AUTO HIT (zombie / boss / bulwark; payload khớp client: mỗi hit có cast_results) ─
 
 local HIT_SLOTS = {"primary", "secondary", "melee"}
 
@@ -834,6 +926,23 @@ end
 local function isAliveNPC(npc)
     local hum = npc:FindFirstChildOfClass("Humanoid")
     return hum ~= nil and hum.Health > 0
+end
+
+-- cast_results khớp GetRaycastInfoTableFromRaycastResults của game: {part, pos, normal, material, distance}
+local function buildCastResults(part)
+    local cam    = workspace.CurrentCamera
+    local origin = cam and cam.CFrame.Position or part.Position
+    local pos    = part.Position
+    local toCam  = origin - pos
+    local normal = Vector3.new(0, 1, 0)
+    if toCam.Magnitude > 0.001 then normal = toCam.Unit end
+    return {
+        part     = part,
+        pos      = pos,
+        normal   = normal,
+        material = part.Material,
+        distance = (pos - origin).Magnitude,
+    }
 end
 
 local function collectHitTargets(wantZombies, wantBosses, wantBulwark)
@@ -893,27 +1002,37 @@ local function fireHits(targets)
     end
     if #slotEvents == 0 then return end
 
-    local normal, bulwarks = {}, {}
+    local normalHits, bulwarkHits = {}, {}
     for _, t in ipairs(targets) do
-        if t.kind == "bulwark" then
-            table.insert(bulwarks, t)
-        else
-            table.insert(normal, {amount = 1, target = t.model, is_friendly = false, part = t.part})
+        local cast = buildCastResults(t.part)
+        if cast.distance <= Config.autoHitRange then
+            local entry = {
+                cast_results = cast,
+                part         = t.part,
+                amount       = 1,
+                is_friendly  = false,
+                target       = t.model,
+            }
+            if t.kind == "bulwark" then
+                table.insert(bulwarkHits, entry)
+            else
+                table.insert(normalHits, entry)
+            end
         end
     end
 
     for _, re in ipairs(slotEvents) do
-        if #normal > 0 then
-            pcall(function() re:FireServer(normal, {}) end)
+        if #normalHits > 0 then
+            pcall(function() re:FireServer(normalHits, {}) end)
         end
-        for _, t in ipairs(bulwarks) do
+        for _, entry in ipairs(bulwarkHits) do
             local char    = lp.Character
             local root    = char and char:FindFirstChild("HumanoidRootPart")
-            local backPos = getBulwarkBackPosition(t.model)
+            local backPos = getBulwarkBackPosition(entry.target)
             if root and backPos then
                 local original = root.CFrame
-                pcall(function() root.CFrame = CFrame.new(backPos, t.part.Position) end)
-                pcall(function() re:FireServer({{amount = 1, target = t.model, is_friendly = false, part = t.part}}, {}) end)
+                pcall(function() root.CFrame = CFrame.new(backPos, entry.part.Position) end)
+                pcall(function() re:FireServer({entry}, {}) end)
                 pcall(function() root.CFrame = original end)
             end
         end
@@ -1602,6 +1721,139 @@ local function setBoosterV2(on)
         boosterV2Saved = {}
     end
 end
+-- ─── CHARACTER FLAGS + INTERACTABLES (mtc: CharacterStats, tag spawned_interactables, Interact remote) ─
+
+local CollectionService = game:GetService("CollectionService")
+
+local function getCharStat(name)
+    local char  = lp.Character
+    local stats = char and char:FindFirstChild("CharacterStats")
+    return stats and stats:FindFirstChild(name)
+end
+
+-- chỉ khôi phục giá trị mình đã đổi, không đè skill/status của game
+local runGunSet, jumpSet = false, false
+local origRunGun, origJump = false, 30
+
+local function applyCharFlags()
+    local rg = getCharStat("can_run_and_gun")
+    if rg and rg:IsA("BoolValue") then
+        if Config.runAndGun then
+            if not runGunSet then origRunGun = rg.Value; runGunSet = true end
+            rg.Value = true
+        elseif runGunSet then
+            rg.Value = origRunGun; runGunSet = false
+        end
+    end
+
+    local jp = getCharStat("base_jump_power")
+    if jp and jp:IsA("NumberValue") then
+        if Config.jumpOn then
+            if not jumpSet then origJump = jp.Value; jumpSet = true end
+            jp.Value = Config.jumpPower
+        elseif jumpSet then
+            jp.Value = origJump; jumpSet = false
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait(0.25) do
+        pcall(applyCharFlags)
+    end
+end)
+
+-- IsInteractable / GetInteractionSet của game (đúng cách game kiểm tra object có thể interact)
+local interactFns = nil
+local function getInteractFns()
+    if interactFns then return interactFns end
+    local ok, fns = pcall(function()
+        local F = RepStore.Functions
+        return {
+            isInteractable = require(F.Interactables.IsInteractable),
+            getSet         = require(F.Interactables.GetInteractionSet),
+        }
+    end)
+    if ok then interactFns = fns end
+    return interactFns
+end
+
+local function isInteractableObj(obj)
+    local fns = getInteractFns()
+    if not fns then return false end
+    local ok, res = pcall(fns.isInteractable, obj)
+    return ok and res and true or false
+end
+
+-- Interactable ESP
+local espTracked = {}
+
+local function refreshInteractEsp()
+    if not Config.interactEspOn then
+        for obj in pairs(espTracked) do pcall(RemoveHighlight, obj) end
+        espTracked = {}
+        return
+    end
+    for _, obj in ipairs(CollectionService:GetTagged("spawned_interactables")) do
+        if obj.Name ~= "collectible_pickup" and not espTracked[obj] and isInteractableObj(obj) then
+            pcall(AddHighlight, obj, Color3.fromRGB(0, 255, 255), 0.5)
+            espTracked[obj] = true
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait(1) do
+        if Config.interactEspOn or next(espTracked) ~= nil then
+            pcall(refreshInteractEsp)
+        end
+    end
+end)
+
+-- Auto Loot: press (began=true) → giữ đúng `length` của object → release (began=false)
+local lootBusy     = false
+local lootCooldown = {}
+
+local function lootTarget(obj, hold)
+    lootBusy = true
+    local remote = RepStore.Events.Controls.Misc:FindFirstChild("Interact")
+    if remote then
+        pcall(function() remote:FireServer({value = obj, began = true}) end)
+        task.wait((hold or 0) + 0.15)
+        pcall(function() remote:FireServer({value = obj, began = false}) end)
+    end
+    lootBusy = false
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if Config.autoLoot and not lootBusy then
+            pcall(function()
+                local char = lp.Character
+                local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+                local fns  = getInteractFns()
+                if not (hrp and fns) then return end
+                for _, obj in ipairs(CollectionService:GetTagged("spawned_interactables")) do
+                    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
+                    local isContainer = (obj.Name:sub(1, 10) == "container_")
+                        or (obj.Parent ~= nil and obj.Parent.Name:sub(1, 10) == "container_")
+                    if part and obj.Name ~= "collectible_pickup" and obj:IsDescendantOf(workspace)
+                        and (not Config.lootContainersOnly or isContainer)
+                        and (part.Position - hrp.Position).Magnitude <= Config.lootRange
+                        and (lootCooldown[obj] or 0) <= os.clock() then
+                        local okSet, settings = pcall(fns.getSet, obj)
+                        if okSet and settings then
+                            lootCooldown[obj] = os.clock() + 3
+                            lootTarget(obj, settings.length)
+                            return
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
 local function WrapSection(Groupbox)
     local S = {}
     function S:AddToggle(Data)
@@ -1682,8 +1934,15 @@ S_Bring:AddToggle({Name='Bring Zombies', Flag='BringZombies', Default=false, Cal
 S_Bring:AddSlider({Name='Distance', Flag='BringDist', Default=-15, Min=-200, Max=-15, Rounding=0, Callback=function(v) Config.bringDistance=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
-S_GunMods:AddToggle({Name='RPM Hack',         Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
-S_GunMods:AddSlider({Name='RPM',              Flag='RPMValue',      Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
+S_GunMods:AddToggle({Name='RPM Override (auto/burst)', Flag='RPMEnabled', Default=false, Callback=function(v) Config.rpmEnabled=v; if v then installRpmHook() end end})
+S_GunMods:AddSlider({Name='RPM Multiplier (all auto)', Flag='RPMMult', Default=1, Min=0.5, Max=3, Rounding=2, Callback=function(v) Config.rpmMultiplier=v end})
+local rpmGunNames = getWeaponNames()
+local selectedGun = rpmGunNames[1]
+S_GunMods:AddDropdown({Name='Gun', Flag='RPMGun', Values=rpmGunNames, Default=selectedGun, Callback=function(v) selectedGun=v end})
+S_GunMods:AddSlider({Name='Gun RPM (selected)', Flag='RPMGunVal', Default=600, Min=100, Max=2000, Rounding=0, Suffix=' RPM', Callback=function(v) if selectedGun then Config.rpmPerGun[selectedGun]=math.floor(v) end end})
+S_GunMods:AddButton({Name='Clear Gun RPM (selected)', Callback=function() if selectedGun then Config.rpmPerGun[selectedGun]=nil end end})
+S_GunMods:AddToggle({Name='Sniper/Pump Speed', Flag='PumpOn', Default=false, Callback=function(v) Config.pumpSpeedOn=v end})
+S_GunMods:AddSlider({Name='Pump Speed', Flag='PumpSpeed', Default=1, Min=0.5, Max=2, Rounding=2, Callback=function(v) Config.pumpSpeed=v end})
 
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
@@ -1716,6 +1975,7 @@ S_Pickup:AddToggle({Name='Gear ESP',        Flag='GearESP',        Default=false
 S_Pickup:AddToggle({Name='Throwable ESP',   Flag='ThrowableESP',   Default=false, Callback=function(v) Config.throwableESP=v end})
 S_Pickup:AddToggle({Name='Money ESP',       Flag='MoneyESP',       Default=false, Callback=function(v) Config.moneyESP=v end})
 S_Pickup:AddToggle({Name='Container ESP',   Flag='ContainerESP',   Default=false, Callback=function(v) Config.containerESP=v end})
+S_Pickup:AddToggle({Name='Interactable ESP', Flag='InteractESP', Default=false, Callback=function(v) Config.interactEspOn=v; pcall(refreshInteractEsp) end})
 S_Pickup:AddToggle({Name='Collectible ESP', Flag='CollectibleESP', Default=false, Callback=function(v)
     Config.collectibleESP=v
     if not v then
@@ -1787,6 +2047,15 @@ S_Char:AddToggle({Name='Speed Hack',          Flag='SpeedHack',  Default=false, 
 S_Char:AddSlider({Name='Speed',               Flag='SpeedVal',   Default=24, Min=8, Max=100, Rounding=1, Callback=function(v) Config.speedHackValue=v end})
 S_Char:AddToggle({Name='Auto Reload',         Flag='AutoReload', Default=false, Callback=function(v) Config.autoReload=v end})
 S_Char:AddSlider({Name='Reload Interval (s)', Flag='ReloadInt',  Default=2, Min=0.5, Max=10, Rounding=1, Callback=function(v) Config.autoReloadInterval=v end})
+S_Char:AddToggle({Name='Fast Reload', Flag='ReloadOn', Default=false, Callback=function(v) Config.reloadSpeedOn=v end})
+S_Char:AddSlider({Name='Reload Speed', Flag='ReloadSpeed', Default=1, Min=0.5, Max=2, Rounding=2, Callback=function(v) Config.reloadSpeed=v end})
+S_Char:AddToggle({Name='Run & Gun', Flag='RunGun', Default=false, Callback=function(v) Config.runAndGun=v end})
+S_Char:AddToggle({Name='Jump Power', Flag='JumpOn', Default=false, Callback=function(v) Config.jumpOn=v end})
+S_Char:AddSlider({Name='Jump Power Value', Flag='JumpVal', Default=30, Min=10, Max=120, Rounding=0, Callback=function(v) Config.jumpPower=v end})
+local S_Loot = DrawSection(T_Utility, 'Auto Loot', 'right')
+S_Loot:AddToggle({Name='Auto Loot', Flag='AutoLoot', Default=false, Callback=function(v) Config.autoLoot=v end})
+S_Loot:AddSlider({Name='Loot Range', Flag='LootRange', Default=12, Min=4, Max=30, Rounding=0, Callback=function(v) Config.lootRange=v end})
+S_Loot:AddToggle({Name='Containers Only', Flag='LootContainers', Default=true, Callback=function(v) Config.lootContainersOnly=v end})
 S_Char:AddToggle({Name='Fullbright',          Flag='Fullbright', Default=false, Callback=function(v) Config.fullbright=v end})
 S_Char:AddToggle({Name='No Fog',              Flag='NoFog',      Default=false, Callback=function(v) Config.nofog=v end})
 
@@ -1902,5 +2171,16 @@ Library:OnUnload(function()
     setBoosterV2(false)
     if bringConn then pcall(function() bringConn:Disconnect() end) end
     Config.bringZombies = false
+    Config.rpmEnabled = false
+    Config.pumpSpeedOn = false
+    Config.reloadSpeedOn = false
+    Config.infiniteAmmo = false
+    Config.runAndGun = false
+    Config.jumpOn = false
+    Config.autoLoot = false
+    Config.interactEspOn = false
+    pcall(applyCharFlags)
+    pcall(refreshInteractEsp)
+    pcall(applyCharStats)
     Library.Unloaded = true
 end)

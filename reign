@@ -81,6 +81,14 @@ local Config = {
     pumpSpeed         = 1,
     reloadSpeedOn     = false,
     reloadSpeed       = 1,
+    meleeSpeedOn      = false,
+    meleeSpeed        = 1,
+    adsOn             = false,
+    adsSpeed          = 1,
+    pierceOn          = false,
+    pierceCount       = 3,
+    noSpreadOn        = false,
+    noVisualRecoilOn  = false,
     autoHitRange      = 1000,
     -- Aimbot
     aimbotEnabled     = false,
@@ -113,18 +121,17 @@ local Config = {
     hitMelee          = true,
     hitBosses         = false,
     hitBulwark        = false,
+    headForce         = false,
     bringZombies      = false,
     bringDistance     = -15,
     churchFarm        = false,
     skyZone           = false,
     fpsBoosterV2      = false,
     runAndGun         = false,
+    sprintAnywhere    = false,
     jumpOn            = false,
     jumpPower         = 30,
     interactEspOn     = false,
-    autoLoot          = false,
-    lootRange         = 12,
-    lootContainersOnly = true,
     -- Silent Aim dùng chung FOV với aimbot
 }
 
@@ -162,113 +169,161 @@ local function installRecoilHook()
 end
 installRecoilHook()
 
--- ─── RPM / FIRE RATE (đổi theo từng súng) ─────────────────────────────────────
--- Chuỗi của game: FetchWeaponInfo (gọi mỗi lần equip) → CreateFullGunset → wepstats.firerate.
--- Gate bắn đọc firerate * firerate_multiplier. Sniper là firemode "pump": không đổi firerate
--- (đổi sẽ phá nhịp pump), mà chỉnh CharacterStats.pump_speed_multiplier. Semi giữ nguyên.
--- Hiệu lực khi equip lại súng.
+-- ─── GUN MODS (RPM, melee speed, ADS, pierce, spread, visual recoil) ──────────
+-- Chuỗi: FetchWeaponInfo (mỗi lần equip) → CreateFullGunset → gunset.weapon_stats → viewmodel đọc.
+-- Hook CreateFullGunset một lần lúc load; từng flag trong Config quyết định có đổi hay không.
+-- Đổi xong phải equip lại súng/melee mới có hiệu lực.
+local GunMods = {}
+do
+    local RPM_MIN, RPM_MAX = 10, 2000   -- ClampValues.firerate của game
 
-local RPM_MIN, RPM_MAX = 10, 2000   -- ClampValues.firerate của game
-
-local function getWeaponNames()
-    local names = {}
-    local ok, list = pcall(function()
-        return game:GetService("ReplicatedStorage").Assets.Weapons.List:GetChildren()
-    end)
-    if ok and list then
-        for _, inst in ipairs(list) do table.insert(names, inst.Name) end
+    local function clampRpm(v)
+        return math.clamp(v, RPM_MIN, RPM_MAX)
     end
-    table.sort(names)
-    return names
-end
 
-local function applyRpmToGunset(gunset)
-    if not Config.rpmEnabled or not gunset or not gunset.weapon_stats then return end
-    local ws = gunset.weapon_stats
-    if ws.firemode ~= "auto" and ws.firemode ~= "burst" then return end
-    local base = tonumber(ws.firerate)
-    if not base or base <= 0 then return end
-    local target = Config.rpmPerGun[ws.weapon_name]
-    if not target then
-        if Config.rpmMultiplier == 1 then return end
-        target = base * Config.rpmMultiplier
+    local function getWeaponNames()
+        local names = {}
+        local ok, list = pcall(function()
+            return game:GetService("ReplicatedStorage").Assets.Weapons.List:GetChildren()
+        end)
+        if ok and list then
+            for _, inst in ipairs(list) do table.insert(names, inst.Name) end
+        end
+        table.sort(names)
+        return names
     end
-    target = math.clamp(target, RPM_MIN, RPM_MAX)
-    local ratio = target / base
-    ws.firerate = target
-    if ws.firemode == "burst" and tonumber(ws.firerate_burst) then
-        ws.firerate_burst = math.clamp(ws.firerate_burst * ratio, RPM_MIN, RPM_MAX)
-    end
-end
 
-local rpmHooked = false
-local function installRpmHook()
-    if rpmHooked then return true end
-    if not hookfunction then
-        warn("[Tokai] executor không có hookfunction → RPM theo súng không dùng được")
-        return false
-    end
-    local ok, createFn = pcall(function()
-        return require(game:GetService("ReplicatedStorage").Functions.WeaponFramework.Gunsets.CreateFullGunset)
-    end)
-    if not ok or type(createFn) ~= "function" then
-        warn("[Tokai] không lấy được CreateFullGunset")
-        return false
-    end
-    local wrap = newcclosure or function(f) return f end
-    local okHook = pcall(function()
-        local oldCreate
-        oldCreate = hookfunction(createFn, wrap(function(...)
-            local gunset, clamped = oldCreate(...)
-            if Config.rpmEnabled then pcall(applyRpmToGunset, gunset) end
-            return gunset, clamped
-        end))
-    end)
-    rpmHooked = okHook
-    return okHook
-end
+    local function applyGunMods(gunset)
+        local ws = gunset and gunset.weapon_stats
+        if not ws then return end
+        local isMelee = ws.is_melee == true
 
--- CharacterStats (Character.CharacterStats): pump_speed_multiplier, reloading_speed_multiplier, infinite_bullets
-local pumpSet, reloadSet, infSet = false, false, false
+        -- RPM súng (firerate) và nhịp đánh melee (firerate + heavy_melee_firerate)
+        local base = tonumber(ws.firerate)
+        if base and base > 0 then
+            local newRate = nil
+            if isMelee then
+                if Config.meleeSpeedOn then
+                    newRate = base * Config.meleeSpeed
+                    local heavy = tonumber(ws.heavy_melee_firerate)
+                    if heavy then ws.heavy_melee_firerate = clampRpm(heavy * Config.meleeSpeed) end
+                end
+            elseif Config.rpmEnabled then
+                newRate = Config.rpmPerGun[ws.weapon_name]
+                if not newRate and Config.rpmMultiplier ~= 1 then
+                    newRate = base * Config.rpmMultiplier
+                end
+            end
+            if newRate then
+                newRate = clampRpm(newRate)
+                local ratio = newRate / base
+                ws.firerate = newRate
+                local burst = tonumber(ws.firerate_burst)
+                if ws.firemode == "burst" and burst then
+                    ws.firerate_burst = clampRpm(burst * ratio)
+                end
+            end
+        end
 
-local function applyCharStats()
-    local char  = lp.Character
-    local stats = char and char:FindFirstChild("CharacterStats")
-    if not stats then return end
+        if Config.adsOn then
+            local ads = tonumber(ws.aim_speed_multiplier)
+            if ads then ws.aim_speed_multiplier = ads * Config.adsSpeed end
+        end
 
-    local pump = stats:FindFirstChild("pump_speed_multiplier")
-    if pump and pump:IsA("NumberValue") then
-        if Config.pumpSpeedOn then
-            pump.Value = Config.pumpSpeed; pumpSet = true
-        elseif pumpSet then
-            pump.Value = 1; pumpSet = false
+        -- pierce: client raycast (súng và melee) đọc max_piercings để đi xuyên nhiều target
+        if Config.pierceOn then
+            ws.max_piercings = Config.pierceCount
+        end
+
+        if not isMelee then
+            if Config.noSpreadOn then
+                ws.spread = 0
+                ws.spread_base = 0
+                ws.spread_aiming_multiplier = 0
+            end
+            if Config.noVisualRecoilOn then
+                ws.visual_recoil_multiplier = 0
+            end
         end
     end
 
-    local rel = stats:FindFirstChild("reloading_speed_multiplier")
-    if rel and rel:IsA("NumberValue") then
-        if Config.reloadSpeedOn then
-            rel.Value = Config.reloadSpeed; reloadSet = true
-        elseif reloadSet then
-            rel.Value = 1; reloadSet = false
+    local gunHooked = false
+    local function installGunHook()
+        if gunHooked then return true end
+        if not hookfunction then return false end
+        local ok, createFn = pcall(function()
+            return require(game:GetService("ReplicatedStorage").Functions.WeaponFramework.Gunsets.CreateFullGunset)
+        end)
+        if not ok or type(createFn) ~= "function" then return false end
+        local wrap = newcclosure or function(f) return f end
+        local okHook = pcall(function()
+            local oldCreate
+            oldCreate = hookfunction(createFn, wrap(function(...)
+                local gunset, clamped = oldCreate(...)
+                pcall(applyGunMods, gunset)
+                return gunset, clamped
+            end))
+        end)
+        gunHooked = okHook and true or false
+        return gunHooked
+    end
+
+    -- CharacterStats: pump_speed_multiplier, reloading_speed_multiplier, infinite_bullets
+    local pumpSet, reloadSet, infSet = false, false, false
+    local function applyCharStats()
+        local char  = lp.Character
+        local stats = char and char:FindFirstChild("CharacterStats")
+        if not stats then return end
+
+        local pump = stats:FindFirstChild("pump_speed_multiplier")
+        if pump and pump:IsA("NumberValue") then
+            if Config.pumpSpeedOn then
+                pump.Value = Config.pumpSpeed; pumpSet = true
+            elseif pumpSet then
+                pump.Value = 1; pumpSet = false
+            end
+        end
+
+        local rel = stats:FindFirstChild("reloading_speed_multiplier")
+        if rel and rel:IsA("NumberValue") then
+            if Config.reloadSpeedOn then
+                rel.Value = Config.reloadSpeed; reloadSet = true
+            elseif reloadSet then
+                rel.Value = 1; reloadSet = false
+            end
+        end
+
+        local inf = stats:FindFirstChild("infinite_bullets")
+        if inf and inf:IsA("BoolValue") then
+            if Config.infiniteAmmo then
+                inf.Value = true; infSet = true
+            elseif infSet then
+                inf.Value = false; infSet = false
+            end
         end
     end
 
-    local inf = stats:FindFirstChild("infinite_bullets")
-    if inf and inf:IsA("BoolValue") then
-        if Config.infiniteAmmo then
-            inf.Value = true; infSet = true
-        elseif infSet then
-            inf.Value = false; infSet = false
+    task.spawn(function()
+        while task.wait(0.25) do
+            pcall(applyCharStats)
         end
-    end
+    end)
+
+    task.spawn(function()
+        if not hookfunction then
+            warn("[Tokai] executor không có hookfunction → gun mods không dùng được")
+            return
+        end
+        for _ = 1, 40 do
+            if installGunHook() then return end
+            task.wait(0.5)
+        end
+        warn("[Tokai] không hook được CreateFullGunset")
+    end)
+
+    GunMods.getWeaponNames = getWeaponNames
+    GunMods.applyCharStats = applyCharStats
 end
-
-task.spawn(function()
-    while task.wait(0.25) do
-        pcall(applyCharStats)
-    end
-end)
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
@@ -870,6 +925,25 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
+-- ─── HEAD FORCE: đổi part của mọi hit gửi lên RegisterHit thành Head của target ───
+-- Server đọc part của từng entry để tính sát thương (headshot); mình đổi part trước khi gửi.
+local function applyHeadForce(hits)
+    if type(hits) ~= "table" then return end
+    local myChar = lp.Character
+    for _, entry in ipairs(hits) do
+        local target = type(entry) == "table" and entry.target
+        if typeof(target) == "Instance" and target ~= myChar then
+            local head = target:FindFirstChild("Head")
+            if head and head:IsA("BasePart") then
+                entry.part = head
+                if type(entry.cast_results) == "table" then
+                    entry.cast_results.part = head
+                end
+            end
+        end
+    end
+end
+
 -- ─── NAMECALL HOOK ────────────────────────────────────────────────────────────
 
 local RAYCAST_METHOD = "Raycast"
@@ -877,6 +951,14 @@ local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
     if Config.antiKick and self == lp and method:lower() == "kick" then return end
+
+    -- Head Force: mọi lần RegisterHit đều đổi part thành Head (xem applyHeadForce)
+    if Config.headForce and method == "FireServer" and typeof(self) == "Instance" and self.Name == "RegisterHit" then
+        local argc = select("#", ...)
+        local args = {...}
+        applyHeadForce(args[1])
+        return oldNamecall(self, table.unpack(args, 1, argc))
+    end
 
     -- Silent Aim + No Spread
     if method == RAYCAST_METHOD and self == Workspace then
@@ -898,7 +980,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     return oldNamecall(self, ...)
 end))
 
--- ─── AUTO HIT (zombie / boss / bulwark; payload khớp client: mỗi hit có cast_results) ─
+-- ─── AUTO HIT (ngân sách fired_valid của tool; melee không tốn; lọc target bằng CanSourceAttackTarget của game) ─
 
 local HIT_SLOTS = {"primary", "secondary", "melee"}
 
@@ -910,13 +992,46 @@ local function getNamedFolder(...)
     return node
 end
 
-local function getSlotHitEvent(slotName)
+-- CanSourceAttackTarget nằm trong ReplicatedStorage nên client require được; đây là đúng hàm server dùng để nhận hit
+local canAttackFn = nil
+local function getCanAttack()
+    if canAttackFn == nil then
+        local ok, fn = pcall(function()
+            return require(game:GetService("ReplicatedStorage").Functions.Gameplay.DamageSystem.GetValues.CanSourceAttackTarget)
+        end)
+        canAttackFn = ok and fn or false
+    end
+    return canAttackFn
+end
+
+local function getSlotTool(slotName)
     local char = lp.Character
-    local slot = char and char:FindFirstChild(slotName)
-    local se   = slot and slot:FindFirstChild("ServerEvents")
-    local re   = se and se:FindFirstChild("RegisterHit")
+    return char and char:FindFirstChild(slotName) or nil
+end
+
+local function getSlotHitEvent(tool)
+    local se = tool and tool:FindFirstChild("ServerEvents")
+    local re = se and se:FindFirstChild("RegisterHit")
     if re and re:IsA("RemoteEvent") then return re end
     return nil
+end
+
+-- fired_valid: số lần RegisterHit server còn nhận cho tool này (mỗi lần gọi trừ 1, ReloadAmmo cộng lại)
+local function getBudget(tool)
+    local vals = tool and tool:FindFirstChild("Values")
+    local fv   = vals and vals:FindFirstChild("fired_valid")
+    if fv and fv:IsA("NumberValue") then return fv.Value end
+    return nil
+end
+
+local lastReloadAt = {}
+local function kickReload(tool)
+    if not Config.autoReload or not tool then return end
+    if (lastReloadAt[tool] or 0) > os.clock() - 1 then return end
+    lastReloadAt[tool] = os.clock()
+    local se = tool:FindFirstChild("ServerEvents")
+    local rl = se and se:FindFirstChild("ReloadAmmo")
+    if rl and rl:IsA("RemoteEvent") then pcall(function() rl:FireServer(false) end) end
 end
 
 local function getHitPart(npc)
@@ -926,6 +1041,18 @@ end
 local function isAliveNPC(npc)
     local hum = npc:FindFirstChildOfClass("Humanoid")
     return hum ~= nil and hum.Health > 0
+end
+
+-- đúng điều kiện server RegisterHit kiểm tra: có PrimaryPart + CanSourceAttackTarget(attacker, target, true, false)
+local function isValidTarget(npc)
+    if not npc:IsA("Model") or npc.PrimaryPart == nil then return false end
+    if not isAliveNPC(npc) then return false end
+    local fn = getCanAttack()
+    if fn then
+        local ok, res = pcall(fn, lp.Character, npc, true, false)
+        if not (ok and res) then return false end
+    end
+    return true
 end
 
 -- cast_results khớp GetRaycastInfoTableFromRaycastResults của game: {part, pos, normal, material, distance}
@@ -948,7 +1075,7 @@ end
 local function collectHitTargets(wantZombies, wantBosses, wantBulwark)
     local out = {}
     local function add(npc, kind)
-        if not npc:IsA("Model") or not isAliveNPC(npc) then return end
+        if not isValidTarget(npc) then return end
         local part = getHitPart(npc)
         if part then table.insert(out, {model = npc, part = part, kind = kind}) end
     end
@@ -989,18 +1116,30 @@ end
 
 local function fireHits(targets)
     if #targets == 0 then return end
+    local char = lp.Character
+    if not char then return end
 
-    local slotEvents = {}
+    -- mỗi slot đang bật + có tool + có budget thì thành một "kênh" bắn
+    local channels = {}
     for _, slotName in ipairs(HIT_SLOTS) do
         local enabled = (slotName == "primary" and Config.hitPrimary)
             or (slotName == "secondary" and Config.hitSecondary)
             or (slotName == "melee" and Config.hitMelee)
         if enabled then
-            local re = getSlotHitEvent(slotName)
-            if re then table.insert(slotEvents, re) end
+            local tool  = getSlotTool(slotName)
+            local event = getSlotHitEvent(tool)
+            if event then
+                local isMelee = (slotName == "melee")
+                local budget  = isMelee and math.huge or (getBudget(tool) or 0)
+                if budget < 1 then
+                    kickReload(tool)
+                else
+                    table.insert(channels, {event = event, isMelee = isMelee, remaining = budget})
+                end
+            end
         end
     end
-    if #slotEvents == 0 then return end
+    if #channels == 0 then return end
 
     local normalHits, bulwarkHits = {}, {}
     for _, t in ipairs(targets) do
@@ -1021,18 +1160,33 @@ local function fireHits(targets)
         end
     end
 
-    for _, re in ipairs(slotEvents) do
-        if #normalHits > 0 then
-            pcall(function() re:FireServer(normalHits, {}) end)
+    for _, ch in ipairs(channels) do
+        -- một lần gọi RegisterHit = một lần trừ budget, nên gom tất cả target vào một lần gọi
+        if #normalHits > 0 and ch.remaining >= 1 then
+            ch.remaining = ch.remaining - 1
+            pcall(function()
+                if ch.isMelee then
+                    ch.event:FireServer(normalHits, {}, nil, true, false)
+                else
+                    ch.event:FireServer(normalHits, {})
+                end
+            end)
         end
         for _, entry in ipairs(bulwarkHits) do
-            local char    = lp.Character
-            local root    = char and char:FindFirstChild("HumanoidRootPart")
+            if ch.remaining < 1 then break end
+            ch.remaining = ch.remaining - 1
+            local root    = char:FindFirstChild("HumanoidRootPart")
             local backPos = getBulwarkBackPosition(entry.target)
             if root and backPos then
                 local original = root.CFrame
                 pcall(function() root.CFrame = CFrame.new(backPos, entry.part.Position) end)
-                pcall(function() re:FireServer({entry}, {}) end)
+                pcall(function()
+                    if ch.isMelee then
+                        ch.event:FireServer({entry}, {}, nil, true, false)
+                    else
+                        ch.event:FireServer({entry}, {})
+                    end
+                end)
                 pcall(function() root.CFrame = original end)
             end
         end
@@ -1735,6 +1889,7 @@ end
 local runGunSet, jumpSet = false, false
 local origRunGun, origJump = false, 30
 
+local canRunSet, origCanRun = false, true
 local function applyCharFlags()
     local rg = getCharStat("can_run_and_gun")
     if rg and rg:IsA("BoolValue") then
@@ -1746,6 +1901,15 @@ local function applyCharFlags()
         end
     end
 
+    local cr = getCharStat("can_run")
+    if cr and cr:IsA("BoolValue") then
+        if Config.sprintAnywhere then
+            if not canRunSet then origCanRun = cr.Value; canRunSet = true end
+            cr.Value = true
+        elseif canRunSet then
+            cr.Value = origCanRun; canRunSet = false
+        end
+    end
     local jp = getCharStat("base_jump_power")
     if jp and jp:IsA("NumberValue") then
         if Config.jumpOn then
@@ -1771,7 +1935,6 @@ local function getInteractFns()
         local F = RepStore.Functions
         return {
             isInteractable = require(F.Interactables.IsInteractable),
-            getSet         = require(F.Interactables.GetInteractionSet),
         }
     end)
     if ok then interactFns = fns end
@@ -1806,50 +1969,6 @@ task.spawn(function()
     while task.wait(1) do
         if Config.interactEspOn or next(espTracked) ~= nil then
             pcall(refreshInteractEsp)
-        end
-    end
-end)
-
--- Auto Loot: press (began=true) → giữ đúng `length` của object → release (began=false)
-local lootBusy     = false
-local lootCooldown = {}
-
-local function lootTarget(obj, hold)
-    lootBusy = true
-    local remote = RepStore.Events.Controls.Misc:FindFirstChild("Interact")
-    if remote then
-        pcall(function() remote:FireServer({value = obj, began = true}) end)
-        task.wait((hold or 0) + 0.15)
-        pcall(function() remote:FireServer({value = obj, began = false}) end)
-    end
-    lootBusy = false
-end
-
-task.spawn(function()
-    while task.wait(0.5) do
-        if Config.autoLoot and not lootBusy then
-            pcall(function()
-                local char = lp.Character
-                local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-                local fns  = getInteractFns()
-                if not (hrp and fns) then return end
-                for _, obj in ipairs(CollectionService:GetTagged("spawned_interactables")) do
-                    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
-                    local isContainer = (obj.Name:sub(1, 10) == "container_")
-                        or (obj.Parent ~= nil and obj.Parent.Name:sub(1, 10) == "container_")
-                    if part and obj.Name ~= "collectible_pickup" and obj:IsDescendantOf(workspace)
-                        and (not Config.lootContainersOnly or isContainer)
-                        and (part.Position - hrp.Position).Magnitude <= Config.lootRange
-                        and (lootCooldown[obj] or 0) <= os.clock() then
-                        local okSet, settings = pcall(fns.getSet, obj)
-                        if okSet and settings then
-                            lootCooldown[obj] = os.clock() + 3
-                            lootTarget(obj, settings.length)
-                            return
-                        end
-                    end
-                end
-            end)
         end
     end
 end)
@@ -1928,21 +2047,30 @@ S_Aim:AddToggle({Name='Secondary AutoHit', Flag='HitSecondary', Default=true,  C
 S_Aim:AddToggle({Name='Melee AutoHit',     Flag='HitMelee',     Default=true,  Callback=function(v) Config.hitMelee=v end})
 S_Aim:AddToggle({Name='Auto Hit Bosses',   Flag='HitBosses',    Default=false, Callback=function(v) Config.hitBosses=v end})
 S_Aim:AddToggle({Name='Auto Bulwark Hit',  Flag='HitBulwark',   Default=false, Callback=function(v) Config.hitBulwark=v end})
+S_Aim:AddToggle({Name='Head Force', Flag='HeadForce', Default=false, Callback=function(v) Config.headForce=v end})
 
 local S_Bring = DrawSection(T_Combat, 'Bring Zombies', 'right')
 S_Bring:AddToggle({Name='Bring Zombies', Flag='BringZombies', Default=false, Callback=function(v) Config.bringZombies=v end})
 S_Bring:AddSlider({Name='Distance', Flag='BringDist', Default=-15, Min=-200, Max=-15, Rounding=0, Callback=function(v) Config.bringDistance=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
-S_GunMods:AddToggle({Name='RPM Override (auto/burst)', Flag='RPMEnabled', Default=false, Callback=function(v) Config.rpmEnabled=v; if v then installRpmHook() end end})
-S_GunMods:AddSlider({Name='RPM Multiplier (all auto)', Flag='RPMMult', Default=1, Min=0.5, Max=3, Rounding=2, Callback=function(v) Config.rpmMultiplier=v end})
-local rpmGunNames = getWeaponNames()
+S_GunMods:AddToggle({Name='RPM Override (all guns)', Flag='RPMEnabled', Default=false, Callback=function(v) Config.rpmEnabled=v end})
+S_GunMods:AddSlider({Name='RPM Multiplier (all guns)', Flag='RPMMult', Default=1, Min=0.5, Max=5, Rounding=2, Callback=function(v) Config.rpmMultiplier=v end})
+local rpmGunNames = GunMods.getWeaponNames()
 local selectedGun = rpmGunNames[1]
 S_GunMods:AddDropdown({Name='Gun', Flag='RPMGun', Values=rpmGunNames, Default=selectedGun, Callback=function(v) selectedGun=v end})
 S_GunMods:AddSlider({Name='Gun RPM (selected)', Flag='RPMGunVal', Default=600, Min=100, Max=2000, Rounding=0, Suffix=' RPM', Callback=function(v) if selectedGun then Config.rpmPerGun[selectedGun]=math.floor(v) end end})
 S_GunMods:AddButton({Name='Clear Gun RPM (selected)', Callback=function() if selectedGun then Config.rpmPerGun[selectedGun]=nil end end})
 S_GunMods:AddToggle({Name='Sniper/Pump Speed', Flag='PumpOn', Default=false, Callback=function(v) Config.pumpSpeedOn=v end})
 S_GunMods:AddSlider({Name='Pump Speed', Flag='PumpSpeed', Default=1, Min=0.5, Max=2, Rounding=2, Callback=function(v) Config.pumpSpeed=v end})
+S_GunMods:AddToggle({Name='Melee Speed', Flag='MeleeOn', Default=false, Callback=function(v) Config.meleeSpeedOn=v end})
+S_GunMods:AddSlider({Name='Melee Speed Value', Flag='MeleeSpeed', Default=1, Min=0.5, Max=5, Rounding=2, Callback=function(v) Config.meleeSpeed=v end})
+S_GunMods:AddToggle({Name='Fast ADS', Flag='AdsOn', Default=false, Callback=function(v) Config.adsOn=v end})
+S_GunMods:AddSlider({Name='ADS Speed Value', Flag='AdsSpeed', Default=1, Min=0.5, Max=5, Rounding=2, Callback=function(v) Config.adsSpeed=v end})
+S_GunMods:AddToggle({Name='Pierce Hits', Flag='PierceOn', Default=false, Callback=function(v) Config.pierceOn=v end})
+S_GunMods:AddSlider({Name='Pierce Count', Flag='PierceCount', Default=3, Min=1, Max=10, Rounding=0, Callback=function(v) Config.pierceCount=math.floor(v) end})
+S_GunMods:AddToggle({Name='Zero Spread', Flag='GunNoSpread', Default=false, Callback=function(v) Config.noSpreadOn=v end})
+S_GunMods:AddToggle({Name='Zero Visual Recoil', Flag='GunNoVisRecoil', Default=false, Callback=function(v) Config.noVisualRecoilOn=v end})
 
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
@@ -2052,10 +2180,7 @@ S_Char:AddSlider({Name='Reload Speed', Flag='ReloadSpeed', Default=1, Min=0.5, M
 S_Char:AddToggle({Name='Run & Gun', Flag='RunGun', Default=false, Callback=function(v) Config.runAndGun=v end})
 S_Char:AddToggle({Name='Jump Power', Flag='JumpOn', Default=false, Callback=function(v) Config.jumpOn=v end})
 S_Char:AddSlider({Name='Jump Power Value', Flag='JumpVal', Default=30, Min=10, Max=120, Rounding=0, Callback=function(v) Config.jumpPower=v end})
-local S_Loot = DrawSection(T_Utility, 'Auto Loot', 'right')
-S_Loot:AddToggle({Name='Auto Loot', Flag='AutoLoot', Default=false, Callback=function(v) Config.autoLoot=v end})
-S_Loot:AddSlider({Name='Loot Range', Flag='LootRange', Default=12, Min=4, Max=30, Rounding=0, Callback=function(v) Config.lootRange=v end})
-S_Loot:AddToggle({Name='Containers Only', Flag='LootContainers', Default=true, Callback=function(v) Config.lootContainersOnly=v end})
+S_Char:AddToggle({Name='Sprint Anywhere', Flag='SprintAnywhere', Default=false, Callback=function(v) Config.sprintAnywhere=v end})
 S_Char:AddToggle({Name='Fullbright',          Flag='Fullbright', Default=false, Callback=function(v) Config.fullbright=v end})
 S_Char:AddToggle({Name='No Fog',              Flag='NoFog',      Default=false, Callback=function(v) Config.nofog=v end})
 
@@ -2091,6 +2216,8 @@ S_TP:AddButton({Name='Teleport To Player', Callback=teleportToSelectedPlayer})
 S_TP:AddToggle({Name='Church Farm (AutoHit)', Flag='ChurchFarm', Default=false, Callback=function(v) setChurchFarm(v) end})
 S_TP:AddToggle({Name='All Maps SafeZone',     Flag='SkyZone',    Default=false, Callback=function(v) setSkyZone(v) end})
 S_TP:AddButton({Name='Fuse Manually', Callback=function() teleportToMissionItem("item_fuse") end})
+S_TP:AddButton({Name='Elevator Control', Callback=function() teleportToGameObject("elevator_control_modern_simple", nil) end})
+S_TP:AddButton({Name='Elevator Cabin', Callback=function() teleportToGameObject("elevator_cabin_modern", nil) end})
 
 local S_Misc = DrawSection(T_Utility, 'Misc', 'right')
 S_Misc:AddToggle({Name='Anti AFK',  Flag='AntiAFK',  Default=false, Callback=function(v) Config.antiAFK=v end})
@@ -2171,16 +2298,22 @@ Library:OnUnload(function()
     setBoosterV2(false)
     if bringConn then pcall(function() bringConn:Disconnect() end) end
     Config.bringZombies = false
+    Config.headForce = false
     Config.rpmEnabled = false
     Config.pumpSpeedOn = false
     Config.reloadSpeedOn = false
     Config.infiniteAmmo = false
     Config.runAndGun = false
+    Config.sprintAnywhere = false
     Config.jumpOn = false
-    Config.autoLoot = false
     Config.interactEspOn = false
     pcall(applyCharFlags)
     pcall(refreshInteractEsp)
-    pcall(applyCharStats)
+    pcall(GunMods.applyCharStats)
+    Config.meleeSpeedOn = false
+    Config.adsOn = false
+    Config.pierceOn = false
+    Config.noSpreadOn = false
+    Config.noVisualRecoilOn = false
     Library.Unloaded = true
 end)

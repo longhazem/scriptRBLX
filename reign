@@ -1,7 +1,14 @@
-local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
-local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+local Library = loadstring(game:HttpGet('https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/Source.luau'))()
+do
+    local okCfg, errCfg = pcall(function()
+        loadstring(game:HttpGet('https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/addons/Config.luau'))()(Library)
+    end)
+    if not okCfg then warn('[Tokai] không tải được addons/Config.luau: ' .. tostring(errCfg)) end
+    local okEsp, errEsp = pcall(function()
+        Library.ESP = loadstring(game:HttpGet('https://raw.githubusercontent.com/longtokaiikari-source/HawkTokaiLib/refs/heads/main/ESP.luau'))()(Library)
+    end)
+    if not okEsp then warn('[Tokai] không tải được ESP.luau: ' .. tostring(errEsp)) end
+end
 
 local Players         = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -145,7 +152,6 @@ local trackedPickups      = {}
 local originalAmmoValues  = {}
 local originalStaminaValue = nil
 local originalWalkSpeed   = nil
-local drawingPool         = {}
 
 -- ─── NO RECOIL ────────────────────────────────────────────────────────────────
 
@@ -325,23 +331,26 @@ do
     GunMods.applyCharStats = applyCharStats
 end
 
+-- Highlight: mỗi object là một object của Library.ESP (ESPType Highlight). Màu chỉnh ở tab ESP.
 local function AddHighlight(obj, color, transparency)
-    if not obj or not obj.Parent then return end
-    pcall(function()
-        local h = obj:FindFirstChild("TokaiHL") or Instance.new("Highlight")
-        h.Name = "TokaiHL"
-        h.FillColor = color; h.OutlineColor = color
-        h.FillTransparency = transparency or 0.3; h.OutlineTransparency = 0
-        h.Parent = obj; highlightObjects[obj] = true
+    if not obj or not obj.Parent or highlightObjects[obj] or not Library.ESP then return end
+    local ok, esp = pcall(function()
+        return Library.ESP:Add({
+            Model = obj,
+            Name = obj.Name,
+            ESPType = "Highlight",
+            Color = color,
+            MaxDistance = 3000,
+            OnDestroyFunc = function() highlightObjects[obj] = nil end,
+        })
     end)
+    if ok and esp then highlightObjects[obj] = esp end
 end
 
 local function RemoveHighlight(obj)
-    pcall(function()
-        local h = obj:FindFirstChild("TokaiHL")
-        if h then h:Destroy() end
-        highlightObjects[obj] = nil
-    end)
+    local esp = highlightObjects[obj]
+    highlightObjects[obj] = nil
+    if esp and not esp.Deleted then pcall(function() esp:Destroy() end) end
 end
 
 -- ─── HITBOX EXPANDER ──────────────────────────────────────────────────────────
@@ -486,7 +495,7 @@ local function UpdatePickupESP()
     if not gameObjects then return end
     for _, obj in ipairs(gameObjects:GetChildren()) do
         local cfg = resolvePickup(obj.Name)
-        if cfg and Config[cfg.key] and not obj:FindFirstChild("TokaiHL") then
+        if cfg and Config[cfg.key] and not highlightObjects[obj] then
             AddHighlight(obj, cfg.color, 0.3); trackPickup(obj)
         end
     end
@@ -494,7 +503,7 @@ local function UpdatePickupESP()
         local collectibleFolder = gameObjects:FindFirstChild("collectible")
         if collectibleFolder then
             for _, obj in ipairs(collectibleFolder:GetChildren()) do
-                if obj:IsA("Model") and not obj:FindFirstChild("TokaiHL") then
+                if obj:IsA("Model") and not highlightObjects[obj] then
                     AddHighlight(obj, Color3.fromRGB(255, 215, 0), 0.3)
                     trackPickup(obj)
                 end
@@ -503,211 +512,350 @@ local function UpdatePickupESP()
     end
 end
 
--- ─── DRAWING ESP (y chang BRM5) ───────────────────────────────────────────────
+local UpdateEntityESP, buildESPTab   -- hai hàm dùng ngoài khối ESP
+do
+-- ─── ESP (HawkTokaiLib: Library.ESP) ─────────────────────────────────────────
+-- Tab ESP có 2 page: Zombie và Player.
+--   Zombie: mình tạo object bằng Library.ESP:Add, mỗi zombie một object, theo cài đặt page Zombie.
+--   Player: Library.ESP tự vẽ người chơi (Players.Enabled), dùng template Library.ESP.Settings theo page Player.
+--   GlobalConfig là OR của 2 page cho các thành phần vẽ; từng object/template quyết định ai được vẽ.
+local ESPZ = {
+    Enabled = false, MaxDistance = 1500, Color = Color3.fromRGB(255, 60, 60),
+    Box2D = true, Box2DStyle = "Full", Box2DFilled = false, Box3D = false,
+    Name = true, ShowDist = true,
+    Health = true, HealthSide = "Left", HealthGradient = true,
+    Tracer = false, TracerFrom = "Bottom",
+    Arrow = false, ArrowShape = "Triangle", ArrowPlacement = "Edge", ArrowSize = 12,
+    Highlight = false, HighlightDepth = "Through walls", FillTransparency = 0.5, OutlineTransparency = 0,
+    Skeleton = false,
+}
 
-local function CreateDrawingESP()
-    local esp = {
-        BoxOutline    = Drawing.new("Square"),
-        Box           = Drawing.new("Square"),
-        HealthBarOutline = Drawing.new("Square"),
-        HealthBar     = Drawing.new("Square"),
-        Name          = Drawing.new("Text"),
-        Distance      = Drawing.new("Text"),
+local ESPP = {
+    Enabled = false, HideTeammates = false, AllyColor = Color3.fromRGB(0, 255, 0), Color = Color3.fromRGB(0, 200, 255),
+    TeamColours = true, FriendColours = true, FriendColor = Color3.fromRGB(0, 170, 255),
+    ShowDead = false, NearestLimit = 0,
+    Box2D = true, Box2DStyle = "Full", Box2DFilled = false, Box3D = false,
+    DisplayNames = true, TeamName = false, ShowDist = true, Speed = false, Meters = true, DynamicText = true,
+    Health = true, HealthSide = "Left", HealthGradient = true, HealthText = false, DamageText = false,
+    Tracer = false, TracerFrom = "Bottom", TracerTo = "Feet",
+    Arrow = false, ArrowShape = "Triangle", ArrowPlacement = "Edge", ArrowSize = 12, ArrowOutline = true,
+    ArrowScale = false, ArrowFade = false, ArrowMax = 0, ArrowPulse = false,
+    Highlight = false, HighlightDepth = "Through walls", FillTransparency = 0.5, OutlineTransparency = 0,
+    Skeleton = false,
+    VisibleCheck = false, VisibleOnly = false, VisibleEvery = 2,
+    VisibleColor = Color3.fromRGB(0, 255, 0), HiddenColor = Color3.fromRGB(255, 0, 0),
+    Fade = false, FadeStart = 0.6, HeadDots = false, ShowTool = false,
+    Crosshair = false, FOV = false, FOVRadius = 150,
+    Radar = false, RadarRange = 600, RadarSize = 180, Rainbow = false,
+}
+
+-- Page Zombie: mỗi dòng là một control. k = khóa trong ESPZ, lib = không có (zombie là object của mình).
+local ZOMBIE_SPEC = {
+    { g = 'Bật & khoảng cách', t = 'toggle', k = 'Enabled', n = 'Bật Zombie ESP', f = 'ZESP_On' },
+    { g = 'Bật & khoảng cách', t = 'slider', k = 'MaxDistance', n = 'Khoảng cách tối đa', f = 'ZESP_MaxDist', min = 100, max = 5000, inc = 50, sfx = ' st' },
+    { g = 'Bật & khoảng cách', t = 'color', k = 'Color', n = 'Màu zombie', f = 'ZESP_Color' },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Box2D', n = 'Hộp 2D', f = 'ZESP_Box2D' },
+    { g = 'Hộp & tên', t = 'dropdown', k = 'Box2DStyle', n = 'Kiểu hộp', f = 'ZESP_BoxStyle', o = { 'Full', 'Corner' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Box2DFilled', n = 'Tô hộp', f = 'ZESP_BoxFill' },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Box3D', n = 'Hộp 3D', f = 'ZESP_Box3D' },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Name', n = 'Tên zombie', f = 'ZESP_Name' },
+    { g = 'Hộp & tên', t = 'toggle', k = 'ShowDist', n = 'Khoảng cách', f = 'ZESP_Dist' },
+    { g = 'Máu', t = 'toggle', k = 'Health', n = 'Thanh máu', f = 'ZESP_Health' },
+    { g = 'Máu', t = 'dropdown', k = 'HealthSide', n = 'Vị trí thanh máu', f = 'ZESP_HSide', o = { 'Left', 'Right', 'Bottom' } },
+    { g = 'Máu', t = 'toggle', k = 'HealthGradient', n = 'Gradient máu', f = 'ZESP_HGrad' },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'Tracer', n = 'Tracer', f = 'ZESP_Tracer' },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'TracerFrom', n = 'Tracer từ', f = 'ZESP_TFrom', o = { 'Top', 'Bottom', 'Center', 'Mouse' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'Arrow', n = 'Mũi tên ngoài màn hình', f = 'ZESP_Arrow' },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'ArrowShape', n = 'Hình mũi tên', f = 'ZESP_AShape', o = { 'Triangle', 'Chevron', 'Arrow' } },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'ArrowPlacement', n = 'Vị trí mũi tên', f = 'ZESP_APlace', o = { 'Edge', 'Ring' } },
+    { g = 'Đường & mũi tên', t = 'slider', k = 'ArrowSize', n = 'Cỡ mũi tên', f = 'ZESP_ASize', min = 4, max = 30, inc = 1 },
+    { g = 'Highlight & xương', t = 'toggle', k = 'Highlight', n = 'Highlight', f = 'ZESP_HL' },
+    { g = 'Highlight & xương', t = 'dropdown', k = 'HighlightDepth', n = 'Độ sâu highlight', f = 'ZESP_HLDepth', o = { 'Through walls', 'Behind walls' } },
+    { g = 'Highlight & xương', t = 'slider', k = 'FillTransparency', n = 'Độ trong suốt tô', f = 'ZESP_Fill', min = 0, max = 1, inc = 0.05 },
+    { g = 'Highlight & xương', t = 'slider', k = 'OutlineTransparency', n = 'Độ trong suốt viền', f = 'ZESP_Outl', min = 0, max = 1, inc = 0.05 },
+    { g = 'Highlight & xương', t = 'toggle', k = 'Skeleton', n = 'Xương', f = 'ZESP_Skel' },
+}
+
+-- Page Player: lib = đường dẫn trong Library.ESP. Không có lib = do GlobalConfig OR (xem applyESPGlobals).
+local PLAYER_SPEC = {
+    { g = 'Bật & đội', t = 'toggle', k = 'Enabled', n = 'Bật Player ESP', f = 'PESP_On', lib = { 'Players', 'Enabled' } },
+    { g = 'Bật & đội', t = 'toggle', k = 'HideTeammates', n = 'Ẩn đồng đội', f = 'PESP_HideTeam', lib = { 'Players', 'HideTeammates' } },
+    { g = 'Bật & đội', t = 'color', k = 'AllyColor', n = 'Màu đồng minh', f = 'PESP_Ally', lib = { 'Players', 'AllyColor' } },
+    { g = 'Bật & đội', t = 'color', k = 'Color', n = 'Màu người chơi', f = 'PESP_Color', lib = { 'Settings', 'Color' } },
+    { g = 'Bật & đội', t = 'toggle', k = 'TeamColours', n = 'Màu theo đội', f = 'PESP_TeamCol', lib = { 'GlobalConfig', 'TeamColours' } },
+    { g = 'Bật & đội', t = 'toggle', k = 'FriendColours', n = 'Màu bạn bè', f = 'PESP_FriendCol', lib = { 'GlobalConfig', 'FriendColours' } },
+    { g = 'Bật & đội', t = 'color', k = 'FriendColor', n = 'Màu bạn bè (chọn)', f = 'PESP_FriendColor', lib = { 'GlobalConfig', 'FriendColor' } },
+    { g = 'Bật & đội', t = 'toggle', k = 'ShowDead', n = 'Hiện người chết', f = 'PESP_Dead', lib = { 'GlobalConfig', 'ShowDead' } },
+    { g = 'Bật & đội', t = 'slider', k = 'NearestLimit', n = 'Giới hạn người gần nhất (0 = tất cả)', f = 'PESP_Nearest', min = 0, max = 40, inc = 1, lib = { 'GlobalConfig', 'NearestLimit' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Box2D', n = 'Hộp 2D', f = 'PESP_Box2D', lib = { 'Settings', 'Box2D', 'Enabled' } },
+    { g = 'Hộp & tên', t = 'dropdown', k = 'Box2DStyle', n = 'Kiểu hộp', f = 'PESP_BoxStyle', o = { 'Full', 'Corner' }, lib = { 'Settings', 'Box2D', 'Style' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Box2DFilled', n = 'Tô hộp', f = 'PESP_BoxFill', lib = { 'Settings', 'Box2D', 'Filled' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Box3D', n = 'Hộp 3D', f = 'PESP_Box3D', lib = { 'Settings', 'Box3D', 'Enabled' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'DisplayNames', n = 'Tên người chơi', f = 'PESP_Names', lib = { 'GlobalConfig', 'DisplayNames' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'TeamName', n = 'Tên đội', f = 'PESP_TeamName', lib = { 'GlobalConfig', 'TeamName' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'ShowDist', n = 'Khoảng cách', f = 'PESP_Dist' },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Speed', n = 'Tốc độ (m/s)', f = 'PESP_Speed', lib = { 'GlobalConfig', 'Speed' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'Meters', n = 'Đơn vị mét', f = 'PESP_Meters', lib = { 'GlobalConfig', 'Meters' } },
+    { g = 'Hộp & tên', t = 'toggle', k = 'DynamicText', n = 'Chữ tự co giãn', f = 'PESP_DynText', lib = { 'GlobalConfig', 'DynamicText' } },
+    { g = 'Máu', t = 'toggle', k = 'Health', n = 'Thanh máu', f = 'PESP_Health', lib = { 'Settings', 'Health', 'Enabled' } },
+    { g = 'Máu', t = 'dropdown', k = 'HealthSide', n = 'Vị trí thanh máu', f = 'PESP_HSide', o = { 'Left', 'Right', 'Bottom' }, lib = { 'Settings', 'Health', 'Side' } },
+    { g = 'Máu', t = 'toggle', k = 'HealthGradient', n = 'Gradient máu', f = 'PESP_HGrad', lib = { 'Settings', 'Health', 'Gradient' } },
+    { g = 'Máu', t = 'toggle', k = 'HealthText', n = 'Số máu', f = 'PESP_HText', lib = { 'GlobalConfig', 'HealthText' } },
+    { g = 'Máu', t = 'toggle', k = 'DamageText', n = 'Số sát thương', f = 'PESP_DmgText', lib = { 'GlobalConfig', 'DamageText' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'Tracer', n = 'Tracer', f = 'PESP_Tracer', lib = { 'Settings', 'Tracer', 'Enabled' } },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'TracerFrom', n = 'Tracer từ', f = 'PESP_TFrom', o = { 'Top', 'Bottom', 'Center', 'Mouse' }, lib = { 'Settings', 'Tracer', 'From' } },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'TracerTo', n = 'Tracer tới', f = 'PESP_TTo', o = { 'Feet', 'Center', 'Head' }, lib = { 'Settings', 'Tracer', 'To' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'Arrow', n = 'Mũi tên', f = 'PESP_Arrow', lib = { 'Settings', 'Arrow', 'Enabled' } },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'ArrowShape', n = 'Hình mũi tên', f = 'PESP_AShape', o = { 'Triangle', 'Chevron', 'Arrow' }, lib = { 'Settings', 'Arrow', 'Shape' } },
+    { g = 'Đường & mũi tên', t = 'dropdown', k = 'ArrowPlacement', n = 'Vị trí mũi tên', f = 'PESP_APlace', o = { 'Edge', 'Ring' }, lib = { 'Settings', 'Arrow', 'Placement' } },
+    { g = 'Đường & mũi tên', t = 'slider', k = 'ArrowSize', n = 'Cỡ mũi tên', f = 'PESP_ASize', min = 4, max = 30, inc = 1, lib = { 'Settings', 'Arrow', 'Size' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'ArrowOutline', n = 'Viền mũi tên', f = 'PESP_AOut', lib = { 'Settings', 'Arrow', 'Outline' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'ArrowScale', n = 'Phóng theo khoảng cách', f = 'PESP_AScale', lib = { 'Settings', 'Arrow', 'ScaleByDistance' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'ArrowFade', n = 'Mờ theo khoảng cách', f = 'PESP_AFade', lib = { 'Settings', 'Arrow', 'FadeByDistance' } },
+    { g = 'Đường & mũi tên', t = 'slider', k = 'ArrowMax', n = 'Khoảng cách tối đa mũi tên (0 = không giới hạn)', f = 'PESP_AMax', min = 0, max = 2000, inc = 50, lib = { 'Settings', 'Arrow', 'MaxDistance' } },
+    { g = 'Đường & mũi tên', t = 'toggle', k = 'ArrowPulse', n = 'Nhấp nháy khi gần', f = 'PESP_APulse', lib = { 'Settings', 'Arrow', 'Pulse' } },
+    { g = 'Highlight & xương', t = 'toggle', k = 'Highlight', n = 'Highlight', f = 'PESP_HL' },
+    { g = 'Highlight & xương', t = 'dropdown', k = 'HighlightDepth', n = 'Độ sâu highlight', f = 'PESP_HLDepth', o = { 'Through walls', 'Behind walls' }, lib = { 'Settings', 'HighlightDepth' } },
+    { g = 'Highlight & xương', t = 'slider', k = 'FillTransparency', n = 'Độ trong suốt tô', f = 'PESP_Fill', min = 0, max = 1, inc = 0.05, lib = { 'Settings', 'FillTransparency' } },
+    { g = 'Highlight & xương', t = 'slider', k = 'OutlineTransparency', n = 'Độ trong suốt viền', f = 'PESP_Outl', min = 0, max = 1, inc = 0.05, lib = { 'Settings', 'OutlineTransparency' } },
+    { g = 'Highlight & xương', t = 'toggle', k = 'Skeleton', n = 'Xương', f = 'PESP_Skel', lib = { 'Settings', 'Skeleton', 'Enabled' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'VisibleCheck', n = 'Kiểm tra tầm nhìn (xanh/đỏ)', f = 'PESP_VisCheck', lib = { 'GlobalConfig', 'VisibleCheck' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'VisibleOnly', n = 'Chỉ hiện người thấy được', f = 'PESP_VisOnly', lib = { 'GlobalConfig', 'VisibleOnly' } },
+    { g = 'Tầm nhìn & chung', t = 'slider', k = 'VisibleEvery', n = 'Kiểm tra mỗi N khung', f = 'PESP_VisEvery', min = 1, max = 10, inc = 1, lib = { 'GlobalConfig', 'VisibleEvery' } },
+    { g = 'Tầm nhìn & chung', t = 'color', k = 'VisibleColor', n = 'Màu đang thấy', f = 'PESP_VisCol', lib = { 'GlobalConfig', 'VisibleColor' } },
+    { g = 'Tầm nhìn & chung', t = 'color', k = 'HiddenColor', n = 'Màu bị che', f = 'PESP_HidCol', lib = { 'GlobalConfig', 'HiddenColor' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'Fade', n = 'Mờ xa', f = 'PESP_Fade', lib = { 'GlobalConfig', 'Fade' } },
+    { g = 'Tầm nhìn & chung', t = 'slider', k = 'FadeStart', n = 'Bắt đầu mờ (phần của khoảng cách)', f = 'PESP_FadeStart', min = 0.2, max = 1, inc = 0.05, lib = { 'GlobalConfig', 'FadeStart' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'HeadDots', n = 'Chấm đầu', f = 'PESP_HeadDot', lib = { 'GlobalConfig', 'HeadDots' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'ShowTool', n = 'Hiện vũ khí đang cầm', f = 'PESP_Tool', lib = { 'GlobalConfig', 'ShowTool' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'Crosshair', n = 'Tâm ngắm', f = 'PESP_Cross', lib = { 'GlobalConfig', 'Crosshair' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'FOV', n = 'Vòng FOV', f = 'PESP_FOV', lib = { 'GlobalConfig', 'FOV' } },
+    { g = 'Tầm nhìn & chung', t = 'slider', k = 'FOVRadius', n = 'Bán kính FOV', f = 'PESP_FOVR', min = 20, max = 600, inc = 5, lib = { 'GlobalConfig', 'FOVRadius' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'Radar', n = 'Radar', f = 'PESP_Radar', lib = { 'GlobalConfig', 'Radar' } },
+    { g = 'Tầm nhìn & chung', t = 'slider', k = 'RadarRange', n = 'Tầm radar (studs)', f = 'PESP_RRange', min = 50, max = 2000, inc = 25, lib = { 'GlobalConfig', 'RadarRange' } },
+    { g = 'Tầm nhìn & chung', t = 'slider', k = 'RadarSize', n = 'Cỡ radar (px)', f = 'PESP_RSize', min = 80, max = 400, inc = 10, lib = { 'GlobalConfig', 'RadarSize' } },
+    { g = 'Tầm nhìn & chung', t = 'toggle', k = 'Rainbow', n = 'Cầu vồng', f = 'PESP_Rainbow', lib = { 'GlobalConfig', 'Rainbow' } },
+}
+
+local function setPath(root, path, value)
+    local t = root
+    for i = 1, #path - 1 do
+        local k = path[i]
+        if type(t[k]) ~= "table" then t[k] = {} end
+        t = t[k]
+    end
+    t[path[#path]] = value
+end
+
+local function getPath(root, path)
+    local t = root
+    for _, k in ipairs(path) do
+        if type(t) ~= "table" then return nil end
+        t = t[k]
+        if t == nil then return nil end
+    end
+    return t
+end
+
+-- GlobalConfig = OR của hai page cho các thành phần vẽ dùng chung.
+local function applyESPGlobals()
+    local lib = Library.ESP
+    if not (lib and lib.GlobalConfig) then return end
+    local G, Z, P = lib.GlobalConfig, ESPZ, ESPP
+    G.Boxes2D = (Z.Box2D or P.Box2D) and true or false
+    G.Boxes3D = (Z.Box3D or P.Box3D) and true or false
+    G.Health = (Z.Health or P.Health) and true or false
+    G.Tracers = (Z.Tracer or P.Tracer) and true or false
+    G.Arrows = (Z.Arrow or P.Arrow) and true or false
+    G.Skeleton = (Z.Skeleton or P.Skeleton) and true or false
+    G.Highlighters = (Z.Highlight or P.Highlight) and true or false
+    G.Billboards = Z.Name and true or false
+    G.Distance = (Z.ShowDist or P.ShowDist) and true or false
+end
+
+-- Page Player: đẩy mọi cài đặt có lib vào Library.ESP rồi đồng bộ template cho các player đang có.
+local function applyPlayerESP()
+    local lib = Library.ESP
+    if not lib then return end
+    for _, s in ipairs(PLAYER_SPEC) do
+        if s.lib then pcall(setPath, lib, s.lib, ESPP[s.k]) end
+    end
+    pcall(setPath, lib, { 'Settings', 'ESPType' }, ESPP.Highlight and 'Highlight' or 'Text')
+    pcall(function() lib:ApplyTemplate() end)
+    applyESPGlobals()
+end
+
+-- Page Zombie: object riêng cho từng zombie. Đổi cài đặt thì tăng zombieVer, zombie cũ được dựng lại.
+local zombieObjs = {}     -- [Model] = { obj = object của Library.ESP, ver = phiên bản cài đặt }
+local zombieVer = 0
+
+local function zombieSettings(npc)
+    local c = ESPZ
+    return {
+        Model = npc,
+        Name = npc.Name,
+        ESPType = c.Highlight and 'Highlight' or 'Text',
+        Color = c.Color,
+        MaxDistance = c.MaxDistance,
+        HighlightDepth = c.HighlightDepth,
+        FillTransparency = c.FillTransparency,
+        OutlineTransparency = c.OutlineTransparency,
+        Box2D = { Enabled = c.Box2D, Style = c.Box2DStyle, Filled = c.Box2DFilled, Color = c.Color },
+        Box3D = { Enabled = c.Box3D, Color = c.Color },
+        Health = { Enabled = c.Health, Side = c.HealthSide, Gradient = c.HealthGradient },
+        Tracer = { Enabled = c.Tracer, From = c.TracerFrom, Color = c.Color },
+        Arrow = { Enabled = c.Arrow, Shape = c.ArrowShape, Placement = c.ArrowPlacement, Size = c.ArrowSize, Color = c.Color },
+        Skeleton = { Enabled = c.Skeleton, Color = c.Color },
     }
-    esp.BoxOutline.Visible=false; esp.BoxOutline.Color=Color3.new(0,0,0); esp.BoxOutline.Thickness=3; esp.BoxOutline.Transparency=1; esp.BoxOutline.Filled=false; esp.BoxOutline.ZIndex=1
-    esp.Box.Visible=false; esp.Box.Color=Color3.new(1,1,1); esp.Box.Thickness=1; esp.Box.Transparency=1; esp.Box.Filled=false; esp.Box.ZIndex=2
-    esp.HealthBarOutline.Visible=false; esp.HealthBarOutline.Color=Color3.new(0,0,0); esp.HealthBarOutline.Thickness=1; esp.HealthBarOutline.Filled=true; esp.HealthBarOutline.Transparency=1; esp.HealthBarOutline.ZIndex=1
-    esp.HealthBar.Visible=false; esp.HealthBar.Color=Color3.new(0,1,0); esp.HealthBar.Thickness=1; esp.HealthBar.Filled=true; esp.HealthBar.ZIndex=2
-    esp.Name.Visible=false; esp.Name.Color=Color3.new(1,1,1); esp.Name.Size=13; esp.Name.Center=true; esp.Name.Outline=true; esp.Name.Font=2; esp.Name.ZIndex=3
-    esp.Distance.Visible=false; esp.Distance.Color=Color3.new(1,1,1); esp.Distance.Size=12; esp.Distance.Center=true; esp.Distance.Outline=true; esp.Distance.Font=2; esp.Distance.ZIndex=3
-    esp.Tracer = Drawing.new("Line"); esp.Tracer.Visible=false; esp.Tracer.Color=Color3.new(1,1,1); esp.Tracer.Thickness=1; esp.Tracer.Transparency=1
-    esp.Corners = {}
-    for i = 1, 8 do
-        local l = Drawing.new("Line"); l.Visible=false; l.Thickness=1; l.Color=Color3.new(1,1,1)
-        table.insert(esp.Corners, l)
-    end
-    return esp
 end
 
-local function SetAllVisible(d, visible)
-    local boxOn = visible and Config.UseBoxESP
-    pcall(function() d.Box.Visible=boxOn; d.BoxOutline.Visible=boxOn end)
-    pcall(function() d.Name.Visible=visible and Config.ShowNames end)
-    pcall(function() d.Distance.Visible=visible and Config.ShowDistance end)
-    local healthOn = visible and Config.ShowHealth
-    pcall(function() d.HealthBar.Visible=healthOn; d.HealthBarOutline.Visible=healthOn end)
-    pcall(function() d.Tracer.Visible=visible and Config.UseTracers end)
-    if not visible then
-        for _, l in ipairs(d.Corners) do pcall(function() l.Visible=false end) end
-    end
+local function removeZombieObj(npc)
+    local rec = zombieObjs[npc]
+    zombieObjs[npc] = nil
+    if rec and rec.obj and not rec.obj.Deleted then pcall(function() rec.obj:Destroy() end) end
 end
 
-local function RemoveDrawingESP(d, highlight)
-    pcall(function() d.Box:Remove() end); pcall(function() d.BoxOutline:Remove() end)
-    pcall(function() d.Name:Remove() end); pcall(function() d.Distance:Remove() end)
-    pcall(function() d.HealthBar:Remove() end); pcall(function() d.HealthBarOutline:Remove() end)
-    pcall(function() d.Tracer:Remove() end)
-    for _, l in ipairs(d.Corners) do pcall(function() l:Remove() end) end
-    if highlight then pcall(function() highlight:Destroy() end) end
-end
-
-local function UpdateDrawingForModel(model, espData, entityColor, showBox, showHealth, showName, showDist)
-    local d = espData.Drawing
-    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
-    if not root then SetAllVisible(d, false); return end
-    local worldPos = root.Position
-    local dist = (camera.CFrame.Position - worldPos).Magnitude
-    if dist > Config.MaxDistance then SetAllVisible(d, false); return end
-    local fid = espData.FrameId or 0
-    espData.FrameId = fid + 1
-    if dist > 1500 and (fid % 4) ~= 0 then return end
-    if dist > 500  and (fid % 2) ~= 0 then return end
-    local screenPt, onScreen = camera:WorldToViewportPoint(worldPos)
-    if not onScreen then SetAllVisible(d, false); return end
-    local screenPos = Vector2.new(screenPt.X, screenPt.Y)
-    if Config.UseHighlight then
-        if not espData.Highlight then
-            local h = Instance.new("Highlight")
-            h.FillColor = entityColor; h.OutlineColor = entityColor
-            h.FillTransparency = 0.6; h.OutlineTransparency = 0
-            pcall(function() h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop end)
-            h.Parent = model; espData.Highlight = h
-        end
-        espData.Highlight.FillColor = entityColor; espData.Highlight.OutlineColor = entityColor
-    else
-        if espData.Highlight then
-            pcall(function() espData.Highlight:Destroy() end); espData.Highlight = nil
-        end
-    end
-    local height = 6.5
-    local topPt    = camera:WorldToViewportPoint(worldPos + Vector3.new(0,  height*0.5, 0))
-    local bottomPt = camera:WorldToViewportPoint(worldPos - Vector3.new(0,  height*0.5, 0))
-    local boxHeight = math.abs(bottomPt.Y - topPt.Y)
-    if boxHeight < 4 then SetAllVisible(d, false); return end
-    local boxWidth = boxHeight * 0.6
-    local boxPosition = Vector2.new(screenPos.X - boxWidth*0.5, screenPos.Y - boxHeight*0.5)
-    local boxColor = Config.BoxColor or entityColor
-    if showBox and Config.UseBoxESP then
-        if Config.BoxStyle == "Corner" then
-            pcall(function() d.Box.Visible=false; d.BoxOutline.Visible=false end)
-            local cl = math.min(boxWidth, boxHeight) * 0.25
-            local corners = d.Corners
-            local bpX,bpY = boxPosition.X, boxPosition.Y
-            local rx, by = bpX+boxWidth, bpY+boxHeight
-            pcall(function()
-                corners[1].From=Vector2.new(bpX,bpY);  corners[1].To=Vector2.new(bpX+cl,bpY); corners[1].Color=boxColor; corners[1].Visible=true
-                corners[2].From=Vector2.new(bpX,bpY);  corners[2].To=Vector2.new(bpX,bpY+cl); corners[2].Color=boxColor; corners[2].Visible=true
-                corners[3].From=Vector2.new(rx,bpY);   corners[3].To=Vector2.new(rx-cl,bpY);  corners[3].Color=boxColor; corners[3].Visible=true
-                corners[4].From=Vector2.new(rx,bpY);   corners[4].To=Vector2.new(rx,bpY+cl);  corners[4].Color=boxColor; corners[4].Visible=true
-                corners[5].From=Vector2.new(bpX,by);   corners[5].To=Vector2.new(bpX+cl,by);  corners[5].Color=boxColor; corners[5].Visible=true
-                corners[6].From=Vector2.new(bpX,by);   corners[6].To=Vector2.new(bpX,by-cl);  corners[6].Color=boxColor; corners[6].Visible=true
-                corners[7].From=Vector2.new(rx,by);    corners[7].To=Vector2.new(rx-cl,by);   corners[7].Color=boxColor; corners[7].Visible=true
-                corners[8].From=Vector2.new(rx,by);    corners[8].To=Vector2.new(rx,by-cl);   corners[8].Color=boxColor; corners[8].Visible=true
-            end)
-        else
-            pcall(function()
-                if d.Corners[1].Visible then for _, l in ipairs(d.Corners) do l.Visible=false end end
-                d.BoxOutline.Size=Vector2.new(boxWidth,boxHeight); d.BoxOutline.Position=boxPosition; d.BoxOutline.Visible=true
-                d.Box.Size=Vector2.new(boxWidth,boxHeight); d.Box.Position=boxPosition; d.Box.Color=boxColor; d.Box.Visible=true
-            end)
-        end
-    else
-        pcall(function() d.Box.Visible=false; d.BoxOutline.Visible=false end)
-        for _, l in ipairs(d.Corners) do pcall(function() l.Visible=false end) end
-    end
-    if showName and Config.ShowNames then
-        pcall(function()
-            d.Name.Text = model.Name ~= "" and model.Name or "Enemy"
-            d.Name.Position = Vector2.new(screenPos.X, boxPosition.Y - 16)
-            d.Name.Color = entityColor; d.Name.Visible = true
-        end)
-    else pcall(function() d.Name.Visible=false end) end
-    if showDist and Config.ShowDistance then
-        pcall(function()
-            local distY = boxPosition.Y + boxHeight + 2
-            if Config.HealthBarSide == "Bottom" then distY = distY + 6 end
-            d.Distance.Text = string.format("[%dm]", math.floor(dist * 0.28))
-            d.Distance.Position = Vector2.new(screenPos.X, distY)
-            d.Distance.Visible = true
-        end)
-    else pcall(function() d.Distance.Visible=false end) end
-    if showHealth and Config.ShowHealth then
-        pcall(function()
-            local humanoid = model:FindFirstChild("Humanoid")
-            local hValues  = humanoid and humanoid:FindFirstChild("Values")
-            local healthNV = hValues and hValues:FindFirstChild("Health")
-            local maxNV    = healthNV and healthNV:FindFirstChild("Max")
-            local pct = 1
-            if healthNV and maxNV and maxNV.Value > 0 then
-                pct = math.clamp(healthNV.Value / maxNV.Value, 0, 1)
-            elseif humanoid and humanoid.MaxHealth > 0 then
-                pct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-            end
-            local barColor = Config.UseHealthGradient and Color3.fromHSV(pct*0.33,1,1) or Config.HealthBarColor
-            local barSize, barPos, outlineSize, outlinePos
-            if Config.HealthBarSide == "Bottom" then
-                local barW = boxWidth * pct
-                barSize=Vector2.new(barW,4); barPos=Vector2.new(boxPosition.X,boxPosition.Y+boxHeight+2)
-                outlineSize=Vector2.new(boxWidth+2,6); outlinePos=Vector2.new(boxPosition.X-1,boxPosition.Y+boxHeight+1)
-            elseif Config.HealthBarSide == "Right" then
-                local barH = boxHeight * pct
-                barSize=Vector2.new(2,barH); barPos=Vector2.new(boxPosition.X+boxWidth+3,boxPosition.Y+(boxHeight-barH))
-                outlineSize=Vector2.new(4,boxHeight+2); outlinePos=Vector2.new(boxPosition.X+boxWidth+2,boxPosition.Y-1)
-            else
-                local barH = boxHeight * pct
-                barSize=Vector2.new(2,barH); barPos=Vector2.new(boxPosition.X-5,boxPosition.Y+(boxHeight-barH))
-                outlineSize=Vector2.new(4,boxHeight+2); outlinePos=Vector2.new(boxPosition.X-6,boxPosition.Y-1)
-            end
-            d.HealthBarOutline.Size=outlineSize; d.HealthBarOutline.Position=outlinePos; d.HealthBarOutline.Visible=true
-            d.HealthBar.Size=barSize; d.HealthBar.Position=barPos; d.HealthBar.Color=barColor; d.HealthBar.Visible=true
-        end)
-    else pcall(function() d.HealthBar.Visible=false; d.HealthBarOutline.Visible=false end) end
-    if Config.UseTracers then
-        pcall(function()
-            local vp = camera.ViewportSize
-            d.Tracer.From=Vector2.new(vp.X*0.5,vp.Y)
-            d.Tracer.To=Vector2.new(screenPos.X,boxPosition.Y+boxHeight)
-            d.Tracer.Color=entityColor; d.Tracer.Visible=true
-        end)
-    else pcall(function() d.Tracer.Visible=false end) end
-end
-
-local function UpdateEntityESP()
+local function syncZombieESP()
+    if not Library.ESP then return end
     local alive = {}
-    if Config.zombieESP then
-        local container = getEnemyContainer()
-        if container then
-            for _, zombie in ipairs(container:GetChildren()) do
-                if zombie:IsA("Model") and zombie:FindFirstChild("Humanoid") then
-                    alive[zombie] = true
-                    if not drawingPool[zombie] then
-                        drawingPool[zombie] = {Drawing = CreateDrawingESP(), Highlight = nil, FrameId = 0}
+    local container = ESPZ.Enabled and getEnemyContainer() or nil
+    if container then
+        for _, npc in ipairs(container:GetChildren()) do
+            if npc:IsA('Model') and not Players:GetPlayerFromCharacter(npc) then
+                local hum = npc:FindFirstChildOfClass('Humanoid')
+                if hum and hum.Health > 0 then
+                    alive[npc] = true
+                    local rec = zombieObjs[npc]
+                    if not rec or rec.ver ~= zombieVer then
+                        removeZombieObj(npc)
+                        local ok, obj = pcall(function() return Library.ESP:Add(zombieSettings(npc)) end)
+                        if ok and obj then zombieObjs[npc] = { obj = obj, ver = zombieVer } end
                     end
-                    UpdateDrawingForModel(zombie, drawingPool[zombie], Config.ZombieColor,
-                        Config.zombieBox, Config.zombieHealth, Config.zombieName, Config.zombieDistance)
                 end
             end
         end
     end
-    if Config.playerESP then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
-                local char = player.Character
-                alive[char] = true
-                if not drawingPool[char] then
-                    drawingPool[char] = {Drawing = CreateDrawingESP(), Highlight = nil, FrameId = 0}
-                end
-                UpdateDrawingForModel(char, drawingPool[char], Config.PlayerColor,
-                    Config.playerBox, Config.playerHealth, Config.playerName, Config.playerDistance)
+    for npc in pairs(zombieObjs) do
+        if not alive[npc] then removeZombieObj(npc) end
+    end
+end
+
+local function applyZombieESP()
+    applyESPGlobals()
+    zombieVer = zombieVer + 1
+    pcall(syncZombieESP)
+end
+
+local entityESPNext = 0
+UpdateEntityESP = function()
+    local now = os.clock()
+    if now < entityESPNext then return end
+    entityESPNext = now + 0.25
+    pcall(syncZombieESP)
+end
+
+-- Đồng bộ UI với Library.ESP (khi mở, khi nhập preset).
+local espHandles = {}     -- [Flag] = element của page Player
+local function pullESPFromLib()
+    local lib = Library.ESP
+    if not lib then return end
+    for _, s in ipairs(PLAYER_SPEC) do
+        if s.lib then
+            local v = getPath(lib, s.lib)
+            if v ~= nil then
+                ESPP[s.k] = v
+                local h = espHandles[s.f]
+                if h and h.Set then pcall(function() h:Set(v, true) end) end
             end
         end
     end
-    for model, espData in pairs(drawingPool) do
-        if not alive[model] then
-            RemoveDrawingESP(espData.Drawing, espData.Highlight)
-            drawingPool[model] = nil
-        end
+end
+
+local function onESPChanged(isPlayer)
+    if isPlayer then applyPlayerESP() else applyZombieESP() end
+end
+
+local function specToElement(page, groups, s, state, isPlayer)
+    local g = groups[s.g]
+    if not g then
+        groups._n = (groups._n or 0) + 1
+        g = page:CreateGroupbox({ Name = s.g, Side = (groups._n % 2 == 1) and 'Left' or 'Right' })
+        groups[s.g] = g
     end
+    local h
+    if s.t == 'toggle' then
+        h = g:CreateToggle({
+            Name = s.n, Flag = s.f, CurrentValue = state[s.k] == true,
+            Callback = function(v) state[s.k] = v and true or false; onESPChanged(isPlayer) end,
+        })
+    elseif s.t == 'slider' then
+        h = g:CreateSlider({
+            Name = s.n, Flag = s.f, Range = { s.min, s.max }, Increment = s.inc,
+            Suffix = s.sfx or '', CurrentValue = state[s.k] or s.min,
+            Callback = function(v) state[s.k] = v; onESPChanged(isPlayer) end,
+        })
+    elseif s.t == 'dropdown' then
+        h = g:CreateDropdown({
+            Name = s.n, Flag = s.f, Options = s.o, CurrentOption = state[s.k],
+            MultipleOptions = false, AllowNone = false,
+            Callback = function(v) state[s.k] = v; onESPChanged(isPlayer) end,
+        })
+    elseif s.t == 'color' then
+        h = g:CreateColorPicker({
+            Name = s.n, Flag = s.f, Color = state[s.k],
+            Callback = function(c) state[s.k] = c; onESPChanged(isPlayer) end,
+        })
+    end
+    if h then espHandles[s.f] = h end
+    return h
+end
+
+buildESPTab = function(tab)
+    if not tab then return end
+    if not Library.ESP then
+        tab:CreateParagraph({ Title = 'ESP chưa tải', Content = 'Không tải được ESP.luau từ repo HawkTokaiLib. Kiểm tra file ESP.luau ở root rồi chạy lại.' })
+        return
+    end
+    pullESPFromLib()
+    local zPage = tab:CreateSubTab({ Name = 'Zombie' })
+    local pPage = tab:CreateSubTab({ Name = 'Player' })
+    local zGroups, pGroups = {}, {}
+    for _, s in ipairs(ZOMBIE_SPEC) do specToElement(zPage, zGroups, s, ESPZ, false) end
+    for _, s in ipairs(PLAYER_SPEC) do specToElement(pPage, pGroups, s, ESPP, true) end
+
+    local pre = pPage:CreateGroupbox({ Name = 'Preset', Side = 'Right' })
+    pre:CreateButton({
+        Name = 'Xuất preset (chép vào clipboard)',
+        Callback = function()
+            local ok, text = pcall(function() return Library.ESP:Export() end)
+            if ok and text then
+                pcall(function() setclipboard(text) end)
+                Library:Notify({ Title = 'ESP', Content = 'Đã xuất preset', Duration = 2 })
+            end
+        end,
+    })
+    local importText = ''
+    pre:CreateInput({
+        Name = 'Preset JSON', PlaceholderText = 'dán JSON vào đây', CurrentValue = '',
+        Callback = function(text) importText = tostring(text or '') end,
+    })
+    pre:CreateButton({
+        Name = 'Nhập preset',
+        Callback = function()
+            local ok, res, reason = pcall(function() return Library.ESP:Import(importText) end)
+            if ok and res then
+                pullESPFromLib()
+                applyPlayerESP()
+                Library:Notify({ Title = 'ESP', Content = 'Đã nhập preset', Duration = 2 })
+            else
+                Library:Notify({ Title = 'ESP', Content = tostring(reason or res or 'preset không hợp lệ'), Duration = 3 })
+            end
+        end,
+    })
+
+    applyPlayerESP()
+    applyZombieESP()
+end
 end
 
 -- ─── SILENT AIM ───────────────────────────────────────────────────────────────
@@ -1335,7 +1483,7 @@ local HttpService     = game:GetService("HttpService")
 local VirtualUser     = game:GetService("VirtualUser")
 
 local function notify(msg)
-    local ok = pcall(function() Library:Notify(tostring(msg), 3) end)
+    local ok = pcall(function() Library:Notify({ Title = 'Tokai HUB', Content = tostring(msg), Duration = 3 }) end)
     if not ok then warn("[Tokai] " .. tostring(msg)) end
 end
 
@@ -1503,19 +1651,7 @@ local avoidConn = RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ─── AIM HOTKEY (reignfall_aimbot.txt: phím E bật/tắt aimbot) ─────────────────
-
-local hotkeyConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed or not Config.aimHotkey then return end
-    if input.KeyCode ~= Config.aimKey then return end
-    local newState = not Config.aimbotEnabled
-    local tg = Toggles and Toggles.Aimbot
-    if tg then
-        pcall(function() tg:SetValue(newState) end)
-    else
-        Config.aimbotEnabled = newState
-    end
-end)
+-- Aim hotkey: Window:BindToggle trong nhóm Combat > Aimbot (xem phần UI).
 
 -- ─── FPS CAP / FPS BOOSTER ────────────────────────────────────────────────────
 
@@ -1977,50 +2113,71 @@ local function WrapSection(Groupbox)
     local S = {}
     function S:AddToggle(Data)
         local Flag = tostring(Data.Flag or Data.Name or "T")
-        local t = Groupbox:AddToggle(Flag, {Text=tostring(Data.Name or Flag), Default=Data.Default or false})
-        if Data.Callback then t:OnChanged(Data.Callback) end
-        return t
+        return Groupbox:CreateToggle({
+            Name = tostring(Data.Name or Flag),
+            Flag = Flag,
+            CurrentValue = Data.Default == true,
+            Callback = Data.Callback or function() end,
+        })
     end
     function S:AddSlider(Data)
         local Flag = tostring(Data.Flag or Data.Name or "S")
-        local s = Groupbox:AddSlider(Flag, {Text=tostring(Data.Name or Flag), Default=Data.Default or 0, Min=Data.Min or 0, Max=Data.Max or 100, Rounding=Data.Rounding or 0, Suffix=Data.Suffix, Compact=Data.Compact or false})
-        if Data.Callback then s:OnChanged(Data.Callback) end
-        return s
+        local digits = tonumber(Data.Rounding) or 0
+        return Groupbox:CreateSlider({
+            Name = tostring(Data.Name or Flag),
+            Flag = Flag,
+            Range = { Data.Min or 0, Data.Max or 100 },
+            Increment = 10 ^ (-digits),
+            Suffix = Data.Suffix or "",
+            CurrentValue = Data.Default or Data.Min or 0,
+            Callback = Data.Callback or function() end,
+        })
     end
     function S:AddDropdown(Data)
         local Flag = tostring(Data.Flag or Data.Name or "D")
-        local d = Groupbox:AddDropdown(Flag, {Text=tostring(Data.Name or Flag), Values=Data.Values or {}, Default=Data.Default, Multi=false})
-        if Data.Callback then d:OnChanged(Data.Callback) end
-        return d
-    end
-    function S:AddColorPicker(Data)
-        local Flag = tostring(Data.Flag or Data.Name or "C")
-        local label = Groupbox:AddLabel(tostring(Data.Name or Flag))
-        label:AddColorPicker(Flag, {Default=Data.Default or Color3.new(1,1,1)})
-        if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+        local values = Data.Values or {}
+        return Groupbox:CreateDropdown({
+            Name = tostring(Data.Name or Flag),
+            Flag = Flag,
+            Options = values,
+            CurrentOption = Data.Default or values[1],
+            MultipleOptions = false,
+            AllowNone = true,
+            Callback = Data.Callback or function() end,
+        })
     end
     function S:AddButton(Data)
-        return Groupbox:AddButton(Data.Name or "Button", Data.Callback or function() end)
+        return Groupbox:CreateButton({
+            Name = tostring(Data.Name or "Button"),
+            Callback = Data.Callback or function() end,
+        })
     end
     return S
 end
 
 local function DrawSection(Tab, Name, Position)
-    if string.lower(Position or "left") == "right" then
-        return WrapSection(Tab:AddRightGroupbox(Name))
-    end
-    return WrapSection(Tab:AddLeftGroupbox(Name))
+    local side = string.lower(Position or "left") == "right" and "Right" or "Left"
+    return WrapSection(Tab:CreateGroupbox({ Name = Name, Side = side }))
 end
 
-local Window = Library:CreateWindow({Title='Tokai HUB - Reign Fall', Center=true, AutoShow=true, TabPadding=8, MenuFadeTime=0.2})
-local T_Combat   = Window:AddTab('Combat')
-local T_Visuals  = Window:AddTab('Visuals')
-local T_Utility  = Window:AddTab('Utility')
-local T_Settings = Window:AddTab('UI Settings')
+local Window = Library:CreateWindow({
+    Name = 'Tokai HUB - Reign Fall',
+    LoadingSubtitle = 'Reign Fall',
+    ToggleUIKeybind = 'RightControl',
+    ConfigurationSaving = { FolderName = 'TokaiHub_ReignFall' },
+    ToggleButton = { Platform = 'Both', Icon = 'layout-grid' },
+    Backdrop = false,
+})
+local T_Combat   = Window:CreateTab({ Name = 'Combat', Icon = 'crosshair' })
+local T_Visuals  = Window:CreateTab({ Name = 'Visuals', Icon = 'eye' })
+local T_Utility  = Window:CreateTab({ Name = 'Utility', Icon = 'wrench' })
+local T_ESP      = Window:CreateTab({ Name = 'ESP', Desc = 'ESP của HawkTokaiLib', Icon = 'users' })
+local T_Settings = Window:CreateTab({ Name = 'UI Settings', Icon = 'settings' })
 
 -- COMBAT
 local S_Aim = DrawSection(T_Combat, 'Aimbot', 'left')
-S_Aim:AddToggle({Name='Aimbot',     Flag='Aimbot',    Default=false, Callback=function(v) Config.aimbotEnabled=v end})
+local aimbotToggle = S_Aim:AddToggle({Name='Aimbot', Flag='Aimbot', Default=false, Callback=function(v) Config.aimbotEnabled=v end})
+Window:BindToggle(aimbotToggle, Config.aimKey, "Toggle")
 S_Aim:AddToggle({Name='Silent Aim', Flag='SilentAim', Default=false, Callback=function(v) Config.raycasting=v end})
 S_Aim:AddToggle({Name='Show FOV',   Flag='ShowFOV',   Default=true,  Callback=function(v) Config.aimbotShowFOV=v end})
 S_Aim:AddToggle({Name='Crosshair',  Flag='Crosshair', Default=true,  Callback=function(v)
@@ -2039,7 +2196,7 @@ S_Aim:AddSlider({Name='Smoothing', Flag='Smoothing', Default=18, Min=1, Max=99, 
 S_Aim:AddToggle({Name='Auto Hit',   Flag='AutoHit',   Default=false, Callback=function(v) Config.autoHit=v end})
 S_Aim:AddToggle({Name='No Recoil',  Flag='NoRecoil',  Default=false, Callback=function(v) Config.noRecoil=v end})
 S_Aim:AddToggle({Name='No Spread',  Flag='NoSpread',  Default=false, Callback=function(v) Config.noSpread=v end})
-S_Aim:AddToggle({Name='Aim Hotkey (E)',       Flag='AimHotkey',   Default=true,      Callback=function(v) Config.aimHotkey=v end})
+S_Aim:AddToggle({Name='Aim Hotkey (E)', Flag='AimHotkey', Default=true, Callback=function(v) Config.aimHotkey=v; if aimbotToggle then Window:BindToggle(aimbotToggle, v and Config.aimKey or nil, "Toggle") end end})
 S_Aim:AddSlider({Name='Aim Max Dist (0=off)', Flag='AimMaxDist',  Default=200, Min=0, Max=1000, Rounding=0, Suffix=' st', Callback=function(v) Config.aimMaxDistance=math.floor(v) end})
 S_Aim:AddToggle({Name='Bulwark Only',         Flag='BulwarkOnly', Default=false,     Callback=function(v) Config.bulwarkOnly=v end})
 S_Aim:AddToggle({Name='Primary AutoHit',   Flag='HitPrimary',   Default=true,  Callback=function(v) Config.hitPrimary=v end})
@@ -2113,56 +2270,7 @@ S_Pickup:AddToggle({Name='Collectible ESP', Flag='CollectibleESP', Default=false
     end
 end})
 
-local S_ZombieESP = DrawSection(T_Visuals, 'Zombie ESP', 'left')
-S_ZombieESP:AddToggle({Name='Zombie ESP', Flag='ZombieESP', Default=false, Callback=function(v)
-    Config.zombieESP=v
-    if not v then
-        for model, espData in pairs(drawingPool) do
-            if Players:GetPlayerFromCharacter(model)==nil then RemoveDrawingESP(espData.Drawing,espData.Highlight); drawingPool[model]=nil end
-        end
-    end
-end})
-S_ZombieESP:AddToggle({Name='  └ Box',      Flag='ZombieBox',      Default=true, Callback=function(v) Config.zombieBox=v end})
-S_ZombieESP:AddToggle({Name='  └ Health',   Flag='ZombieHealth',   Default=true, Callback=function(v) Config.zombieHealth=v end})
-S_ZombieESP:AddToggle({Name='  └ Name',     Flag='ZombieName',     Default=true, Callback=function(v) Config.zombieName=v end})
-S_ZombieESP:AddToggle({Name='  └ Distance', Flag='ZombieDistance', Default=true, Callback=function(v) Config.zombieDistance=v end})
-
-local S_PlayerESP = DrawSection(T_Visuals, 'Player ESP', 'left')
-S_PlayerESP:AddToggle({Name='Player ESP', Flag='PlayerESP', Default=false, Callback=function(v)
-    Config.playerESP=v
-    if not v then
-        for model, espData in pairs(drawingPool) do
-            if Players:GetPlayerFromCharacter(model)~=nil then RemoveDrawingESP(espData.Drawing,espData.Highlight); drawingPool[model]=nil end
-        end
-    end
-end})
-S_PlayerESP:AddToggle({Name='  └ Box',      Flag='PlayerBox',      Default=true, Callback=function(v) Config.playerBox=v end})
-S_PlayerESP:AddToggle({Name='  └ Health',   Flag='PlayerHealth',   Default=true, Callback=function(v) Config.playerHealth=v end})
-S_PlayerESP:AddToggle({Name='  └ Name',     Flag='PlayerName',     Default=true, Callback=function(v) Config.playerName=v end})
-S_PlayerESP:AddToggle({Name='  └ Distance', Flag='PlayerDistance', Default=true, Callback=function(v) Config.playerDistance=v end})
-
-local S_ESPCfg = DrawSection(T_Visuals, 'ESP Settings', 'right')
-S_ESPCfg:AddToggle({Name='Box ESP',         Flag='UseBox',      Default=true,  Callback=function(v) Config.UseBoxESP=v end})
-S_ESPCfg:AddToggle({Name='Highlight ESP',   Flag='UseHL',       Default=false, Callback=function(v) Config.UseHighlight=v end})
-S_ESPCfg:AddToggle({Name='Tracers',         Flag='UseTracers',  Default=false, Callback=function(v) Config.UseTracers=v end})
-S_ESPCfg:AddToggle({Name='Show Names',      Flag='ShowNames',   Default=true,  Callback=function(v) Config.ShowNames=v end})
-S_ESPCfg:AddToggle({Name='Show Distance',   Flag='ShowDist',    Default=true,  Callback=function(v) Config.ShowDistance=v end})
-S_ESPCfg:AddToggle({Name='Show Health',     Flag='ShowHealth',  Default=true,  Callback=function(v) Config.ShowHealth=v end})
-S_ESPCfg:AddToggle({Name='Health Gradient', Flag='HealthGrad',  Default=true,  Callback=function(v) Config.UseHealthGradient=v end})
-S_ESPCfg:AddDropdown({Name='Box Style', Flag='BoxStyle', Values={'Full','Corner'}, Default='Full', Callback=function(v) Config.BoxStyle=v end})
-S_ESPCfg:AddDropdown({Name='Health Bar', Flag='HealthSide', Values={'Left','Right','Bottom'}, Default='Left', Callback=function(v) Config.HealthBarSide=v end})
-S_ESPCfg:AddSlider({Name='Max Dist (m)', Flag='MaxDist', Default=1000, Min=25, Max=5000, Rounding=0, Callback=function(v) Config.MaxDistance=math.floor(v*3.57) end})
-
-local S_ESPColor = DrawSection(T_Visuals, 'ESP Colors', 'right')
-S_ESPColor:AddColorPicker({Name='Zombie Color', Flag='ZombieColor', Default=Color3.fromRGB(255,60,60), Callback=function(v) Config.ZombieColor=v end})
-S_ESPColor:AddColorPicker({Name='Player Color', Flag='PlayerColor', Default=Color3.fromRGB(0,200,255), Callback=function(v) Config.PlayerColor=v end})
-S_ESPColor:AddColorPicker({Name='Health Color', Flag='HealthColor', Default=Color3.new(0,1,0),         Callback=function(v) Config.HealthBarColor=v end})
-S_ESPColor:AddToggle({Name='Override Box Color', Flag='BoxOverride', Default=false, Callback=function(v)
-    Config.BoxColor = v and (Options.BoxColor and Options.BoxColor.Value or Color3.new(1,1,1)) or nil
-end})
-S_ESPColor:AddColorPicker({Name='Box Color', Flag='BoxColor', Default=Color3.new(1,1,1), Callback=function(v)
-    if Options.BoxOverride and Options.BoxOverride.Value then Config.BoxColor=v end
-end})
+-- Zombie / Player ESP: nằm ở tab ESP (2 page: Zombie, Player).
 
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
@@ -2206,8 +2314,8 @@ local initialPlayers = getOtherPlayerNames()
 selectedPlayer = initialPlayers[1]
 local tpPlayerDropdown = S_TP:AddDropdown({Name='Player', Flag='TPPlayer', Values=initialPlayers, Default=selectedPlayer, Callback=function(v) selectedPlayer = v end})
 S_TP:AddButton({Name='Refresh Players', Callback=function()
-    if tpPlayerDropdown and tpPlayerDropdown.SetValues then
-        tpPlayerDropdown:SetValues(getOtherPlayerNames())
+    if tpPlayerDropdown and tpPlayerDropdown.Refresh then
+        tpPlayerDropdown:Refresh(getOtherPlayerNames(), true, true)
     else
         notify("dropdown không hỗ trợ refresh")
     end
@@ -2247,42 +2355,42 @@ S_Skin:AddToggle({Name='Melee',     Flag='SkinMelee',     Default=false, Callbac
 S_Skin:AddDropdown({Name='Skin', Flag='SkinName', Values=SKIN_NAMES, Default=skinChoice, Callback=function(v) skinChoice = v end})
 S_Skin:AddButton({Name='Change Skin', Callback=applySkin})
 -- UI SETTINGS
-local MenuGroup = T_Settings:AddLeftGroupbox('Menu')
-MenuGroup:AddButton({Text='Unload', Func=function() Library:Unload() end})
-pcall(function()
-    local cursorToggle = MenuGroup:AddToggle("CustomCursor", {Text="Custom Cursor", Default=true})
-    cursorToggle:OnChanged(function(v) pcall(function() Library.ShowCustomCursor = v end) end)
-
-    local sideDrop = MenuGroup:AddDropdown("NotifySide", {Values={"Left","Right"}, Default="Right", Text="Notification Side"})
-    sideDrop:OnChanged(function(v) pcall(function() Library:SetNotifySide(v) end) end)
-
-    MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", {Default="RightShift", NoUI=true, Text="Menu Keybind"})
-    Library.ToggleKeybind = Options.MenuKeybind
+local MenuGroup = T_Settings:CreateGroupbox({ Name = 'Menu', Side = 'Left' })
+MenuGroup:CreateKeybind({
+    Name = 'Toggle UI',
+    CurrentKeybind = 'RightControl',
+    OnChanged = function(Key) Window:SetKeybind(Key) end,
+})
+MenuGroup:CreateButton({
+    Name = 'Unload',
+    Icon = 'power',
+    Callback = function()
+        Library:Confirm({
+            Title = 'Unload script?',
+            ConfirmText = 'Unload',
+            Callback = function() Window:Destroy() end,
+        })
+    end,
+})
+local okBuild, errBuild = pcall(function() buildESPTab(T_ESP) end)
+if not okBuild then warn('[Tokai] không dựng được tab ESP: ' .. tostring(errBuild)) end
+local okSettings, errSettings = pcall(function()
+    T_Settings:CreateConfigManager({ Name = 'Configs', Side = 'Left' })
+    T_Settings:CreateThemeManager({ Name = 'Themes', Side = 'Right' })
 end)
+if not okSettings then warn('[Tokai] không tạo được config/theme manager: ' .. tostring(errSettings)) end
+pcall(function() Window:LoadAutoload() end)
 
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-ThemeManager:SetFolder('TokaihHub')
-SaveManager:SetFolder('TokaihHub/reign-fall')
-SaveManager:BuildConfigSection(T_Settings)
-ThemeManager:ApplyToTab(T_Settings)
-SaveManager:LoadAutoloadConfig()
-
-Library:OnUnload(function()
+Window:OnUnload(function()
+    pcall(function() if Library.ESP then Library.ESP:Clear() end end)
     untrackAllNPCs()
     for obj, conn in pairs(trackedPickups) do
         pcall(function() conn:Disconnect() end); RemoveHighlight(obj)
     end
     trackedPickups = {}
-    for _, espData in pairs(drawingPool) do
-        RemoveDrawingESP(espData.Drawing, espData.Highlight)
-    end
-    drawingPool = {}
     pcall(function() fovCircle:Remove() end)
     pcall(function() if crosshairGui then crosshairGui:Destroy() end end)
     pcall(function() afkConn:Disconnect() end)
-    pcall(function() hotkeyConn:Disconnect() end)
     pcall(function() avoidConn:Disconnect() end)
     pcall(function() noclipConn:Disconnect() end)
     Config.noClip = false
